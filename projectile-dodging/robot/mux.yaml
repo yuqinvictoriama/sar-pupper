@@ -1,0 +1,14 @@
+# Velocity arbitration with the dodge reflex added.
+# Order is priority: the joystick always wins, then the dodge reflex, then
+# Gemini, then autonomous navigation, then the person follower.
+# A source that sends nothing for timeout_ms is dropped.
+cmd_vel_mux:
+  ros__parameters:
+    deadband: 0.05
+    timeout_ms: 500
+    inputs:
+      - /teleop_cmd_vel
+      - /dodge_cmd_vel
+      - /llm_cmd_vel
+      - /nav_cmd_vel
+      - /person_following_cmd_vel

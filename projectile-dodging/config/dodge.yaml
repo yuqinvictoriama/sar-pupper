@@ -1,0 +1,157 @@
+# Projectile dodging configuration.
+# Units: metres, seconds, degrees. Frame: base_link (x forward, y left, z up,
+# origin on the centre plane at hip-axis height).
+# Calibration tools never edit this file: they write config/calib/*.yaml, which
+# is merged over it at load time (same keys, later files win).
+
+ball:
+  diameter_m: 0.074        # measure one with calipers
+  mass_kg: 0.026           # 0.917 oz
+  drag_cd: 0.47
+
+robot:
+  # Body outline used for the "will it hit" test, including head, mics and camera mount.
+  box: {x_min: -0.15, x_max: 0.17, y_min: -0.12, y_max: 0.12, z_top: 0.19}
+  hip_height_m: 0.13       # standing height of the hip axes above the floor (measure)
+
+cameras:
+  fisheye:
+    enabled: true
+    source: ros_compressed            # frames from camera_ros (the course camera node)
+    topic: /camera/image_raw/compressed
+    model: double_sphere
+    # follow_me_pupper/robot/camera_params.yaml, valid for 1400 x 1050 frames
+    intrinsics: {fx: 228.8103, fy: 228.8103, cx: 680.0, cy: 479.0, xi: -0.00092, alpha: 0.62007, width: 1400, height: 1050}
+    extrinsics: {x: 0.1579, y: 0.0, z: -0.0015, yaw_deg: 0.0, pitch_deg: 0.0, roll_deg: 0.0}
+    max_angle_deg: 100.0              # ignore the outer rim of the lens
+    min_elevation_deg: -30.0          # ignore things on the floor right at the robot's feet
+    time_offset_s: -0.04              # added to the frame stamp; from tools/measure_latency.py
+    colour_gains: [1.4, 3.3]          # fixed white balance [red, blue] the launch file sets (auto leaves this camera pink)
+    size_scale: 1.0                   # apparent-size corrections; from tools/calibrate_color.py --distance
+    size_offset_px: 0.4               # blobs come out about this much too wide
+    bearing_sigma_deg: 0.35
+    size_sigma_px: 0.5
+    color:                            # OpenCV HSV (H 0-179). The fisheye is red-tinted: green shifts toward yellow.
+      h_min: 25
+      h_max: 62
+      s_min: 80
+      s_max: 255
+      v_min: 70
+      v_max: 255
+  elp_left:
+    enabled: true
+    source: v4l2
+    device: ""                        # set with tools/find_cameras.py (a /dev/v4l/by-path/... name)
+    capture: {width: 1280, height: 720, fps: 120, exposure_100us: 30, gain: null, auto_exposure: false, wb_temperature: 4600}
+    max_process_fps: 60               # raise toward the camera rate once CPU headroom is measured
+    model: pinhole
+    intrinsics: {hfov_deg: 120.0, width: 1280, height: 720}   # replaced by tools/calibrate_camera.py
+    extrinsics: {x: 0.0450, y: 0.0315, z: 0.1521, yaw_deg: 122.5, pitch_deg: 0.0, roll_deg: 0.0}
+    max_angle_deg: 75.0
+    min_elevation_deg: -15.0          # the robot's own back, ears and mics sit below this
+    time_offset_s: -0.03
+    size_scale: 1.0
+    size_offset_px: 0.4
+    bearing_sigma_deg: 0.25
+    size_sigma_px: 0.4
+    color: {h_min: 30, h_max: 65, s_min: 90, s_max: 255, v_min: 70, v_max: 255}
+  elp_right:
+    enabled: true
+    source: v4l2
+    device: ""
+    capture: {width: 1280, height: 720, fps: 120, exposure_100us: 30, gain: null, auto_exposure: false, wb_temperature: 4600}
+    max_process_fps: 60
+    model: pinhole
+    intrinsics: {hfov_deg: 120.0, width: 1280, height: 720}
+    extrinsics: {x: 0.0450, y: -0.0315, z: 0.1521, yaw_deg: -122.5, pitch_deg: 0.0, roll_deg: 0.0}
+    max_angle_deg: 75.0
+    min_elevation_deg: -15.0
+    time_offset_s: -0.03
+    size_scale: 1.0
+    size_offset_px: 0.4
+    bearing_sigma_deg: 0.25
+    size_sigma_px: 0.4
+    color: {h_min: 30, h_max: 65, s_min: 90, s_max: 255, v_min: 70, v_max: 255}
+
+detector:
+  min_area_px: 10          # about 3.6 px across
+  max_area_frac: 0.25
+  open_px: 3               # morphological open kernel (0 = off)
+  max_aspect: 2.8          # a 120 deg rectilinear lens stretches the ball near the image edge
+  min_fill: 0.5            # blob area / bounding ellipse area, checked for blobs >= 40 px
+  max_fill: 1.15           # a disc gives 1.0, a rectangle 1.27; checked for blobs >= 80 px
+  min_circularity: 0.6     # 4*pi*area/perimeter^2 (1 = circle), checked for blobs >= 80 px: rejects clothing, boxes
+  max_blobs: 6
+  roi_tracking: true       # while a ball is tracked, look near its predicted position first
+  roi_half_deg: 14.0
+  roi_min_px: 96
+  full_frame_every: 3      # still scan the whole frame every Nth frame while tracking
+
+tracker:
+  accel_sigma: 2.0         # m/s^2, unmodelled acceleration (drag error, size-range bias, robot motion)
+  pos_walk_sigma: 0.03     # m/sqrt(s)
+  init_speed_sigma: 7.0    # m/s, prior on the unknown velocity of a new track
+  gate_chi2: 20.0
+  confirm_hits: 3
+  max_coast_s: 0.25        # drop a confirmed track after this long unseen
+  tentative_coast_s: 0.12
+  max_tracks: 8
+  max_range_m: 8.0
+  use_drag: true
+
+threat:
+  horizon_s: 1.6
+  step_s: 0.01
+  min_hits: 3
+  min_age_s: 0.04
+  min_closing_speed: 1.0   # m/s toward the robot, after removing the robot's own speed; a still object never passes this
+  max_closing_speed: 15.0  # faster than anyone throws: a tracking glitch
+  min_range_m: 0.25
+  min_ball_speed: 1.5      # m/s over the ground; slower than this is a still object, not a throw
+  margin_m: 0.05           # clearance wanted between ball surface and body outline
+  k_sigma: 1.5
+  sigma_cap_m: 0.45
+  sigma_lat_max_m: 0.20    # do not fire early while the sideways prediction is this vague
+  confirm_cycles: 2        # consecutive threat verdicts needed
+  trigger_margin_s: 0.30   # fire once time-to-contact <= time needed + this
+  min_tau_s: 0.05          # too late to matter
+
+escape:
+  # Speeds actually commanded. The walking policy accepts |vx| <= 1.5, |vy| <= 0.5.
+  # Start at these values; raise vx toward 1.5 once tools/step_response.py shows
+  # the robot stays upright.
+  vx_forward: 1.0
+  vx_backward: 0.8
+  vy: 0.5
+  component_min: 0.25      # ignore an axis that contributes less than this share of the escape direction
+  accel_lag_s: 0.20        # first-order lag of the walking response; from tools/step_response.py
+  react_s: 0.12            # delay from sending the command to the robot starting to move (mux tick + policy step + legs)
+  center_deadband_m: 0.04  # |miss| below this = dead centre: side chosen by free space / preference
+  extra_m: 0.12            # travel beyond the bare minimum
+  max_displacement_m: 0.40
+  min_duration_s: 0.25
+  max_duration_s: 0.80     # hard cap on one burst
+  hold_past_arrival_s: 0.15  # never keep moving longer than this after the ball should have arrived
+  along_track: false       # stretch: run under/away from steep lobs in the front and rear cones
+  along_track_min_descent_deg: 45.0
+  free_space_needed_m: 0.6
+
+fsm:
+  refractory_s: 1.0
+  recover_min_s: 0.30
+  recover_max_s: 1.50
+  level_tilt_deg: 20.0
+  still_gyro_rad_s: 0.6
+  abort_tilt_deg: 40.0
+
+node:
+  cmd_topic: /dodge_cmd_vel
+  cmd_rate_hz: 100.0
+  imu_topic: /imu_sensor_broadcaster/imu
+  estop_topic: /emergency_stop
+  free_space_topic: /free_space      # std_msgs/Float32MultiArray: clearance (m) per equal sector, starting at straight ahead, counter-clockwise
+  walking_controllers: [gemini_walk, neural_controller_default, neural_controller_default_alt, neural_controller, neural_controller_student, neural_controller_three_legged]
+  require_active_controller: true
+  event_buffer_s: 1.5
+  event_post_s: 1.0
+  event_dir: data/events

@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+# recordings, snapshots and event dumps made on the robot
+data/
+# per-robot calibration is kept: config/calib/*.yaml are small and worth committing

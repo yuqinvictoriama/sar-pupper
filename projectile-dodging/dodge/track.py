@@ -1,0 +1,222 @@
+"""Track the ball in 3D with a ballistic Kalman filter.
+
+State: position and velocity of the ball relative to the robot, in a
+gravity-aligned frame ("world": z up, origin at base_link, heading from the
+IMU). Working in this frame means body pitch and roll while walking do not
+look like ball motion, and gravity always points along -z.
+
+Each measurement is a 3D point (lens position + range * ray) whose error is
+small across the ray (bearing is accurate) and large along it (range comes from
+the ball's apparent size). Measurements from different cameras therefore
+combine correctly even though the lenses are 19 cm apart.
+
+The quantities the plan talks about come straight out of the state:
+azimuth, elevation, angular size, and their rates.
+"""
+from __future__ import annotations
+
+import math
+
+import numpy as np
+
+G = 9.81
+
+
+class Track:
+    _next_id = 1
+
+    def __init__(self, t: float, p: np.ndarray, P_pos: np.ndarray, speed_sigma: float, cam: str):
+        self.id = Track._next_id
+        Track._next_id += 1
+        self.x = np.zeros(6)
+        self.x[:3] = p
+        self.P = np.zeros((6, 6))
+        self.P[:3, :3] = P_pos
+        self.P[3:, 3:] = np.eye(3) * speed_sigma ** 2
+        self.t = t              # time the state refers to
+        self.t0 = t
+        self.t_last = t         # last time a measurement was accepted
+        self.hits = 1
+        self.confirmed = False
+        self.cams = {cam}
+        self.last_cam = cam
+        self.history = [(t, np.array(p, dtype=float))]   # recent raw measurement points (world frame)
+
+    # ---- convenience views of the state
+    @property
+    def p(self) -> np.ndarray:
+        return self.x[:3]
+
+    @property
+    def v(self) -> np.ndarray:
+        return self.x[3:]
+
+    @property
+    def age(self) -> float:
+        return self.t_last - self.t0
+
+    @property
+    def range_m(self) -> float:
+        return float(np.linalg.norm(self.x[:3]))
+
+    @property
+    def closing_speed(self) -> float:
+        """Speed toward the robot (m/s); positive = approaching."""
+        r = self.range_m
+        return float(-np.dot(self.x[:3], self.x[3:]) / r) if r > 1e-6 else 0.0
+
+    def remember(self, t: float, z: np.ndarray, window: float = 0.18) -> None:
+        self.history.append((t, np.array(z, dtype=float)))
+        self.history = [h for h in self.history if h[0] >= t - window][-16:]
+
+    def fitted_velocity(self):
+        """Straight-line velocity through the recent measurement points (no gravity assumed), or None.
+
+        Used to tell a thrown ball from a still object: the filter itself always
+        assumes free fall, so a ball-coloured thing hanging above the robot looks
+        to it as if it were dropping.
+        """
+        if len(self.history) < 3:
+            return None
+        ts = np.array([h[0] for h in self.history])
+        if ts[-1] - ts[0] < 0.03:
+            return None
+        pts = np.stack([h[1] for h in self.history])
+        tc = ts - ts.mean()
+        return (tc[:, None] * (pts - pts.mean(axis=0))).sum(axis=0) / float((tc * tc).sum())
+
+    def azimuth_elevation_deg(self):
+        p = self.x[:3]
+        return (math.degrees(math.atan2(p[1], p[0])),
+                math.degrees(math.atan2(p[2], math.hypot(p[0], p[1]))))
+
+    def angular_size(self, ball_diameter: float):
+        """(theta, theta_rate): angular diameter and its growth rate, rad and rad/s."""
+        r = max(self.range_m, ball_diameter / 2.0 + 1e-6)
+        s = min(1.0, (ball_diameter / 2.0) / r)
+        theta = 2.0 * math.asin(s)
+        r_dot = -self.closing_speed
+        theta_dot = -2.0 * s / (r * math.sqrt(max(1e-9, 1.0 - s * s))) * r_dot
+        return theta, theta_dot
+
+
+def accel(v: np.ndarray, drag_k: float) -> np.ndarray:
+    a = np.array([0.0, 0.0, -G])
+    if drag_k > 0.0:
+        a = a - drag_k * np.linalg.norm(v) * v
+    return a
+
+
+def drag_coefficient(ball: dict) -> float:
+    """k in a_drag = -k |v| v  (1/m)."""
+    area = math.pi * (ball["diameter_m"] / 2.0) ** 2
+    return 1.2 * float(ball.get("drag_cd", 0.47)) * area / (2.0 * ball["mass_kg"])
+
+
+class Tracker:
+    def __init__(self, cfg: dict, ball: dict):
+        self.cfg = cfg
+        self.q_a = float(cfg.get("accel_sigma", 4.0))
+        self.q_p = float(cfg.get("pos_walk_sigma", 0.3))
+        self.speed_sigma = float(cfg.get("init_speed_sigma", 7.0))
+        self.gate = float(cfg.get("gate_chi2", 20.0))
+        self.confirm_hits = int(cfg.get("confirm_hits", 3))
+        self.max_coast = float(cfg.get("max_coast_s", 0.25))
+        self.tent_coast = float(cfg.get("tentative_coast_s", 0.12))
+        self.max_tracks = int(cfg.get("max_tracks", 8))
+        self.max_range = float(cfg.get("max_range_m", 8.0))
+        self.drag_k = drag_coefficient(ball) if cfg.get("use_drag", True) else 0.0
+        self.tracks: list = []
+
+    # ---- model
+    def predict_state(self, x: np.ndarray, P: np.ndarray, dt: float):
+        """State and covariance dt seconds later (dt may be slightly negative)."""
+        if dt == 0.0:
+            return x.copy(), P.copy()
+        a = accel(x[3:], self.drag_k)
+        xn = x.copy()
+        xn[:3] = x[:3] + x[3:] * dt + 0.5 * a * dt * dt
+        xn[3:] = x[3:] + a * dt
+        F = np.eye(6)
+        F[:3, 3:] = np.eye(3) * dt
+        h = abs(dt)
+        qa2 = self.q_a ** 2
+        Q = np.zeros((6, 6))
+        Q[:3, :3] = np.eye(3) * (qa2 * h ** 4 / 4.0 + self.q_p ** 2 * h)
+        Q[:3, 3:] = Q[3:, :3] = np.eye(3) * (qa2 * h ** 3 / 2.0)
+        Q[3:, 3:] = np.eye(3) * (qa2 * h * h)
+        return xn, F @ P @ F.T + Q
+
+    @staticmethod
+    def meas_cov(ray: np.ndarray, sigma_t: float, sigma_r: float) -> np.ndarray:
+        rr = np.outer(ray, ray)
+        return sigma_r ** 2 * rr + sigma_t ** 2 * (np.eye(3) - rr)
+
+    # ---- update with one camera frame
+    def update(self, t: float, meas: list, R_wb: np.ndarray | None = None) -> None:
+        """meas: Measurement objects in base_link; R_wb rotates base_link into the world frame."""
+        if R_wb is None:
+            R_wb = np.eye(3)
+        items = []
+        for m in meas:
+            ray = R_wb @ m.ray
+            z = R_wb @ m.origin + m.range_m * ray
+            if m.range_m > self.max_range:
+                continue
+            items.append((m, z, self.meas_cov(ray, m.sigma_t, m.sigma_r)))
+
+        # Score every (track, measurement) pair, then assign best-first.
+        pred = [self.predict_state(tr.x, tr.P, t - tr.t) for tr in self.tracks]
+        pairs = []
+        for ti, (xp, Pp) in enumerate(pred):
+            for mi, (_m, z, Rm) in enumerate(items):
+                y = z - xp[:3]
+                S = Pp[:3, :3] + Rm
+                try:
+                    d2 = float(y @ np.linalg.solve(S, y))
+                except np.linalg.LinAlgError:
+                    continue
+                if d2 < self.gate:
+                    pairs.append((d2, ti, mi))
+        pairs.sort()
+        used_t, used_m = set(), set()
+        for d2, ti, mi in pairs:
+            if ti in used_t or mi in used_m:
+                continue
+            used_t.add(ti)
+            used_m.add(mi)
+            m, z, Rm = items[mi]
+            xp, Pp = pred[ti]
+            S = Pp[:3, :3] + Rm
+            K = Pp[:, :3] @ np.linalg.inv(S)
+            tr = self.tracks[ti]
+            tr.x = xp + K @ (z - xp[:3])
+            IKH = np.eye(6)
+            IKH[:, :3] -= K
+            tr.P = IKH @ Pp @ IKH.T + K @ Rm @ K.T    # Joseph form: stays symmetric positive
+            tr.t = t
+            tr.t_last = max(tr.t_last, t)
+            tr.hits += 1
+            tr.cams.add(m.cam)
+            tr.last_cam = m.cam
+            tr.remember(t, z)
+            if tr.hits >= self.confirm_hits:
+                tr.confirmed = True
+
+        for mi, (m, z, Rm) in enumerate(items):
+            if mi in used_m or len(self.tracks) >= self.max_tracks:
+                continue
+            self.tracks.append(Track(t, z, Rm, self.speed_sigma, m.cam))
+
+        self.prune(t)
+
+    def prune(self, t_now: float) -> None:
+        keep = []
+        for tr in self.tracks:
+            limit = self.max_coast if tr.confirmed else self.tent_coast
+            if t_now - tr.t_last <= limit and np.isfinite(tr.x).all():
+                keep.append(tr)
+        self.tracks = keep
+
+    def confirmed(self) -> list:
+        return [tr for tr in self.tracks if tr.confirmed]
