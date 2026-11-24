@@ -12,6 +12,32 @@ always outranks the dodge reflex. Whenever the robot can move (stages 7 and 8),
 have someone at the joystick, the robot on open floor with 1.5 m clear around
 it, and nothing it could fall off.
 
+**Space: this guide assumes 2 m of clear floor around the robot.** Every
+calibration distance and every throw below fits in that.
+
+**The throw**, wherever a stage says to throw a ball:
+
+- Stand **2 m** from the robot (tape a mark). Not closer: from 1.5 m the
+  simulated dodge rate falls off sharply, worst from behind.
+- Underhand lob, released at waist height (about 1 m), **peaking at about
+  shoulder height** (1.4–1.7 m above the floor). Not above your head: the ball
+  then climbs out of the top of the rear cameras' view.
+- Straight from behind, peak a little lower (chest height); straight from the
+  front, a little higher is fine.
+- One ball in the air at a time, 3 s apart. No flat or hard throws: from 2 m
+  they arrive in under half a second, which is not enough.
+
+Simulated with the shipped numbers, 40 of these throws per direction (a
+simulation, not a measurement on the robot):
+
+| Throw comes from | Dodged |
+|---|---|
+| Rear diagonals | 100 % |
+| Front diagonals | 100 % |
+| Sides | 95 % |
+| Straight ahead | about 80 % |
+| Straight behind | about 75 % (about 90 % with the lower, chest-height peak) |
+
 ---
 
 ## 1. Get the code onto the Pupper
@@ -48,7 +74,7 @@ SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 
 ```bash
 python3 -m unittest discover -s tests     # expect: Ran 41 tests ... OK
-python3 tools/sim_report.py --n 20        # simulated throws; takes about a minute on the Pi
+python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7    # simulated 2 m throws; takes about a minute on the Pi
 ```
 
 If the tests fail here, stop and fix that first: the rest will not work.
@@ -126,8 +152,10 @@ Do this in the room and light you will throw in, robot where it will stand.
 The rear cameras run a short, fixed exposure (3 ms) so a thrown ball does not
 smear; at the cameras' default gain that is nearly black indoors. The tool
 raises the gain until the picture is bright enough, lengthens the exposure
-only if the gain runs out, locks the white balance the camera picks, and
-writes `config/calib/exposure.yaml`. Read what it prints:
+only if the gain runs out, then fixes the white balance: it tries every colour
+temperature the camera offers and keeps the one that leaves the picture with
+no yellow or blue cast. Everything goes to `config/calib/exposure.yaml`. Read
+what it prints:
 
 | It says | What to do |
 |---|---|
@@ -135,6 +163,13 @@ writes `config/calib/exposure.yaml`. Read what it prints:
 | `the exposure is longer than the 3 ms asked for` | It works, but fast balls smear. More light in the room, then run it again |
 | `STILL TOO DARK` | The room is too dim for these cameras. Add light (best), or allow more smear with the command it prints |
 | `the room lights flicker with the mains` | The ball's brightness will pulse. Daylight or a different lamp is better; colour calibration copes if you leave it |
+| `colour cast: ... before, none to speak of now` | Nothing. `slight` is fine too |
+| `colour cast: ... clear` or `strong ... now` | The room is strongly coloured, so the picture's average is a poor guide. Run it with `--white-card` and hold a sheet of white paper in the middle of the picture when asked |
+| `white balance is left on automatic` | The lamp is warmer or cooler than the camera's fixed settings reach. It works; colours can drift a little |
+
+If a picture still looks tinted to you afterwards, set the temperature by hand
+and look again: `python3 tools/tune_exposure.py elp_left --wb 3000` (lower
+numbers make the picture bluer, higher ones yellower).
 
 Run it again whenever the lighting changes a lot, and redo the colour
 calibration (stage 5) afterwards.
@@ -171,23 +206,36 @@ settings are still the generic defaults. Stage 5 fits them to this room.
 
 ## 5. Calibrate (each camera, in the room and lighting you will run in)
 
-Do 4c first: colour calibration is only valid for the exposure it was made with.
+Three things in a fixed order for each camera, because each depends on the one
+before: exposure (4c), then colour, then size. If the lighting changes, redo
+all three.
 
 ```bash
-python3 tools/calibrate_color.py elp_left                          # follow the two prompts
-python3 tools/calibrate_color.py elp_left --distance 0.5 1 1.5 2   # ball held at 0.5, 1, 1.5, 2 m from that lens
+python3 tools/calibrate_color.py elp_left                          # 1. colour: follow the two prompts
+python3 tools/calibrate_color.py elp_left --distance 0.5 1 1.5 2   # 2. size: ball held at 0.5, 1, 1.5, 2 m from that lens
 ```
 
-Repeat both for `elp_right` and `fisheye`, with the same distances. All of it
-fits in 2 m of clear floor around the robot. Distances are measured from the
-lens of the camera being calibrated to the centre of the ball, with the ball
-roughly in the middle of that camera's picture (for a rear camera that is
-behind the robot and out to its side, not straight back).
+Repeat both for `elp_right` and `fisheye`, with the same distances.
 
-The distances are yours to choose: any list of two or more works, as long as
-the farthest is at least 1.5 times the nearest. Farther is better, because
-that is where the ball is smallest and the correction matters most. With more
-room, `--distance 1 2 3` is the better set.
+- **Colour step.** First it looks at the room with no ball in view, then you
+  move the ball around 0.5–1.5 m from that camera for ten seconds. It prints
+  the colour range it found. Until this has been done for a camera, that
+  camera is using a generic green that usually does not match the room's light.
+- **Size step.** Hold the ball still at each distance. Distances are from the
+  lens of the camera being calibrated to the centre of the ball, with the ball
+  roughly in the middle of that camera's picture (for a rear camera that is
+  behind the robot and out to its side, not straight back). Any two or more
+  distances work if the farthest is at least 1.5 times the nearest.
+
+If the size step says the ball was not found:
+
+| It says | What to do |
+|---|---|
+| `has no colour calibration yet` | Run the colour step for that camera first |
+| `picture ... is too dark to work with` | `python3 tools/tune_exposure.py <camera>` (4c), then colour, then size |
+| `nothing in the picture has the ball's calibrated colour` | The light or exposure changed since the colour step, or the ball is in shadow. Look at the saved `data/snapshots/<camera>_size_problem.jpg` (picture on the left, what counted as ball on the right), then redo the colour step |
+| `none of them the size of a ball N m away` | Something else in view is ball-coloured, or the distance is off. Remove it, or check the tape measure |
+| `cut off by the edge of the picture` | Move the ball toward the middle of that camera's picture |
 
 Then check the result:
 
@@ -225,7 +273,7 @@ Each explains itself with `--help`. The defaults from the CAD are good enough to
 ## 6. Record throws and replay them (still nothing moves)
 
 ```bash
-python3 tools/record.py --seconds 30 --name rear-lobs-01     # someone lobs balls at the robot meanwhile
+python3 tools/record.py --seconds 30 --name rear-lobs-01     # someone lobs balls at the robot from 2 m meanwhile
 python3 tools/replay.py data/recordings/rear-lobs-01
 ```
 
@@ -276,7 +324,7 @@ about 35° or the robot stumbles. Then put what you measured into the simulation
 to see what to expect:
 
 ```bash
-python3 tools/sim_report.py --lag <fitted lag> --delay <measured delay>
+python3 tools/sim_report.py --dist 1.8 2.0 --rise 0.4 0.7 --lag <fitted lag> --delay <measured delay>
 ```
 
 If the robot was steady at 1.0 m/s and you want more margin, try
@@ -292,22 +340,13 @@ bash robot/watch.sh arm             # from now on a predicted hit moves the robo
 bash robot/watch.sh disarm          # back to dry run
 ```
 
-Start with the easy directions and work toward the hard one:
+Use the throw described at the top (2 m, peaking at shoulder height). Start
+with the easy directions and work toward the hard ones:
 
-1. underhand lobs from the **side**, 3–4 m away, peaking around head height;
-2. from **behind** and the rear diagonals;
-3. the front diagonals;
-4. straight from the **front** – the weakest direction (see `plan.md`).
-
-**In a small room** (about 2 m clear around the robot) throw from 2 m instead.
-A lob's time in the air depends on how high it goes, not how far, so keep the
-same arc: released at waist height, peaking around head height. In simulation
-(`python3 tools/sim_report.py --dist 1.8 2.0`) 2 m lobs are dodged about as
-often as 3–4 m ones from the sides and diagonals, more often from the front
-(the fisheye sees the whole flight), and less often from straight behind
-(about 2 in 3: the ball climbs out of the top of the rear cameras' view). Flat
-or hard throws from 2 m leave no time and are not expected to be dodged. The
-same applies to the recordings in stage 6.
+1. the **rear diagonals** and the **sides**;
+2. the front diagonals;
+3. straight from the **front** (a slightly higher lob helps here);
+4. straight from **behind**, the weakest direction at 2 m (peak at chest height).
 
 To start the stack already armed: `bash robot/start.sh --armed`. With Gemini
 Pupper as well: `bash robot/start.sh --gemini` (add `--kiosk` for the on-robot
@@ -327,6 +366,7 @@ Each dodge is announced on `/dodge/event` (JSON) so a planner can re-plan.
 | A camera shows `---` in `watch.sh` | Unplugged, wrong socket, no power, or another program has it | `bash robot/stop.sh`, then `python3 tools/find_cameras.py` (stage 4a); `/tmp/sar-dodge/robot.log` has the node's own explanation |
 | `cannot open the camera: there is no camera on that USB socket` | That camera is not connected as far as the Pi can tell, or its plug moved | Stage 4a, then 4b |
 | An ELP picture is near-black | Short exposure at the camera's default gain | `python3 tools/tune_exposure.py <camera>` (stage 4c) |
+| An ELP picture is very yellow (or very blue) | White balance fixed at a colour temperature that does not match the room's light | `python3 tools/tune_exposure.py <camera>` (stage 4c), then the colour and size steps of stage 5 again |
 | One ELP works alone but not with the other | Shared USB bandwidth or power | Stage 4b: different controllers, `usb_max_current_enable=1`, or `fps: 60` |
 | Red boxes around the edge of the fisheye picture | Colour fringe at the lens rim | `python3 tools/fit_image_circle.py fisheye --write` (stage 4d) |
 | Range to a ball on the floor reads far too short and its box flickers | Colour range too wide: the blob is the ball plus the floor it lights up | `calibrate_color.py` for that camera (stage 5) |
@@ -334,7 +374,8 @@ Each dodge is announced on `/dodge/event` (JSON) so a planner can re-plan.
 | Tracks appear with no ball | Something else in view is ball-coloured | Remove it, or tighten `s_min` / the hue range for that camera |
 | Range reads consistently wrong | Size calibration | `calibrate_color.py <cam> --distance ...`; check `ball.diameter_m` |
 | Dodges balls that would miss by a lot | Prediction too generous | Lower `threat.k_sigma` or `threat.sigma_cap_m` |
-| Reacts too late from the front | Fisheye sees the ball late | `bash robot/start.sh --fisheye-fps 60`; lower `detector.min_area_px`; throw from 3 m rather than 4 m |
+| Reacts too late from the front | Too little time in the air, or the fisheye is slow | Lob a little higher; `bash robot/start.sh --fisheye-fps 60` |
+| Misses throws from straight behind | The ball climbs out of the top of the rear cameras' view | Lower arc: peak at chest height. Do not throw from closer than 2 m |
 | Reacts in time but does not get clear | Robot slower than the config assumes | Stage 7 numbers into `escape.accel_lag_s` / `react_s`; raise `vx_*` if steady |
 | Moves the wrong way | Left/right swapped or a camera is rotated | Stage 4 and the bearing table in stage 5 |
 | Robot stumbles or trips the tilt e-stop when dodging | Command too aggressive | Lower `escape.vx_forward` / `vx_backward`, shorten `max_duration_s` |
@@ -348,9 +389,10 @@ Logs: `/tmp/sar-dodge/robot.log`. Every dodge (real or dry) is in `data/events/`
   tracking, hit prediction, escape choice, the state machine, the recording
   format and replay, the node's message handling (against stand-in ROS
   libraries) and the optional fast mux's priority logic. In simulation with the
-  default numbers, lobs from the sides and rear are dodged essentially every
-  time, front diagonals about 9 in 10, straight from the front about 6 in 10;
-  throws that miss and balls on the floor are ignored. The camera finder, the
+  default numbers and the 2 m throw, the dodge rates are those in the table at
+  the top; throws that miss and balls on the floor are ignored. (From 3–4 m, the
+  distance the plan was first written for: sides and rear essentially every
+  time, front diagonals about 9 in 10, straight from the front about 6 in 10.) The camera finder, the
   exposure tuner and the lens-rim fit have only run against stand-in cameras
   and one screenshot of the real fisheye.
 - **Seen on the robot (2026-11-23, stages 1-4):** the code installs and the

@@ -1,0 +1,10 @@
+# The arrival bounce, designed in sar-pupper/survivor-id/bounce/design.py and trained as a
+# tracking policy. Copy this file to gemini_pupper/tricks/bounce/trick.yaml AFTER
+# robot/get_trick.py has put policy.json there: the robot reads every trick's
+# policy.json at start-up, and a trick.yaml without one stops it loading any tricks.
+description: From standing, bounces happily up and down on the spot three times, with all four feet staying on the floor, and ends standing. Pupper's celebration when it reaches a survivor.
+type: policy
+policy: policy.json
+start_pose: standing
+end_pose: standing
+max_body_angle_deg: 30   # the tilt e-stop while it plays; the reference tilts 4 degrees

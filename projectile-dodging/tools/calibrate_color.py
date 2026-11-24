@@ -26,9 +26,12 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import time
 
-from _common import cv2, load_config, np, open_feed, run_tool, wait_first
+import yaml
+
+from _common import ROOT, cv2, load_config, np, open_feed, run_tool, wait_first
 
 from dodge.camera_models import Camera
 from dodge.config import save_calib
@@ -50,9 +53,33 @@ def grab(feed, n: int, gap: float = 0.0) -> list:
     return frames
 
 
+def stop_if_dark(cfg: dict, name: str, frames: list) -> None:
+    """Colour cannot be judged in a near-black picture: say what to do instead of failing later."""
+    level = float(np.mean([f[::8, ::8].mean() for f in frames]))
+    if level >= 25.0:
+        return
+    if cfg["cameras"][name].get("source") == "v4l2":
+        fix = "Set its exposure for this room first:\n    python3 tools/tune_exposure.py %s" % name
+    else:
+        fix = "The room is too dark for it: add light."
+    raise SystemExit("The picture from %s is too dark to work with (average %.0f of 255). %s\nNothing was written."
+                     % (name, level, fix))
+
+
+def has_colour_calibration(cfg: dict, name: str) -> bool:
+    path = os.path.join(os.path.dirname(cfg["_path"]), "calib", name + "_color.yaml")
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+    except OSError:
+        return False
+    return "color" in ((data.get("cameras") or {}).get(name) or {})
+
+
 def calibrate_color(feed, cfg: dict, name: str, seconds: float) -> None:
     input("\nStep 1: make sure NO ball is in view of %s (put them behind you). Press Enter..." % name)
     bg_frames = grab(feed, 8, 0.1)
+    stop_if_dark(cfg, name, bg_frames)
     bg = np.median(np.stack(bg_frames), axis=0).astype(np.uint8)
     input("Step 2: hold the ball 0.5-1.5 m from the camera, hand behind it, and move it slowly around\n"
           "        the picture, near and far, for %.0f seconds. Press Enter to start..." % seconds)
@@ -104,41 +131,80 @@ def calibrate_color(feed, cfg: dict, name: str, seconds: float) -> None:
     print("  hue %d-%d (OpenCV 0-179), saturation >= %d, brightness >= %d" % (
         color["h_min"], color["h_max"], color["s_min"], color["v_min"]))
     print("  brightness of ball pixels: median %.0f%s" % (
-        float(np.median(px[:, 2])), "  (dark: raise exposure_100us or gain for this camera)" if np.median(px[:, 2]) < 90 else ""))
+        float(np.median(px[:, 2])), "  (dark: run tools/tune_exposure.py for this camera, or add light)" if np.median(px[:, 2]) < 90 else ""))
     if false:
         print("  WARNING: %d ball-coloured patches remain in the EMPTY scene even after tightening. Something in view "
               "is the ball's colour; remove it or expect false tracks." % false)
     path = save_calib(name + "_color", {"cameras": {name: {"color": color}}})
     print("  written to %s" % path)
+    print("\nNext, the size step:  python3 tools/calibrate_color.py %s --distance 0.5 1 1.5 2" % name)
 
 
 def calibrate_size(feed, cfg: dict, name: str, distances: list) -> None:
     cam_cfg = cfg["cameras"][name]
+    if not has_colour_calibration(cfg, name):
+        raise SystemExit("%s has no colour calibration yet, so this step cannot tell the ball from the room.\n"
+                         "Do the colour step first, then run this command again:\n"
+                         "    python3 tools/calibrate_color.py %s" % (name, name))
+    stop_if_dark(cfg, name, grab(feed, 5))
     camera = Camera.from_config(name, cam_cfg)
     det = BallDetector.for_camera(cam_cfg, cfg["detector"])
     radius = cfg["ball"]["diameter_m"] / 2.0
     pairs = []
+    failed_frame = None
     for dist in distances:
         input("\nHold the ball still with its centre %.2f m from the %s lens, roughly in the middle of the picture. "
               "Press Enter..." % (dist, name))
         widths, expect = [], []
-        for bgr in grab(feed, 25):
+        nothing = at_edge = wrong_size = 0
+        frames = grab(feed, 25)
+        for bgr in frames:
             blobs = det.detect(bgr)
-            if not blobs or blobs[0].touches_edge:
+            if not blobs:
+                nothing += 1
                 continue
-            b = blobs[0]
             cam = camera.with_resolution(bgr.shape[1], bgr.shape[0])
-            sr = cam.model.solid_angle_per_px(b.u, b.v)
             omega = 2.0 * math.pi * (1.0 - math.cos(math.asin(min(1.0, radius / dist))))
-            widths.append(b.diameter_px)
-            expect.append(2.0 * math.sqrt(omega / sr / math.pi))
+            best = None
+            for b in blobs:                      # the ball is the patch whose size fits this distance
+                if b.touches_edge:
+                    continue
+                want = 2.0 * math.sqrt(omega / cam.model.solid_angle_per_px(b.u, b.v) / math.pi)
+                miss = abs(math.log(b.diameter_px / want))
+                if miss < math.log(1.7) and (best is None or miss < best[0]):
+                    best = (miss, b.diameter_px, want)
+            if best is None:
+                if all(b.touches_edge for b in blobs):
+                    at_edge += 1
+                else:
+                    wrong_size += 1
+                continue
+            widths.append(best[1])
+            expect.append(best[2])
         if len(widths) < 10:
-            print("  ball not found reliably at this distance; skipped")
+            failed_frame = frames[-1]
+            why = max((nothing, "nothing in the picture has the ball's calibrated colour"),
+                      (wrong_size, "ball-coloured patches were found, but none of them the size of a ball %.1f m away" % dist),
+                      (at_edge, "the ball was cut off by the edge of the picture"))[1]
+            print("  ball found in only %d of %d frames (%s); skipped" % (len(widths), len(frames), why))
             continue
         pairs.append((float(np.median(expect)), float(np.median(widths))))
         print("  ball is %.1f px wide; %.1f px expected" % (pairs[-1][1], pairs[-1][0]))
+    if failed_frame is not None:
+        out_dir = os.path.join(ROOT, "data", "snapshots")
+        os.makedirs(out_dir, exist_ok=True)
+        out = os.path.join(out_dir, name + "_size_problem.jpg")
+        mask = cv2.cvtColor(det.mask(failed_frame), cv2.COLOR_GRAY2BGR)
+        cv2.imwrite(out, np.hstack([failed_frame, mask]))
+        print("\nWhere the ball was not found, the picture and what counted as ball-coloured (white) are saved side by "
+              "side in\n  %s\nIf the ball is not white there, the light or exposure has changed since the colour step: "
+              "redo\n  python3 tools/calibrate_color.py %s\nYou can also watch it live:  python3 tools/view.py %s --mask"
+              % (out, name, name))
     if not pairs:
         raise SystemExit("No usable measurements. Nothing was written.")
+    if len(pairs) < min(2, len(distances)):
+        raise SystemExit("Only one of the %d distances gave a measurement, which is not enough to trust. "
+                         "Nothing was written." % len(distances))
     exp = np.array([p[0] for p in pairs])
     got = np.array([p[1] for p in pairs])
     if len(pairs) >= 2 and exp.max() / exp.min() > 1.3:
@@ -147,8 +213,9 @@ def calibrate_size(feed, cfg: dict, name: str, distances: list) -> None:
     else:
         offset = float(cam_cfg.get("size_offset_px", 0.0))
         scale = float(np.mean(exp / np.maximum(got - offset, 1.0)))
-        print("  (the distances are too alike to fit both corrections: keeping size_offset_px = %.2f. "
-              "Use two or more, the farthest at least 1.5 times the nearest)" % offset)
+        print("  (%s: keeping size_offset_px = %.2f and fitting only the scale. For both, "
+              "use two or more distances, the farthest at least 1.5 times the nearest)"
+              % ("one distance" if len(pairs) == 1 else "the distances are too alike", offset))
     if not (0.7 < scale < 1.4) or not (-1.5 < offset < 3.0):
         raise SystemExit("Corrections look wrong (scale %.2f, offset %.2f px). Check the distances, the ball diameter "
                          "in config/dodge.yaml and the camera's lens settings. Nothing was written." % (scale, offset))

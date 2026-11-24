@@ -49,7 +49,7 @@ cameras:
     # exposure_100us: exposure in units of 0.1 ms (30 = 3 ms; short, so a thrown ball does not smear).
     # gain: null leaves the camera's own, which is far too dark indoors at 3 ms. Do not edit these by hand:
     # tools/tune_exposure.py finds exposure, gain and white balance for the room and writes config/calib/exposure.yaml.
-    # controls: any other v4l2-ctl control by name, e.g. {gamma: 120}.
+    # wb_temperature: a fixed colour temperature in kelvin, or auto. controls: any other v4l2-ctl control by name, e.g. {gamma: 120}.
     capture: {width: 1280, height: 720, fps: 120, exposure_100us: 30, gain: null, auto_exposure: false, wb_temperature: 4600, controls: {}}
     max_process_fps: 60               # raise toward the camera rate once CPU headroom is measured
     model: pinhole
@@ -163,4 +163,3 @@ node:
   event_buffer_s: 1.5
   event_post_s: 1.0
   event_dir: data/events
-  share_frames_hz: 10.0             # rear-camera JPEGs passed on for survivor identification (0 = off); only while something subscribes

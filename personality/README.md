@@ -47,9 +47,10 @@ The start line teaches the signal the survivor detector looks for (both arms rai
 | `prompt.md` | The personality itself: Gemini's system prompt for missions. Edit this to change Pupper. |
 | `run.py` | Runs the lab's server, kiosk or text chat with the mission prompt and voice. |
 | `start.sh`, `stop.sh` | Start and stop Pupper with this personality, on the robot. |
+| `mission_feed.py` | Mission events for Gemini: `POST /mission/event` in, `WS /ws/mission` out. `run.py` adds it to the lab's server. |
 | `test_personality.py` | Desk checks: no robot, no ROS, no Gemini. |
 
-Nothing in `gemini_pupper` is changed. Its server reads its prompt from one hard-coded path, so `run.py` imports that server and points the path at `prompt.md` before it starts; the kiosk gets the voice the same way. `lab/prompt.md` (the lab's Pupper) is untouched and still what `gemini_pupper/robot/start.sh` runs.
+Nothing in `gemini_pupper/robot` or `lab` is changed (the one change in that repo is the web app's mission-event listener, below). Its server reads its prompt from one hard-coded path, so `run.py` imports that server and points the path at `prompt.md` before it starts; the kiosk gets the voice the same way. `lab/prompt.md` (the lab's Pupper) is untouched and still what `gemini_pupper/robot/start.sh` runs.
 
 ## Try it
 
@@ -77,15 +78,27 @@ On the robot (sar-pupper cloned next to gemini_pupper in the Pi's home; Pupper o
 
 After changing `prompt.md`: run `python3 personality/test_personality.py`, try it in text, then reconnect in the app. No restart.
 
-## Not wired yet
+## Mission events
 
-**Mission events do not reach Gemini.** The web app sends Gemini only the microphone and the camera, so nothing can hand it a `MISSION EVENT:` line during a mission. Until that exists, the call-outs work in the text chat and nowhere else; the spoken parts (start, stand down, conversation, stop, the arrival questions if you cue them) work now. The hook is "Getting the announcement to Gemini" in the survivor plan, now built in its Phase 5 because the arrival announcement depends on it. What it has to do:
+**Wired on 2026-11-23, not yet heard on the robot.** The path is:
 
-- Send one user text turn per event: `MISSION EVENT: <name> [key=value ...]`, e.g. `MISSION EVENT: locked range=3`.
-- Names are the ones in the table above. `test_personality.py` fails if an event in its list has no call-out, so add new events in both places.
-- The smallest version is in the web app: listen on the robot server for events and call the Live session's text input. That means editing `gemini_pupper/web/` and rebuilding, which this folder deliberately does not do.
+```
+/survivor/event, /dodge/event          (ROS, on the robot)
+  -> survivor-id/robot/event_bridge.py  POST /mission/event   {"event": "arrived", "details": {"range": 0.7}}
+  -> mission_feed.py (added to the lab's server by run.py)    WS /ws/mission: "MISSION EVENT: arrived range=0.7"
+  -> gemini_pupper/web/services/geminiLive.ts                 session.sendRealtimeInput({ text })
+  -> Gemini says the event's call-out
+```
 
-The bark on lock and arrival (`dog_bark.wav`, survivor plan) needs no cloud and stays the first signal. Gemini's words follow a second or two later.
+- `mission_feed.py` builds every line itself, from an event name and details that must be plain words and numbers. Free text is refused (HTTP 422): a mission event is an instruction to Gemini's voice, so nothing a program was handed from elsewhere goes through. The server listens on 127.0.0.1 only.
+- The bridge decides what is worth saying: not `candidate`, not a dodge the dodge node only reported in dry run, not the same event twice within a few seconds, and nothing from the survivor nodes while their motion is off.
+- The web app change is the one edit made inside `gemini_pupper` (survivor plan, decision S9). It needs `web/dist` rebuilt on the robot: `bash ~/gemini_pupper/robot/setup.sh`. Against the lab's own server, which has no feed, the app behaves as before.
+- Names are the ones in the table above. `test_personality.py` fails if an event in its list has no call-out or a name the feed would refuse, so add new events in both places.
+- Try it by hand, with the app connected: `curl -s -X POST localhost:8000/mission/event -H 'Content-Type: application/json' -d '{"event": "locked", "details": {"range": 3}}'`. `GET /mission/recent` shows what was sent and how many apps are listening.
+
+What is checked: the feed's routes on a server shaped like the lab's (in `test_personality.py`), and that the web app type-checks and builds. What is not: a live Gemini session speaking an event it was sent this way.
+
+The bark on lock and arrival (`dog_bark.wav`) needs no cloud and stays the first signal. Gemini's words follow a second or two later.
 
 ## Decisions made here that touch the other plans
 

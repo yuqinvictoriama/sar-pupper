@@ -10,6 +10,7 @@ each command imports the lab's own file (robot/gemini_chat.py, server.py,
 kiosk.py) and changes one value in it before it runs.
 
   server   server.PROMPT_FILE      lab/prompt.md  ->  personality/prompt.md
+           + mission_feed.install  adds /mission/event and /ws/mission (mission events for Gemini)
   kiosk    kiosk.SETTINGS          adds voiceName (the lab leaves the app's default, Puck)
   chat     gemini_chat.prompt_text reads personality/prompt.md
 
@@ -28,6 +29,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PROMPT_FILE = HERE / "prompt.md"
+sys.path.insert(0, str(HERE))
+import mission_feed  # noqa: E402
 
 # The Gemini voice Pupper speaks with on a mission. The web app offers Puck,
 # Charon, Kore, Fenrir and Zephyr. Google describes Charon as "Informative" and
@@ -65,6 +68,7 @@ def server() -> None:
     import server as lab_server  # needs ROS, like the lab's server
 
     lab_server.PROMPT_FILE = PROMPT_FILE  # system_prompt() reads this each time the app connects
+    mission_feed.install(lab_server.app)  # POST /mission/event -> WS /ws/mission -> the app -> Gemini
     uvicorn.run(lab_server.app, host=os.environ.get("HOST", "127.0.0.1"), port=int(os.environ.get("PORT", "8000")))
 
 

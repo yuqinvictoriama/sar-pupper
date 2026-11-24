@@ -10,8 +10,17 @@ automatic exposure. The price is a dark picture indoors unless the gain is
 raised to match. This tool looks at the picture and finds the settings: it
 keeps the exposure short (3 ms unless told otherwise) and raises the gain until
 the picture is bright enough; only if the gain runs out does it lengthen the
-exposure. It then locks the white balance the camera chose, so the ball's
-colour does not drift, and writes everything to config/calib/exposure.yaml.
+exposure. It then fixes the white balance, so the ball's colour does not drift:
+it tries the camera's whole range of colour temperatures and keeps the one
+that leaves the picture with no yellow or blue cast. Everything is written to
+config/calib/exposure.yaml.
+
+White balance options:
+    --white-card   judge the cast on a sheet of white paper you hold to fill the
+                   middle of the picture (most accurate; use it if the room
+                   itself is strongly coloured)
+    --wb 3200      use this colour temperature, no measuring
+    --keep-wb      leave the white balance as configured
 
 Run it in the room and lighting you will throw in, with the camera looking at
 the room (not at a lamp or a window), and again if the lighting changes much.
@@ -24,7 +33,6 @@ import argparse
 import math
 import os
 import shutil
-import subprocess
 import time
 
 from _common import ROOT, cv2, load_config, np, run_tool
@@ -112,27 +120,73 @@ class Tuner:
         self.set(control, best[0])
         return best
 
-    def lock_white_balance(self, keep: bool) -> int | None:
-        fallback = self.cfg.get("capture", {}).get("wb_temperature")
-        if keep or not (self.c_wb and self.c_wb_auto):
-            return fallback
-        info = self.controls[self.c_wb]
-        self.set(self.c_auto, 3)                    # let the camera see a normally exposed picture while it decides
-        self.set(self.c_wb_auto, 1)
-        self.frames(3, 2.0)
-        try:
-            out = subprocess.run(["v4l2-ctl", "-d", self.device, "-C", self.c_wb], capture_output=True, text=True, timeout=5).stdout
-            value = int(out.strip().split(":")[-1])
-        except (ValueError, IndexError, subprocess.TimeoutExpired, OSError):
-            value = None
-        if value is None or not (info.get("min", 0) <= value <= info.get("max", 10 ** 6)):
-            value = fallback if fallback is not None else info.get("default")
-        self.set(self.c_wb_auto, 0)
-        if value is not None:
-            self.set(self.c_wb, value)
-        return value
+    def colour_cast(self, card: bool = False) -> float:
+        """log(red / blue) of the picture's mid-tones: 0 is neutral, above 0 yellow-orange, below 0 blue.
 
-    def tune(self, target: float, prefer_ms: float, max_ms: float, keep_wb: bool) -> dict:
+        With card=True only the middle of the picture counts (a white sheet held there).
+        """
+        vals = []
+        for f in self.frames(4, 0.35):
+            if card:
+                h, w = f.shape[:2]
+                f = f[int(0.35 * h):int(0.65 * h), int(0.35 * w):int(0.65 * w)]
+            px = f[::4, ::4].reshape(-1, 3).astype(np.float32)
+            usable = (px.mean(axis=1) > 40) & (px.max(axis=1) < 240)     # not noise, not clipped
+            if usable.sum() > 0.02 * len(px):
+                px = px[usable]
+            blue, _green, red = px.mean(axis=0)
+            vals.append(math.log(max(float(red), 1.0) / max(float(blue), 1.0)))
+        return float(np.median(vals))
+
+    def choose_white_balance(self, mode: str, card: bool) -> dict:
+        """Fix the white balance. mode: "measure", "keep", or a colour temperature.
+
+        Returns {"value": kelvin | "auto" | None, "cast": log(red/blue) with that value, "note": str}.
+        Reading back what the camera's automatic white balance picked is not
+        reliable (many cameras just report their default), so the picture itself
+        is the judge: every temperature the camera offers is tried and the one
+        with the most neutral picture kept.
+        """
+        fallback = self.cfg.get("capture", {}).get("wb_temperature")
+        if mode == "keep" or not (self.c_wb and self.c_wb_auto):
+            return {"value": fallback, "cast": self.colour_cast(card), "note": ""}
+        info = self.controls[self.c_wb]
+        lo, hi, step = info.get("min", 2800), info.get("max", 6500), max(1, info.get("step", 1))
+        if mode != "measure":
+            value = int(min(hi, max(lo, int(mode))))
+            self.set(self.c_wb_auto, 0)
+            self.set(self.c_wb, value)
+            return {"value": value, "cast": self.colour_cast(card), "note": ""}
+        self.set(self.c_wb_auto, 1)                     # the camera's own automatic choice, as a yardstick
+        self.frames(3, 1.5)
+        cast_auto = self.colour_cast(card)
+        self.set(self.c_wb_auto, 0)
+
+        def cast_at(kelvin: float):
+            value = int(min(hi, max(lo, lo + round((kelvin - lo) / step) * step)))
+            self.set(self.c_wb, value)
+            return value, self.colour_cast(card)
+        tried = dict(cast_at(k) for k in np.linspace(lo, hi, 8))
+        best = min(tried, key=lambda k: abs(tried[k]))
+        near = sorted(tried)
+        i = near.index(best)
+        left, right = near[max(0, i - 1)], near[min(len(near) - 1, i + 1)]
+        tried.update(dict(cast_at(k) for k in np.linspace(left, right, 7)[1:-1]))
+        best = min(tried, key=lambda k: abs(tried[k]))
+        note = ""
+        if abs(tried[best]) > abs(cast_auto) + 0.12:    # the fixed settings cannot get as neutral as automatic does
+            self.set(self.c_wb_auto, 1)
+            return {"value": "auto", "cast": cast_auto,
+                    "note": "No fixed setting gets rid of the colour cast in this light, so white balance is left on "
+                            "automatic. Colours can drift a little as the scene changes."}
+        self.set(self.c_wb, best)
+        if best in (lo, hi) and abs(tried[best]) > 0.15:
+            note = ("This is the end of the camera's range and a %s tint remains: the room's light is %s than the camera "
+                    "can correct. Colour calibration absorbs a mild tint." % (
+                        ("yellow", "warmer") if tried[best] > 0 else ("blue", "cooler")))
+        return {"value": int(best), "cast": tried[best], "note": note}
+
+    def tune(self, target: float, prefer_ms: float, max_ms: float, wb_mode: str = "measure", card: bool = False) -> dict:
         e_info = self.controls[self.c_exp]
         e_min, e_max = e_info.get("min", 1), e_info.get("max", 5000)
         frame_limit = int(0.9 * 10000.0 / self.fps)                 # exposure must fit inside one frame
@@ -141,7 +195,6 @@ class Tuner:
         g_info = self.controls.get(self.c_gain, {}) if self.c_gain else {}
         g_min, g_max = g_info.get("min", 0), g_info.get("max", 0)
 
-        wb = self.lock_white_balance(keep_wb)
         self.set(self.c_auto, 1)                                    # manual from here on
         if "exposure_dynamic_framerate" in self.controls:
             self.set("exposure_dynamic_framerate", 0)
@@ -158,14 +211,25 @@ class Tuner:
                 gain, level = self.lowest_reaching(self.c_gain, g_min, g_max, target)
             if level < 0.85 * target and e_cap > e_pref:            # gain alone is not enough: lengthen the exposure
                 exposure, level = self.lowest_reaching(self.c_exp, e_pref, e_cap, target)
-        final = self.frames(40)
+        cast_before = self.colour_cast(card)
+        wb = self.choose_white_balance(wb_mode, card)                # judged on a properly exposed picture
+        final = self.frames(40, 0.3)
         per_frame = np.array([brightness(f) for f in final])
         level = float(np.median(per_frame))
         flicker = float((np.percentile(per_frame, 95) - np.percentile(per_frame, 5)) / max(level, 1.0))
         clipped = float((cv2.cvtColor(final[-1], cv2.COLOR_BGR2GRAY) >= 250).mean())
-        return {"exposure_100us": int(exposure), "gain": int(gain) if self.c_gain else None, "wb_temperature": wb,
+        return {"exposure_100us": int(exposure), "gain": int(gain) if self.c_gain else None, "wb_temperature": wb["value"],
+                "cast": wb["cast"], "cast_before": cast_before, "wb_note": wb["note"],
                 "level": level, "flicker": flicker, "clipped": clipped, "gain_max": g_max, "exposure_cap": e_cap,
                 "frame": final[-1]}
+
+
+def describe_cast(cast: float) -> str:
+    """Plain words for log(red / blue)."""
+    size = "none to speak of" if abs(cast) < 0.08 else ("slight " if abs(cast) < 0.2 else ("clear " if abs(cast) < 0.45 else "strong "))
+    if abs(cast) < 0.08:
+        return size
+    return "%s%s (red is %.1f times blue)" % (size, "yellow" if cast > 0 else "blue", math.exp(cast))
 
 
 def smear_note(cam_cfg: dict, exposure_100us: int, ball_d: float) -> str:
@@ -182,14 +246,18 @@ def tune_camera(cfg: dict, name: str, args) -> bool:
     print("\n%s" % name)
     tuner = Tuner(name, cam_cfg)
     try:
-        r = tuner.tune(args.target, args.exposure_ms, args.max_exposure_ms, args.keep_wb)
+        if args.white_card:
+            input("  Hold a sheet of white paper so it fills the middle of %s's picture, lit by the room's light "
+                  "(not in your shadow). Keep it there until this camera is done. Press Enter..." % name)
+        mode = "keep" if args.keep_wb else (str(args.wb) if args.wb else "measure")
+        r = tuner.tune(args.target, args.exposure_ms, args.max_exposure_ms, mode, args.white_card)
     finally:
         tuner.close()
     capture = {"auto_exposure": False, "exposure_100us": r["exposure_100us"]}
     if r["gain"] is not None:
         capture["gain"] = r["gain"]
     if r["wb_temperature"] is not None:
-        capture["wb_temperature"] = int(r["wb_temperature"])
+        capture["wb_temperature"] = r["wb_temperature"] if r["wb_temperature"] == "auto" else int(r["wb_temperature"])
     path = save_calib("exposure", {"cameras": {name: {"capture": capture}}})
     snap_dir = os.path.join(ROOT, "data", "snapshots")
     os.makedirs(snap_dir, exist_ok=True)
@@ -198,9 +266,17 @@ def tune_camera(cfg: dict, name: str, args) -> bool:
     print("  exposure %.1f ms, gain %s%s, white balance %s -> picture averages %.0f of 255" % (
         r["exposure_100us"] / 10.0, r["gain"] if r["gain"] is not None else "(no control)",
         " (the camera's maximum)" if r["gain"] is not None and r["gain"] >= r["gain_max"] else "",
-        ("%d K" % r["wb_temperature"]) if r["wb_temperature"] is not None else "left alone", r["level"]))
+        "left alone" if r["wb_temperature"] is None else
+        ("automatic" if r["wb_temperature"] == "auto" else "%d K" % r["wb_temperature"]), r["level"]))
+    print("  colour cast: %s before, %s now" % (describe_cast(r["cast_before"]), describe_cast(r["cast"])))
+    if r["wb_note"]:
+        print("  note: " + r["wb_note"])
     print("  " + smear_note(cam_cfg, r["exposure_100us"], cfg["ball"]["diameter_m"]))
     print("  written to %s; snapshot %s" % (path, snap))
+    colour_file = os.path.join(os.path.dirname(path), name + "_color.yaml")
+    if os.path.exists(colour_file):
+        print("  The colour calibration for %s was made with the old settings and no longer fits. Redo it:\n"
+              "      python3 tools/calibrate_color.py %s" % (name, name))
     ok = True
     if r["exposure_100us"] > round(args.exposure_ms * 10) and r["level"] >= 0.6 * args.target:
         print("  note: the gain alone was not enough, so the exposure is longer than the %.0f ms asked for. Fast balls\n"
@@ -228,6 +304,9 @@ def main() -> None:
     ap.add_argument("--exposure-ms", type=float, default=3.0, help="exposure to keep if the light allows (default 3)")
     ap.add_argument("--max-exposure-ms", type=float, default=8.0, help="longest exposure it may fall back to (default 8)")
     ap.add_argument("--keep-wb", action="store_true", help="leave the white balance at the configured value")
+    ap.add_argument("--wb", type=int, default=0, metavar="KELVIN", help="use this colour temperature instead of measuring")
+    ap.add_argument("--white-card", action="store_true",
+                    help="judge the colour cast on a white sheet held in the middle of the picture")
     ap.add_argument("--config", default=None)
     args = ap.parse_args()
     if not shutil.which("v4l2-ctl"):

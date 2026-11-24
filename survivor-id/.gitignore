@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+# recordings made on the robot, and pictures the tools write
+data/
+try_photos_out/
+# the compiled pose model is fetched by tools/download_model.sh
+models/*.hef
+models/*.pt

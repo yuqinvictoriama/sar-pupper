@@ -1,0 +1,142 @@
+# Survivor identification configuration.
+# Units: metres, seconds, degrees. Frame: base_link (x forward, y left, z up).
+# Start values: from plan.md, and for the gesture from what the pose model reads in the
+# reference photo. They are meant to be changed after recording on the robot (DEPLOY.md,
+# stage 3). Files in config/calib/*.yaml are merged over this one.
+#
+# Camera lens models and mounting poses are NOT here: they are read from
+# ../projectile-dodging/config/dodge.yaml (and its calib/ files), so the two
+# components share one calibration.
+
+person:                      # the adult the range estimate assumes (plan, "The signal")
+  torso_m: 0.48              # shoulder line to hip line
+  head_above_shoulders_m: 0.20   # ear level above the shoulder line: scale when the hips are hidden
+  height_m: 1.70             # last resort for range: the whole box
+
+cameras:
+  fisheye: {wide: equirect, equirect_width: 700, equirect_hfov_deg: 220.0, rear: false}
+  elp_left: {wide: frame, rear: true, topic: /elp_left/image/compressed}
+  elp_right: {wide: frame, rear: true, topic: /elp_right/image/compressed}
+
+detector:
+  model: models/yolov8s_pose.hef
+  score_threshold: 0.35      # person box confidence
+  iou_threshold: 0.6
+  max_people: 8
+
+budget:
+  inferences_per_s: 25.0     # measure with tools/bench_hailo.py (plan, Phase 0 item 1), then set
+  cycle_hz: 10.0             # one wide pass per cycle, cameras in rotation: each gets cycle_hz / 3
+  zoom_skip_px: 200          # a person at least this tall in the model's 640 px input needs no zoom pass
+  patch_px: 384              # zoom patch size before it is letterboxed to the model input
+  patch_margin: 0.25         # extra view around the person's box
+  patch_margin_top: 0.45     # more above the head, where the hands go
+  patch_max_px_per_deg: 9.0  # do not magnify beyond this (the fisheye has about 4 real px per degree)
+
+gesture:                     # plan, Pipeline step 7 (and "What was built", items 3-6)
+  kpt_conf: 0.4              # a: joint counts as found
+  kpt_conf_weak: 0.1         # half-found: enough to say a hidden arm is hanging down, not enough to call it raised
+  # b-e are in torso lengths (shoulder to hip, about 0.48 m). In the reference photo (both arms up
+  # in a relaxed V) the model reads: wrists 0.37-0.40 above the ears, elbows 0.28-0.30 above the
+  # shoulders, arm segments 35-39 deg from vertical, shoulder-to-wrist 0.80-0.83.
+  # tests/test_survivor.py keeps that photo's joints as a check that it still counts.
+  wrist_above_head: 0.25     # b: wrist above eye/ear level
+  elbow_above_shoulder: 0.15 # c
+  arm_max_tilt_deg: 50.0     # d: shoulder-to-wrist within this of straight up
+  segment_max_tilt_deg: 65.0 # d: upper arm and forearm each within this (elbows are noisy at range)
+  arm_min_length: 0.5        # e: shoulder-to-wrist (a bent or foreshortened arm reads short)
+  min_range_m: 2.0           # f: closer than this, reaching toward the robot looks like the signal
+  max_range_m: 5.0           # f: Tier A is 2-4 m; the extra metre allows for range error
+  profile_shoulders: 0.35    # shoulders closer together than this = side-on, far arm hidden
+  window_s: 0.8              # step 8: confirm over this long...
+  min_frames: 5              # ...with at least this many readings...
+  min_fraction: 0.7          # ...of which this share show the signal
+
+tracker:
+  gate_deg: 15.0             # a detection this far in bearing from a track can still be the same person
+  gate_range_ratio: 1.8      # ...and this far in range (factor)
+  confirm_hits: 2
+  forget_s: 4.0              # drop an ordinary track unseen this long
+  tentative_forget_s: 1.0
+  visible_s: 1.0             # "in view" = seen within this
+  velocity_gain: 0.25        # how fast a track picks up a walking person's sideways speed
+  predict_s: 0.5             # ... and how far ahead that speed is trusted
+  max_speed: 2.0             # m/s
+  smooth: 0.5                # how fast a track's position follows new detections (0-1)
+  appearance_bins: [12, 6]   # hue x saturation histogram of the torso and thighs
+  appearance_max: 0.45       # histogram distance (0 same, 1 unrelated) above which it is someone else
+  appearance_blend: 0.1
+  reacquire_gate_deg: 45.0   # wider search for a survivor who was out of view
+  reacquire_range_ratio: 2.5
+  ambiguous_ratio: 1.25      # two candidates this close in match quality: wait for a clearer view
+  cmd_tracking_factor: 1.0   # real speed / commanded speed, from projectile-dodging/tools/step_response.py
+  drift_fraction: 0.2        # dead-reckoning error per metre walked (plan estimate 15-25 %)
+
+lock:
+  lost_after_s: 1.0          # survivor unseen this long -> "lost"
+  look_max_range_m: 4.5      # only turn to look at cut-off people within this
+  seam_deg: 25.0             # "straight behind": within this of 180 deg, where a person straddles the two rear cameras
+
+mission:                     # plan, "Reaching the survivor"
+  cmd_topic: /survivor_cmd_vel
+  rate_hz: 20.0
+  drive: direct              # direct = walk straight at the survivor; route = route mapping drives until handover_m
+  handover_m: 1.5
+  face_deg: 30.0             # more than this off the nose: turn in place first
+  turn_rate: 1.5             # rad/s, turning in place (the policy accepts 2.0)
+  yaw_kp: 2.0                # rad/s per rad of bearing while walking
+  speed_far: 0.6             # m/s beyond slow_range_m
+  speed_near: 0.3
+  slow_range_m: 2.0
+  stop_m: 0.7
+  hard_stop_box_frac: 0.85   # person's box this tall in the fisheye view = close enough, whatever the range says
+  backoff_m: 0.5             # survivor closer than this: step back
+  backoff_speed: 0.2
+  stay_leave_m: 1.2          # survivor further than this for stay_leave_s: walk up again
+  stay_leave_s: 1.0
+  stall_s: 1.5               # commanded forward this long with no progress = blocked (only when terrain agility is not running)
+  stall_speed: 0.3
+  stall_progress_m: 0.15
+  detour_back_m: 0.3
+  detour_back_speed: 0.2
+  detour_side_speed: 0.3
+  detour_widths_m: [0.5, 1.0, 2.0]
+  pin_reached_m: 0.5         # this close to the remembered position and still no survivor: search
+  search_wait_s: 1.0
+  search_turn_rate: 0.8
+  search_radius_m: 1.0
+  look_rate: 1.5             # rad/s for turn-to-look
+  look_done_deg: 25.0
+  look_max_s: 3.0
+  look_cooldown_s: 10.0
+  prepare_retry_s: 6.0
+  status_stale_s: 1.0
+  joystick_topics: [/teleop_cmd_vel, /joystick_cmd_vel]
+  terrain_pause_states: [ALIGN, REGISTER, STEP_OVER, VERIFY]   # terrain agility is crossing: keep still and wait
+  terrain_stale_s: 2.0
+
+arrival:
+  hold_s: 0.3
+  clear_air_s: 3.0           # no dodge for this long before the bounce; give up waiting after clear_air_wait_s
+  clear_air_wait_s: 3.0
+  tricks: [bounce, push_up]  # first one installed on the robot is played
+  level_tilt_deg: 20.0
+  walk_ready_s: 4.5          # gemini_walk needs about 4.2 s after it is activated
+  trick_timeout_s: 45.0      # give up waiting for the trick to report it has finished
+  bark: ~/follow_me_pupper/robot/sounds/dog_bark.wav
+
+robot_server:
+  url: http://127.0.0.1:8000
+  timeout_s: 4.0
+
+node:
+  imu_topic: /imu_sensor_broadcaster/imu
+  eyes_port: 5556            # the "where people are" feed Gemini's face reads; 0 = off
+  status_hz: 5.0
+  debug_image_hz: 2.0        # annotated view on /survivor/debug/compressed; 0 = off
+
+events:                      # robot/event_bridge.py: which events Gemini is told about
+  skip: [candidate, cannot_dodge, abort, recovered]    # the prompt says nothing for these
+  min_gap_s: {dodge: 10.0, blocked: 20.0, lost: 8.0, reacquired: 8.0}   # same event again sooner than this: not repeated
+  default_gap_s: 2.0
+  announce_dry_run: false    # with motion off Pupper is not coming, so Gemini is not told "locked"

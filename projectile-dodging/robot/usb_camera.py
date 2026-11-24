@@ -201,8 +201,8 @@ def apply_controls(device: str, cap_cfg: dict, cap=None, log=print) -> None:
             sets.append(("gain", gain))
         n = control_name(names, *WB_AUTO)
         if n and wb is not None:
-            sets.append((n, 0))
-        if wb is not None and "white_balance_temperature" in names:
+            sets.append((n, 1 if wb == "auto" else 0))
+        if wb is not None and wb != "auto" and "white_balance_temperature" in names:
             sets.append(("white_balance_temperature", wb))
         for name, value in (cap_cfg.get("controls") or {}).items():   # anything else, by its v4l2-ctl name
             if name in names:
@@ -223,7 +223,9 @@ def apply_controls(device: str, cap_cfg: dict, cap=None, log=print) -> None:
         cap.set(cv2.CAP_PROP_EXPOSURE, float(exposure))
     if gain is not None:
         cap.set(cv2.CAP_PROP_GAIN, float(gain))
-    if wb is not None:
+    if wb == "auto":
+        cap.set(cv2.CAP_PROP_AUTO_WB, 1)
+    elif wb is not None:
         cap.set(cv2.CAP_PROP_AUTO_WB, 0)
         cap.set(cv2.CAP_PROP_WB_TEMPERATURE, float(wb))
 
