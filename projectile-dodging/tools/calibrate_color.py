@@ -12,10 +12,12 @@ Colour (do this first, for each camera, in the room and lighting you will run in
 
 Size (afterwards; makes the range estimate right):
 
-    python3 tools/calibrate_color.py elp_left --distance 1.0 2.0 3.0
+    python3 tools/calibrate_color.py elp_left --distance 0.5 1 1.5 2
 
   You hold the ball still at each distance from the lens (tape measure), and
-  the apparent-size corrections are written to the same file.
+  the apparent-size corrections are written to the same file. Any two or more
+  distances work if the farthest is at least 1.5 times the nearest; go as far
+  as the room allows (1 2 3 if you have 3 m).
 
 The ELP cameras are opened directly, so stop the dodge node first. The fisheye
 needs the robot stack running.
@@ -145,7 +147,8 @@ def calibrate_size(feed, cfg: dict, name: str, distances: list) -> None:
     else:
         offset = float(cam_cfg.get("size_offset_px", 0.0))
         scale = float(np.mean(exp / np.maximum(got - offset, 1.0)))
-        print("  (one distance only: keeping size_offset_px = %.2f; use two or more distances to fit it)" % offset)
+        print("  (the distances are too alike to fit both corrections: keeping size_offset_px = %.2f. "
+              "Use two or more, the farthest at least 1.5 times the nearest)" % offset)
     if not (0.7 < scale < 1.4) or not (-1.5 < offset < 3.0):
         raise SystemExit("Corrections look wrong (scale %.2f, offset %.2f px). Check the distances, the ball diameter "
                          "in config/dodge.yaml and the camera's lens settings. Nothing was written." % (scale, offset))

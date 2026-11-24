@@ -174,11 +174,21 @@ settings are still the generic defaults. Stage 5 fits them to this room.
 Do 4c first: colour calibration is only valid for the exposure it was made with.
 
 ```bash
-python3 tools/calibrate_color.py elp_left                     # follow the two prompts
-python3 tools/calibrate_color.py elp_left --distance 1 2 3    # ball held at 1, 2, 3 m from that lens
+python3 tools/calibrate_color.py elp_left                          # follow the two prompts
+python3 tools/calibrate_color.py elp_left --distance 0.5 1 1.5 2   # ball held at 0.5, 1, 1.5, 2 m from that lens
 ```
 
-Repeat for `elp_right` and `fisheye` (for the fisheye use `--distance 0.75 1.5 2.5`).
+Repeat both for `elp_right` and `fisheye`, with the same distances. All of it
+fits in 2 m of clear floor around the robot. Distances are measured from the
+lens of the camera being calibrated to the centre of the ball, with the ball
+roughly in the middle of that camera's picture (for a rear camera that is
+behind the robot and out to its side, not straight back).
+
+The distances are yours to choose: any list of two or more works, as long as
+the farthest is at least 1.5 times the nearest. Farther is better, because
+that is where the ball is smallest and the correction matters most. With more
+room, `--distance 1 2 3` is the better set.
+
 Then check the result:
 
 ```bash
@@ -288,6 +298,16 @@ Start with the easy directions and work toward the hard one:
 2. from **behind** and the rear diagonals;
 3. the front diagonals;
 4. straight from the **front** – the weakest direction (see `plan.md`).
+
+**In a small room** (about 2 m clear around the robot) throw from 2 m instead.
+A lob's time in the air depends on how high it goes, not how far, so keep the
+same arc: released at waist height, peaking around head height. In simulation
+(`python3 tools/sim_report.py --dist 1.8 2.0`) 2 m lobs are dodged about as
+often as 3–4 m ones from the sides and diagonals, more often from the front
+(the fisheye sees the whole flight), and less often from straight behind
+(about 2 in 3: the ball climbs out of the top of the rear cameras' view). Flat
+or hard throws from 2 m leave no time and are not expected to be dodged. The
+same applies to the recordings in stage 6.
 
 To start the stack already armed: `bash robot/start.sh --armed`. With Gemini
 Pupper as well: `bash robot/start.sh --gemini` (add `--kiosk` for the on-robot
