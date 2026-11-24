@@ -34,7 +34,7 @@ The mission nodes act in milliseconds and Gemini takes seconds, so Gemini never 
 | `dodge` | "Something flew past me. I'm okay." + the refrain that fits | `/dodge/event` |
 | `lost` | "I can't see you right now. Stay where you are. Still coming." | `/survivor/event` |
 | `reacquired` | "I see you again. Still coming." | `/survivor/event` |
-| `arrived` | The arrival steps: says it is here and staying, asks their name, "Are you hurt?", "Can you walk?", "Is anyone else here who needs help?", then reports to the team | `/survivor/event` |
+| `arrived` | Pupper bounces on the spot (a reflex, started by the survivor node, not by Gemini). Gemini does the arrival steps: says it is here and staying, asks their name, "Are you hurt?", "Can you walk?", "Is anyone else here who needs help?", then reports to the team | `/survivor/event` |
 | `cancelled` | "Team: rescue cancelled. Standing by." | `/survivor/event` |
 | fall | "I've fallen, and I can't get up alone. Could someone set me on my feet? I'm still here." | `robot_status`, as in the lab |
 
@@ -79,7 +79,7 @@ After changing `prompt.md`: run `python3 personality/test_personality.py`, try i
 
 ## Not wired yet
 
-**Mission events do not reach Gemini.** The web app sends Gemini only the microphone and the camera, so nothing can hand it a `MISSION EVENT:` line during a mission. Until that exists, the call-outs work in the text chat and nowhere else; the spoken parts (start, stand down, conversation, stop, the arrival questions if you cue them) work now. The hook is the "Gemini narration and tools" step in Phase 7 of the survivor plan. What it has to do:
+**Mission events do not reach Gemini.** The web app sends Gemini only the microphone and the camera, so nothing can hand it a `MISSION EVENT:` line during a mission. Until that exists, the call-outs work in the text chat and nowhere else; the spoken parts (start, stand down, conversation, stop, the arrival questions if you cue them) work now. The hook is "Getting the announcement to Gemini" in the survivor plan, now built in its Phase 5 because the arrival announcement depends on it. What it has to do:
 
 - Send one user text turn per event: `MISSION EVENT: <name> [key=value ...]`, e.g. `MISSION EVENT: locked range=3`.
 - Names are the ones in the table above. `test_personality.py` fails if an event in its list has no call-out, so add new events in both places.
@@ -91,8 +91,8 @@ The bark on lock and arrival (`dog_bark.wav`, survivor plan) needs no cloud and 
 
 Each is a line or two in `prompt.md` and easy to reverse.
 
-1. **No tricks on duty, so no sitting beside the survivor.** A trick hands the legs to a trick controller, and dodging only works in the walking controller. Pupper stays standing next to the survivor and can still dodge. Sitting would read as "I'm staying", but it would be defenceless.
-2. **Survivor plan S4 (what Pupper does on arrival):** this prompt picks "hand over to Gemini to talk", after the bark.
+1. **No tricks on duty, so no sitting beside the survivor – with one exception, the arrival bounce.** A trick hands the legs to a trick controller, and dodging only works in the walking controller. Pupper stays standing next to the survivor and can still dodge. Sitting would read as "I'm staying", but it would be defenceless. The exception (your decision, 2026-11-23): on arrival the survivor node plays a short bounce on the spot. Pupper cannot dodge for those seconds, then returns to the walking controller. Gemini itself still never calls a trick on duty.
+2. **Survivor plan S4 (what Pupper does on arrival) – decided 2026-11-23:** Pupper announces through Gemini Live and bounces up and down on the spot, feet on the floor. The prompt's arrival steps are the announcement; the bounce belongs to the survivor node.
 3. **Follow mode is off on duty.** The survivor plan does not start the person followers in the mission launch. The prompt tells Gemini not to use the tool. The tool is still registered; removing it or re-pointing it at the survivor tracker belongs to the mission launch.
 4. **"Stop" and "lie down" work for anyone, on duty or off.** Both are safe states, and the motors need a way to rest.
 5. **The kiosk remembers the voice.** The app keeps its settings in the kiosk browser's storage, so after a mission the lab's Pupper also speaks as Charon. To put it back, run `python3 personality/run.py kiosk ~/.config/gemini-pupper/api_key --voice Puck` while the lab's kiosk is on screen, wait for "kiosk: settings applied", then press Ctrl-C.
