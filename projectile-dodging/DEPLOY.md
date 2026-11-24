@@ -73,7 +73,7 @@ SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 ## 2. Check the code runs (no robot needed)
 
 ```bash
-python3 -m unittest discover -s tests     # expect: Ran 51 tests ... OK
+python3 -m unittest discover -s tests     # expect: Ran 52 tests ... OK
 python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7    # simulated 2 m throws; takes about a minute on the Pi
 ```
 
@@ -294,13 +294,21 @@ swapped, redo stage 4. If bearings are mirrored or upside down, fix `roll_deg`.
 `view.py --mask` shows exactly which pixels count as ball; nothing else in the
 room should light up.
 
-Timing (the robot must be standing still or on its stand, looking at something with detail):
+Timing. This refines each camera's timestamps by a few hundredths of a second;
+if it will not work, skip it and move on.
 
 ```bash
-python3 tools/measure_latency.py elp_left --write     # tap the robot firmly 5 times
+python3 tools/measure_latency.py elp_left --write     # then rap on the head 5 times, 2-3 s apart
 python3 tools/measure_latency.py elp_right --write
 python3 tools/measure_latency.py fisheye --write
 ```
+
+It compares the moment the IMU feels a knock with the moment the picture
+jolts, so the camera itself has to shake: rap with a knuckle on the head,
+right beside the cameras, not on the body or legs. Have the robot standing or
+on its stand (lying on the floor it cannot move), with the camera looking at
+something lit and detailed. If the knocks reach the IMU but not the picture,
+the tool prints how far the picture moved and how far it needed to.
 
 Optional, for better accuracy later: `tools/calibrate_camera.py` (lens, with a
 printed checkerboard) and `tools/calibrate_extrinsics.py` (exact camera angles).

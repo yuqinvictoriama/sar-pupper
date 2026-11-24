@@ -437,3 +437,41 @@ class ColourCastTests(unittest.TestCase):
             blobs = det.detect(close)
         self.assertLess(det.balance.strength(), 1.15)
         self.assertEqual(len(blobs), 1)
+
+
+class KnockTimingTests(unittest.TestCase):
+    """measure_latency: a knock moves the picture by a pixel or less, in a grainy picture."""
+
+    def test_small_jolts_in_a_noisy_picture_are_matched_to_the_knocks(self):
+        import measure_latency as ml
+        rng = np.random.default_rng(7)
+        scene = np.full((360, 640, 3), 110, np.uint8)                 # a room: flat areas with edges between them
+        for _ in range(40):
+            x, y = int(rng.integers(0, 600)), int(rng.integers(0, 330))
+            cv2.rectangle(scene, (x, y), (x + int(rng.integers(20, 120)), y + int(rng.integers(20, 90))), int(rng.integers(40, 200)), -1)
+        scene = cv2.GaussianBlur(scene, (0, 0), 1.5)
+        fps, late = 30.0, 0.040                       # the camera stamps its frames 40 ms late
+        knocks = [1.513, 3.504, 5.521, 7.509]
+        meter = ml.JoltMeter()
+        frame_t, frame_moved = [], []
+        for i in range(int(9 * fps)):
+            t = i / fps
+            since = min([t - k for k in knocks if t >= k] or [9.0])
+            # the camera is displaced for a few frames after a knock, less each frame: a pixel at most
+            dx = 1.0 * math.exp(-since / 0.04) * (1 if int(since * fps) % 2 == 0 else -1) if since < 0.2 else 0.0
+            shifted = cv2.warpAffine(scene, np.float32([[1, 0, dx], [0, 1, 0.5 * dx]]), (640, 360), flags=cv2.INTER_LINEAR,
+                                     borderMode=cv2.BORDER_REFLECT)
+            noisy = np.clip(shifted.astype(np.float32) + rng.normal(0, 9, shifted.shape), 0, 255).astype(np.uint8)
+            moved = meter.add(noisy)
+            if moved is not None:
+                frame_t.append(t + late)
+                frame_moved.append(moved)
+        imu_t = np.arange(0, 9, 0.005)
+        imu_rate = 0.02 + 0.01 * rng.random(len(imu_t))
+        for k in knocks:
+            imu_rate[(imu_t >= k) & (imu_t < k + 0.03)] = 1.5
+        found, errors, threshold, biggest, period = ml.match_knocks(imu_t, imu_rate, frame_t, frame_moved)
+        self.assertEqual(len(found), 4)
+        self.assertEqual(len(errors), 4, "jolts %s against a threshold of %.2f px" % (biggest, threshold))
+        self.assertLess(abs(float(np.median(errors)) - late), 0.02)
+        self.assertLess(float(np.median(frame_moved)), 0.05)         # a still camera reads as still despite the noise
