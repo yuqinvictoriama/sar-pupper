@@ -6,9 +6,11 @@ Colour (do this first, for each camera, in the room and lighting you will run in
     python3 tools/calibrate_color.py elp_left
 
   1. it photographs the scene with no ball in view;
-  2. you wave the ball around 0.5-1.5 m from that camera for ten seconds;
-  3. whatever changed and is yellow-green is taken to be the ball, and its
-     colour range is written to config/calib/<camera>_color.yaml.
+  2. you move the ball around 0.5-1.5 m from that camera for ten seconds,
+     low and high;
+  3. whatever changed and is yellow-green is taken to be the ball. Its colour
+     limits are set as loose as they can be while the empty room still shows
+     nothing ball-coloured, and written to config/calib/<camera>_color.yaml.
 
 Size (afterwards; makes the range estimate right):
 
@@ -34,6 +36,7 @@ import yaml
 from _common import ROOT, cv2, load_config, np, open_feed, run_tool, wait_first
 
 from dodge.camera_models import Camera
+from dodge.colorfit import fit_color
 from dodge.config import save_calib
 from dodge.detect import BallDetector
 
@@ -82,8 +85,10 @@ def calibrate_color(feed, cfg: dict, name: str, seconds: float) -> None:
     stop_if_dark(cfg, name, bg_frames)
     bg = np.median(np.stack(bg_frames), axis=0).astype(np.uint8)
     input("Step 2: hold the ball 0.5-1.5 m from the camera, hand behind it, and move it slowly around\n"
-          "        the picture, near and far, for %.0f seconds. Press Enter to start..." % seconds)
+          "        the picture for %.0f seconds: near and far, low and above the camera's eye level (a thrown\n"
+          "        ball comes in from above, and its underside is darker). Press Enter to start..." % seconds)
     samples = []
+    crops = []                 # small pictures of the ball where it was sampled: (picture, centre, radius)
     used = 0
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     end = time.time() + seconds
@@ -111,30 +116,49 @@ def calibrate_color(feed, cfg: dict, name: str, seconds: float) -> None:
             px = px[np.random.default_rng(used).choice(len(px), 1500, replace=False)]
         samples.append(px)
         used += 1
+        if len(crops) < 80:
+            pad = max(w, h)
+            x0, y0 = max(0, x - pad), max(0, y - pad)
+            crops.append((bgr[y0:y + h + pad, x0:x + w + pad].copy(), (x + w / 2.0 - x0, y + h / 2.0 - y0), max(w, h) / 2.0))
     if used < 8:
         raise SystemExit("Only saw the ball clearly in %d frames. Check it is lit, in view, and that nothing else "
                          "yellow-green is moving. Nothing was written." % used)
     px = np.concatenate(samples)
-    h_lo, h_hi = np.percentile(px[:, 0], [1, 99])
-    s_lo = np.percentile(px[:, 1], 2)
-    v_lo = np.percentile(px[:, 2], 2)
-    color = {"h_min": int(max(0, h_lo - 4)), "h_max": int(min(179, h_hi + 4)),
-             "s_min": int(max(50, s_lo - 25)), "s_max": 255, "v_min": int(max(40, v_lo - 30)), "v_max": 255}
-    # The same thresholds must leave the empty scene empty.
-    det_cfg = dict(cfg["detector"])
-    for _ in range(12):
-        false = sum(len(BallDetector.for_camera(cfg["cameras"][name], det_cfg, color=color).detect(f)) for f in bg_frames)
-        if false == 0:
-            break
-        color["s_min"] = min(250, color["s_min"] + 8)
-    print("\nball colour from %d frames, %d pixels:" % (used, len(px)))
-    print("  hue %d-%d (OpenCV 0-179), saturation >= %d, brightness >= %d" % (
-        color["h_min"], color["h_max"], color["s_min"], color["v_min"]))
-    print("  brightness of ball pixels: median %.0f%s" % (
-        float(np.median(px[:, 2])), "  (dark: run tools/tune_exposure.py for this camera, or add light)" if np.median(px[:, 2]) < 90 else ""))
-    if false:
-        print("  WARNING: %d ball-coloured patches remain in the EMPTY scene even after tightening. Something in view "
-              "is the ball's colour; remove it or expect false tracks." % false)
+    cam_cfg = cfg["cameras"][name]
+    det_cfg = dict(cfg["detector"], max_blobs=50)
+
+    def judge(color: dict):
+        """The same limits must leave the empty room empty: (ball-like patches found, share of it ball-coloured)."""
+        det = BallDetector.for_camera(cam_cfg, det_cfg, color=color)
+        return sum(len(det.detect(f)) for f in bg_frames), max(det.cover(f) for f in bg_frames)
+
+    def recall(color: dict) -> float:
+        """...and must still find the ball in the pictures it was sampled from."""
+        det = BallDetector(color, det_cfg)
+        hits = 0
+        for crop, (cx, cy), radius in crops:
+            hits += any(math.hypot(b.u - cx, b.v - cy) <= radius for b in det.detect(crop))
+        return hits / float(len(crops))
+
+    color, rep = fit_color(px, judge, recall)
+    print("\nball colour from %d pictures, %d pixels:" % (used, len(px)))
+    print("  hue %d-%d (OpenCV 0-179), saturation >= %d, brightness >= %d, colourfulness >= %d (and some of it >= %d)" % (
+        color["h_min"], color["h_max"], color["s_min"], color["v_min"], color["c_min"], color["c_seed"]))
+    print("  with these limits the ball is found in %.0f%% of the pictures it was sampled from,\n"
+          "  and the empty room shows %s" % (100 * rep["found"], "nothing ball-coloured." if not rep["false"] else
+                                           "%d ball-like patch%s." % (rep["false"], "" if rep["false"] == 1 else "es")))
+    headroom = 100 * (1 - min(1.0, rep["dimmest"]))
+    print("  the ball can be about %.0f%% dimmer than in these pictures and still be found." % headroom)
+    if rep["false"]:
+        print("  WARNING: something in view is the ball's colour and no setting separates it. Remove it from the room\n"
+              "  (python3 tools/view.py %s --mask shows what it is), then run this step again." % name)
+    if rep["found"] < 0.9:
+        print("  WARNING: the ball is lost in some of its own sample pictures. In this light its colour is too close to\n"
+              "  the noise in the picture. More light is the fix; then tune_exposure.py and this step again.")
+    elif headroom < 30 or rep["ball_chroma"] < 45:
+        print("  note: that is not much margin. The underside of a ball in flight is darker than a ball held in the\n"
+              "  light, so some throws will be picked up late or not at all. More light in the room gives more margin\n"
+              "  (then tune_exposure.py and this step again).")
     path = save_calib(name + "_color", {"cameras": {name: {"color": color}}})
     print("  written to %s" % path)
     print("\nNext, the size step:  python3 tools/calibrate_color.py %s --distance 0.5 1 1.5 2" % name)

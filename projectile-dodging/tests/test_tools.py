@@ -299,3 +299,95 @@ Camera Controls
         self.assertLess(_time.time() - t0, 1.0)
         self.assertEqual(sum("cannot open the camera" in s for s in said), 1)
         self.assertIn("no camera on that USB socket", cam.problem)
+
+
+class BallColourAndShapeTests(unittest.TestCase):
+    """What the first pictures from the real cameras showed the detector has to cope with."""
+
+    BALL = (60, 235, 140)             # neon green, BGR
+    DIM_GREENISH = (25, 55, 35)       # a dark floor under a greenish light: very "saturated", hardly coloured at all
+    WEAK_GREEN = (70, 122, 84)        # ball hue, but only just colourful enough
+
+    def setUp(self):
+        from dodge.detect import BallDetector
+        self.BallDetector = BallDetector
+        self.cam = CFG["cameras"]["elp_left"]
+        self.det = BallDetector.for_camera(self.cam, CFG["detector"])
+
+    def room(self):
+        rng = np.random.default_rng(5)
+        return np.clip(rng.normal(95, 6, (720, 1280, 3)), 0, 255).astype(np.uint8)
+
+    def test_a_ball_with_dimples_and_a_ragged_edge_is_found_whole(self):
+        img = self.room()
+        cv2.circle(img, (640, 360), 30, self.BALL, -1)
+        rng = np.random.default_rng(1)
+        for ang in np.linspace(0, 2 * math.pi, 60, endpoint=False):      # bites out of the edge, as noise makes them
+            r = 30 - rng.integers(0, 4)
+            c = (int(640 + r * math.cos(ang)), int(360 + r * math.sin(ang)))
+            cv2.circle(img, c, int(rng.integers(1, 3)), (95, 95, 95), -1)
+        for dx, dy in ((-10, -8), (8, -12), (0, 6), (12, 10), (-14, 9)):  # dimples
+            cv2.circle(img, (640 + dx, 360 + dy), 3, (40, 90, 60), -1)
+        blobs = self.det.detect(img)
+        self.assertEqual(len(blobs), 1)
+        self.assertLess(abs(blobs[0].u - 640), 1.5)
+        self.assertLess(abs(blobs[0].v - 360), 1.5)
+        self.assertLess(abs(blobs[0].diameter_px - 60) / 60, 0.07)      # the dimples do not shrink it
+
+    def test_a_dim_floor_with_a_colour_cast_is_not_the_ball(self):
+        img = self.room()
+        for i in range(12):
+            cv2.circle(img, (100 + 95 * i, 600), 12, self.DIM_GREENISH, -1)
+        self.assertEqual(self.det.detect(img), [])
+        by_saturation_only = dict(self.cam["color"], c_min=0, c_seed=0)
+        self.assertGreaterEqual(len(self.BallDetector(by_saturation_only, CFG["detector"]).detect(img)), 10)
+
+    def test_a_far_ball_is_not_crowded_out_by_bigger_patches(self):
+        img = self.room()
+        for i in range(30):                                              # ball-coloured, but L-shaped: not balls
+            x, y = 40 + 41 * i, 80 + (i % 3) * 190
+            cv2.rectangle(img, (x, y), (x + 34, y + 9), self.BALL, -1)
+            cv2.rectangle(img, (x, y), (x + 9, y + 34), self.BALL, -1)
+        cv2.circle(img, (900, 650), 7, self.BALL, -1)
+        blobs = self.det.detect(img)
+        self.assertEqual(len(blobs), 1)
+        self.assertLess(math.hypot(blobs[0].u - 900, blobs[0].v - 650), 1.5)
+
+    def test_a_patch_needs_some_strongly_coloured_pixels(self):
+        img = self.room()
+        cv2.circle(img, (400, 300), 20, self.WEAK_GREEN, -1)
+        self.assertEqual(self.det.detect(img), [])
+        no_higher_bar = dict(self.cam["color"], c_seed=0)
+        self.assertEqual(len(self.BallDetector(no_higher_bar, CFG["detector"]).detect(img)), 1)
+
+    def test_patches_too_small_to_be_the_ball_at_throwing_range_are_ignored(self):
+        img = self.room()
+        cv2.circle(img, (500, 300), 2, self.BALL, -1)                    # 5 px across: a ball 5 m away
+        cv2.circle(img, (800, 300), 5, self.BALL, -1)                    # 11 px: a ball 2.5 m away
+        found = [(round(b.u), round(b.v)) for b in self.det.detect(img)]
+        self.assertEqual(found, [(800, 300)])
+        any_range = self.BallDetector.for_camera(self.cam, dict(CFG["detector"], max_range_m=0))
+        self.assertEqual(len(any_range.detect(img)), 2)
+
+    def test_colour_limits_are_fitted_to_leave_the_empty_room_empty(self):
+        from dodge.colorfit import fit_color
+        rng = np.random.default_rng(2)
+        n = 4000
+        ball = np.c_[rng.normal(50, 2.5, n), rng.normal(135, 18, n), rng.normal(150, 35, n)].clip(1, 255).astype(np.uint8)
+        empty = self.room()
+        cv2.circle(empty, (300, 300), 25, (78, 126, 92), -1)             # a wall patch: the ball's hue, weaker colour
+        cv2.circle(empty, (700, 500), 25, (62, 150, 145), -1)            # a yellow thing: strong colour, neighbouring hue
+        det_cfg = dict(CFG["detector"], max_blobs=50)
+
+        def judge(color):
+            det = self.BallDetector(color, det_cfg)
+            return len(det.detect(empty)), det.cover(empty)
+        color, report = fit_color(ball, judge)
+        self.assertEqual(report["false"], 0)
+        self.assertGreater(report["kept"], 0.8)
+        self.assertGreater(color["c_seed"], color["c_min"])
+        picture = empty.copy()
+        cv2.circle(picture, (1000, 200), 14, (int(255 * 0.47 * 0.59), 150, int(150 * 0.72)), -1)   # the ball itself
+        got = self.BallDetector(color, det_cfg).detect(picture)
+        self.assertEqual(len(got), 1)
+        self.assertLess(math.hypot(got[0].u - 1000, got[0].v - 200), 2)

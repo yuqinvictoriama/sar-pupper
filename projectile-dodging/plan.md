@@ -116,8 +116,9 @@ Everything after detection works in **body-frame angles**, so the tracker does n
    - ELPs: V4L2, MJPG, one capture thread each, at the fastest mode with at least 1280 px width. Manual short exposure, fixed gain and white balance. Timestamp at capture.
    - Fisheye: 1400×1050 from the camera stack (see decision D1). Do not undistort the whole frame – too slow and not needed.
 2. **Detect (per camera)**
-   - Colour threshold with a **separate calibrated profile per camera** (the fisheye's red tint and fixed gains shift neon green toward yellow).
-   - Morphological open → connected components → gate on area and roundness.
+   - Colour test with a **separate calibrated profile per camera** (the fisheye's red tint and fixed gains shift neon green toward yellow). A pixel is ball-coloured when its hue is in range and it is saturated, bright and *colourful in absolute terms* (saturation × brightness). Saturation alone is a ratio and is large by accident in the dark, noisy parts of a picture; in the first real ELP picture 4 % of the room passed a saturation test that the ball only just passed, against 0.01 % for the absolute measure.
+   - Morphological open → connected patches. Every patch is judged, largest first (a far ball must not be crowded out by bigger patches). A patch must hold some strongly coloured pixels, be at least as big as the ball would look at the greatest throwing range, and, once big enough to judge, be solid (area ÷ area of its convex outline) and oval (outline ÷ best-fitting ellipse). These shape tests replace an outline-length test that failed on the real ball: noise, dimples and the seam make the edge ragged, which lengthens the outline without changing the shape.
+   - Size and centre come from the filled convex outline, so dimples and glints do not shrink the ball.
    - Static mask per camera for robot parts in view (mics, ears, body edge).
    - Once tracking, search only a region around the predicted position.
 3. **Measure → ray**
@@ -168,7 +169,7 @@ Everything for this component lives in this one folder, so other components of t
 ```
 projectile-dodging/
   plan.md, README.md, DEPLOY.md
-  dodge/             pure Python, no ROS: lens models, detect, measure, track, threat, escape, core (state machine), recording, sim
+  dodge/             pure Python, no ROS: lens models, detect, colorfit, measure, track, threat, escape, core (state machine), recording, sim
   robot/             on the Pupper: USB capture, dodge_node.py, sar_dodge.launch.py, mux.yaml, fast_mux.py, start/stop/watch/walk scripts
   tools/             find_cameras, tune_exposure, fit_image_circle, view, calibrate_color / _camera / _extrinsics, record, replay, measure_latency, step_response, check_setup, sim_report
   config/            dodge.yaml (every number) and calib/ (written by the calibration tools, merged on top)
@@ -180,7 +181,7 @@ projectile-dodging/
 
 **Built:** every pipeline step above, the ROS node, the launch file that wraps the Gemini stack and adds `/dodge_cmd_vel` to the mux, and the Phase 0–3 tools. The dodge node starts unarmed: it reports the dodge it would make and saves a recording of each, but sends no command until armed.
 
-**Checked off the robot (Python 3.11, numpy 1.26, OpenCV 4.11, as on the Pi):** 41 automated tests, including rendered ball images through detection, tracking and replay; the node driven in real time through stand-in ROS libraries and a fake USB camera.
+**Checked off the robot (Python 3.11, numpy 1.26, OpenCV 4.11, as on the Pi):** 47 automated tests, including rendered ball images through detection, tracking and replay; the node driven in real time through stand-in ROS libraries and a fake USB camera.
 
 **Simulated dodge rate, Tier A lobs, shipped config** (fisheye assumed to see the ball from 6 px at 30 fps; robot lag 0.2 s; 30–40 throws per sector):
 
@@ -198,6 +199,8 @@ The front cone moves most with assumptions: 73 % with the fisheye at 60 fps, 97 
 - *ELP picture near-black.* A 3 ms exposure at the camera's default gain is too dark indoors. `tools/tune_exposure.py` now sets gain (then exposure, if the gain runs out) from the picture itself and locks the white balance; the node and the tools warn when a picture is too dark to use.
 - *False blobs around the fisheye's edge.* The rim of the lens splits colours and part of the fringe is ball-green. The detector now ignores everything beyond 89 % of the lit disc's radius (`cameras.fisheye.image_circle`; measured per robot with `tools/fit_image_circle.py`). Simulated dodge rates are unchanged by it.
 - *Tools aborted on Ctrl+C.* They now release the cameras and ROS before exiting.
+
+**Detection reworked after the first well-exposed ELP pictures (2026-11-23).** The ball in plain view was not detected. Two causes, both fixed as described in pipeline step 2: the roundness test rejected it for its ragged edge, and the saturation-based colour test let the dim floor through. Colour calibration now fits the limits per room: as loose as possible while the empty room shows nothing ball-coloured, and it reports how much dimmer the ball can get before it is lost. Checked on the two real pictures available (one ELP, one fisheye): the ball is the only thing detected in each, with the starting settings and with fitted ones, and the real ball shrunk and pasted around the real room is found down to about 9 px across. In that dim, lamp-lit room a ball 40 % darker than the hand-held one is not separable from picture noise; light is the remedy. Not yet run live on the robot.
 
 The second ELP could not be opened in that run and the log could not say why. `tools/find_cameras.py` now reports the cause (not connected, in use, no video, USB power limit) and tests both rear cameras streaming together. Also seen: with the default colour profile the fisheye's blob on a ball lying on a beige carpet included the carpet around it, so the range read short; per-room colour calibration (Phase 0) is not optional.
 

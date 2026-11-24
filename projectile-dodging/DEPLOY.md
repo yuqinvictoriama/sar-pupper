@@ -73,7 +73,7 @@ SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 ## 2. Check the code runs (no robot needed)
 
 ```bash
-python3 -m unittest discover -s tests     # expect: Ran 41 tests ... OK
+python3 -m unittest discover -s tests     # expect: Ran 47 tests ... OK
 python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7    # simulated 2 m throws; takes about a minute on the Pi
 ```
 
@@ -200,9 +200,13 @@ Check in each view:
 | The ball is not smeared when you wave it | More light, then 4c again |
 | Fisheye: no red boxes along the edge of the lit disc | `fit_image_circle.py fisheye --write` again; if the red circle is right and boxes remain just inside it, add `--margin 0.14` |
 
-Before stage 5, expect a few small red boxes on other yellow-green things, and
-expect the box on the ball to flicker or read the wrong distance: the colour
-settings are still the generic defaults. Stage 5 fits them to this room.
+Before stage 5 the cameras use generic colour settings. Hold the ball about
+1 m from each camera: it should already get a red box. Its distance may read
+wrong and a box may appear on something else yellow-green; stage 5 fits the
+settings to this room and fixes both. If the ball gets no box at all,
+`python3 tools/view.py <camera> --mask` shows what counts as ball-coloured
+(white): a picture that is mostly white or has no white on the ball means the
+exposure or white balance is off, so go back to 4c.
 
 ## 5. Calibrate (each camera, in the room and lighting you will run in)
 
@@ -218,14 +222,30 @@ python3 tools/calibrate_color.py elp_left --distance 0.5 1 1.5 2   # 2. size: ba
 Repeat both for `elp_right` and `fisheye`, with the same distances.
 
 - **Colour step.** First it looks at the room with no ball in view, then you
-  move the ball around 0.5–1.5 m from that camera for ten seconds. It prints
-  the colour range it found. Until this has been done for a camera, that
-  camera is using a generic green that usually does not match the room's light.
+  move the ball around 0.5–1.5 m from that camera for ten seconds. Move it low
+  and high: a thrown ball arrives from above the camera, and its underside is
+  darker than a ball held in the light. The tool then sets the colour limits
+  as loose as it can while the empty room still shows nothing ball-coloured,
+  and prints how it went (table below).
 - **Size step.** Hold the ball still at each distance. Distances are from the
   lens of the camera being calibrated to the centre of the ball, with the ball
   roughly in the middle of that camera's picture (for a rear camera that is
   behind the robot and out to its side, not straight back). Any two or more
   distances work if the farthest is at least 1.5 times the nearest.
+
+What the colour step prints, and what to do:
+
+| It says | What to do |
+|---|---|
+| `the ball is found in 9x-100% of the pictures ... the empty room shows nothing ball-coloured` | Nothing. This is the good case |
+| `the ball can be about N% dimmer ... and still be found` | The margin for a ball in poorer light than your hand-held one. 40 % or more is comfortable. Under 30 % it adds a note: throws will be picked up late or missed when the ball's underside faces the camera. More light in the room raises it (then 4c and this step again) |
+| `WARNING: something in view is the ball's colour` | Something yellow-green is in that camera's view. `view.py <camera> --mask` shows it in white. Take it out of the room and repeat the step |
+| `WARNING: the ball is lost in some of its own sample pictures` | The light is too poor to tell the ball from the noise in the picture. Add light, then 4c and this step again |
+| `Only saw the ball clearly in N frames` | Keep the ball in view and moving for the whole ten seconds, your hand behind it, nothing else yellow-green moving |
+
+The detector also ignores anything too small to be the ball within 3 m
+(`detector.max_range_m` in `config/dodge.yaml`), which removes most stray
+specks. If you ever throw from further away, raise that number.
 
 If the size step says the ball was not found:
 
@@ -370,8 +390,8 @@ Each dodge is announced on `/dodge/event` (JSON) so a planner can re-plan.
 | One ELP works alone but not with the other | Shared USB bandwidth or power | Stage 4b: different controllers, `usb_max_current_enable=1`, or `fps: 60` |
 | Red boxes around the edge of the fisheye picture | Colour fringe at the lens rim | `python3 tools/fit_image_circle.py fisheye --write` (stage 4d) |
 | Range to a ball on the floor reads far too short and its box flickers | Colour range too wide: the blob is the ball plus the floor it lights up | `calibrate_color.py` for that camera (stage 5) |
-| No track although the ball is in view | Colour profile does not match this lighting | Redo `calibrate_color.py`; check with `view.py --mask` |
-| Tracks appear with no ball | Something else in view is ball-coloured | Remove it, or tighten `s_min` / the hue range for that camera |
+| No track although the ball is in view | Colour settings do not match this lighting, or the ball is in poor light | `view.py <camera> --mask`: the ball should be white. If not, 4c then the colour step again; add light if the colour step reports little margin |
+| Tracks appear with no ball | Something else in view is ball-coloured | Remove it and redo the colour step for that camera |
 | Range reads consistently wrong | Size calibration | `calibrate_color.py <cam> --distance ...`; check `ball.diameter_m` |
 | Dodges balls that would miss by a lot | Prediction too generous | Lower `threat.k_sigma` or `threat.sigma_cap_m` |
 | Reacts too late from the front | Too little time in the air, or the fisheye is slow | Lob a little higher; `bash robot/start.sh --fisheye-fps 60` |
@@ -402,7 +422,12 @@ Logs: `/tmp/sar-dodge/robot.log`. Every dodge (real or dry) is in `data/events/`
   picture was near-black at the default gain (now stage 4c), the lens rim of
   the fisheye produced false blobs (now masked, stage 4d), and Ctrl+C aborted
   the tools instead of ending them. The second ELP could not be opened in that
-  run; the log could not say why, which is what stage 4a now reports.
+  run; the log could not say why, which is what stage 4a now reports. Later the
+  same day both ELPs ran, and their first well-exposed pictures showed the ball
+  was not being picked out: the shape test rejected it for its noisy edge, and
+  the colour test let the dim floor through. Both were reworked (see `plan.md`)
+  and checked against those pictures; the reworked detector has not yet run
+  live on the robot.
 - **Not verified - needs the stages above:** the second ELP and both ELPs
   streaming together, the exposure tuner on the real cameras, colours and
   timestamps, the dodge node in the real ROS stack, CPU load on the Pi, and how
