@@ -67,9 +67,24 @@ def main() -> None:
         samples.append((t if abs(now - t) < 2.0 else now, (q.w, q.x, q.y, q.z), (w.x, w.y, w.z), (a.x, a.y, a.z)))
     node.create_subscription(Imu, cfg["node"].get("imu_topic", "/imu_sensor_broadcaster/imu"), on_imu, 500)
     pub = node.create_publisher(Twist, topic, 10)
-    time.sleep(1.2)                                   # standing still: baseline for the accelerometer
-    if len(samples) < 50:
-        raise SystemExit("No IMU data: is the robot stack running and ROS_LOCALHOST_ONLY=1 exported?")
+    # A new ROS node needs a moment to find the IMU's publisher, longer on a busy Pi. Wait for the
+    # first message rather than assuming it has arrived; nothing is commanded until the IMU is in.
+    waited = time.time()
+    while not samples and time.time() - waited < 8.0:
+        time.sleep(0.05)
+    if not samples:
+        raise SystemExit(
+            "No IMU data after 8 s, so nothing was commanded. The robot stack is not running, or is still starting.\n"
+            "  is it running?   pgrep -af ros2_control_node      (prints nothing if not)\n"
+            "  start it:        bash robot/start.sh               (wait for it to finish, about a minute)\n"
+            "  stand it up:     bash robot/walk.sh\n"
+            "then run this again. python3 tools/check_setup.py lists anything else that is missing.")
+    first = time.time()
+    time.sleep(1.5)                                   # standing still: baseline for the accelerometer
+    rate = len(samples) / max(time.time() - first, 1e-3)
+    if rate < 20.0:
+        raise SystemExit("The IMU is only sending about %.0f messages a second, too few to measure a half-second move. "
+                         "Nothing was commanded. See /tmp/sar-dodge/robot.log." % rate)
     cmd = Twist()
     cmd.linear.x, cmd.linear.y = float(args.vx), float(args.vy)
     t_cmd = time.time()
