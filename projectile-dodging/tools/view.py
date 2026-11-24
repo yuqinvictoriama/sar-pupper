@@ -58,6 +58,7 @@ def main() -> None:
     ap.add_argument("camera")
     ap.add_argument("--port", type=int, default=8090)
     ap.add_argument("--mask", action="store_true", help="show the colour mask")
+    ap.add_argument("--balanced", action="store_true", help="show the picture with its colour cast taken out, as the detector sees it")
     ap.add_argument("--config", default=None)
     args = ap.parse_args()
     cfg = load_config(args.config)
@@ -87,7 +88,10 @@ def main() -> None:
                 labels.append("%.2fm %+.0f/%+.0fdeg" % (m.range_m, m.azimuth_deg, m.elevation_deg))
                 lines.append("%.1f px wide, %.2f m, bearing %+.0f deg, elevation %+.0f deg" % (
                     b.diameter_px, m.range_m, m.azimuth_deg, m.elevation_deg))
-            show = cv2.cvtColor(det.mask(bgr), cv2.COLOR_GRAY2BGR) if args.mask else bgr
+            if args.mask:
+                show = cv2.cvtColor(det.mask(bgr), cv2.COLOR_GRAY2BGR)
+            else:
+                show = det.prepared(bgr).copy() if args.balanced else bgr
             show = draw_blobs(show, blobs, labels)
             circle = circle_params(det.image_circle, det.ref_size, bgr.shape[1], bgr.shape[0])
             if circle is not None:
@@ -103,7 +107,11 @@ def main() -> None:
                 dark = ""
                 if level < 25.0 and cam_cfg.get("source") == "v4l2":
                     dark = "   [picture very dark, average %.0f of 255: run  python3 tools/tune_exposure.py %s]" % (level, args.camera)
-                print("%d blob(s)%s%s" % (len(blobs), ": " + "; ".join(lines) if lines else "", dark))
+                cast = ""
+                if det.balance.strength() > 1.8:
+                    cast = "   [strong colour cast: blue x%.2f, red x%.2f to correct; tools/tune_exposure.py sets white balance]" % (
+                        det.balance.gains[0], det.balance.gains[2])
+                print("%d blob(s)%s%s%s" % (len(blobs), ": " + "; ".join(lines) if lines else "", dark, cast))
     finally:
         feed.close()
 

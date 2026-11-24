@@ -21,6 +21,8 @@ import yaml
 
 from _common import cv2, load_config, np, run_tool
 
+from dodge.config import COLOUR_FIT
+
 results = []
 
 
@@ -51,7 +53,7 @@ def main() -> None:
         if not cam.get("enabled", True):
             print("skipped  %s (disabled in the config)" % name)
             continue
-        calibrated = os.path.exists(os.path.join(os.path.dirname(cfg["_path"]), "calib", name + "_color.yaml"))
+        calibrated = cam.get("color", {}).get("fit") == COLOUR_FIT      # set by calibrate_color.py; older fits are dropped on load
         report(calibrated, "%s: colour calibrated" % name, "python3 tools/calibrate_color.py %s" % name)
         if cam.get("source") == "v4l2":
             dev = cam.get("device", "")

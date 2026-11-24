@@ -73,7 +73,7 @@ SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 ## 2. Check the code runs (no robot needed)
 
 ```bash
-python3 -m unittest discover -s tests     # expect: Ran 47 tests ... OK
+python3 -m unittest discover -s tests     # expect: Ran 51 tests ... OK
 python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7    # simulated 2 m throws; takes about a minute on the Pi
 ```
 
@@ -167,6 +167,20 @@ what it prints:
 | `colour cast: ... clear` or `strong ... now` | The room is strongly coloured, so the picture's average is a poor guide. Run it with `--white-card` and hold a sheet of white paper in the middle of the picture when asked |
 | `white balance is left on automatic` | The lamp is warmer or cooler than the camera's fixed settings reach. It works; colours can drift a little |
 
+Two things back this up, so a white balance that is not quite right does not
+break detection:
+
+- Every program that opens a rear camera prints what the camera is really set
+  to, for example `camera settings: exposure 3.0 ms, gain 15, white balance
+  fixed at 2900 K`. If that line ends in `THE CAMERA DID NOT TAKE THE
+  SETTINGS`, run `tune_exposure.py` for that camera again; it checks that the
+  white balance survives reopening the camera and switches to automatic if not.
+- The detector takes the remaining colour cast out of each picture itself
+  before looking for the ball (it makes the bright, colourless parts of the
+  room neutral). `python3 tools/view.py <camera> --balanced` shows the picture
+  as the detector sees it. If `view.py` prints `strong colour cast`, detection
+  still works but with less margin: fix the white balance here in 4c.
+
 If a picture still looks tinted to you afterwards, set the temperature by hand
 and look again: `python3 tools/tune_exposure.py elp_left --wb 3000` (lower
 numbers make the picture bluer, higher ones yellower).
@@ -212,7 +226,9 @@ exposure or white balance is off, so go back to 4c.
 
 Three things in a fixed order for each camera, because each depends on the one
 before: exposure (4c), then colour, then size. If the lighting changes, redo
-all three.
+all three. A colour calibration made with an earlier version of the code is
+ignored (the tools say so when they start): redo the colour and size steps for
+all three cameras after updating.
 
 ```bash
 python3 tools/calibrate_color.py elp_left                          # 1. colour: follow the two prompts
@@ -382,6 +398,9 @@ Each dodge is announced on `/dodge/event` (JSON) so a planner can re-plan.
 |---|---|---|
 | `check_setup.py`: mux does not listen to `/dodge_cmd_vel` | Stack was started by Gemini's own script | `bash robot/stop.sh`, then `bash robot/start.sh` |
 | Tools find no topics / no IMU | Terminal lacks the ROS environment | `source robot/env.sh` |
+| `No frames from fisheye` (the rear cameras work) | The fisheye comes through the robot stack, unlike the rear cameras. The stack is not running, or this terminal has not had `source robot/env.sh` | `source robot/env.sh`, then `python3 tools/check_setup.py`. If it says the stack is not running: `bash robot/start.sh --no-dodge` (from `~/sar-pupper/projectile-dodging`), wait a minute, try again |
+| `camera settings: ... THE CAMERA DID NOT TAKE THE SETTINGS` | The camera ignored or dropped a setting | `python3 tools/tune_exposure.py <camera>` again; unplug and replug the camera if it repeats |
+| A camera's picture is tinted and `view.py` says `strong colour cast` | White balance does not match the room's light (a lamp was switched, or it was never tuned here) | `python3 tools/tune_exposure.py <camera>`, then the colour step again |
 | "CANNOT DODGE: no walking controller active" | Robot is relaxed, mid-trick or fell | `bash robot/walk.sh`, or wake it through Gemini |
 | A camera shows `---` in `watch.sh` | Unplugged, wrong socket, no power, or another program has it | `bash robot/stop.sh`, then `python3 tools/find_cameras.py` (stage 4a); `/tmp/sar-dodge/robot.log` has the node's own explanation |
 | `cannot open the camera: there is no camera on that USB socket` | That camera is not connected as far as the Pi can tell, or its plug moved | Stage 4a, then 4b |
@@ -425,9 +444,12 @@ Logs: `/tmp/sar-dodge/robot.log`. Every dodge (real or dry) is in `data/events/`
   run; the log could not say why, which is what stage 4a now reports. Later the
   same day both ELPs ran, and their first well-exposed pictures showed the ball
   was not being picked out: the shape test rejected it for its noisy edge, and
-  the colour test let the dim floor through. Both were reworked (see `plan.md`)
-  and checked against those pictures; the reworked detector has not yet run
-  live on the robot.
+  the colour test let the dim floor through. Both were reworked (see `plan.md`).
+  The next pictures were strongly yellow, with white walls passing for ball
+  colour on one camera and the ball's hue shifted out of its calibrated range
+  on the other; the detector now removes the colour cast itself. All of this is
+  checked against the six pictures taken on the robot so far; none of it has
+  run live on the robot yet.
 - **Not verified - needs the stages above:** the second ELP and both ELPs
   streaming together, the exposure tuner on the real cameras, colours and
   timestamps, the dodge node in the real ROS stack, CPU load on the Pi, and how

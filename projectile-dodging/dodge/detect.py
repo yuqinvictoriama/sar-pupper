@@ -105,6 +105,86 @@ def circle_ignore_mask(image_circle: dict | None, ref_size, width: int, height: 
 
 
 _GROW = np.ones((3, 3), np.uint8)
+_LUMA = np.array([0.114, 0.587, 0.299], dtype=np.float32)
+
+
+class ColourBalance:
+    """Takes the colour cast out of a camera's pictures before the ball is looked for.
+
+    A camera's white balance is never quite right, and a wrong one tints the
+    whole picture: under a yellow cast the white walls take on colour and the
+    ball's hue moves, so limits fitted in one light fail in another. This
+    scales the blue and red channels so that the bright, nearly colourless
+    parts of the picture (walls, ceiling, anything white) come out neutral.
+    The ball is then "much greener than the room", whatever the cast.
+
+    The scaling follows the picture slowly (about a second), and strongly
+    coloured pixels are left out of the estimate, so a ball flying through, or
+    held close to the lens, does not pull it.
+    """
+
+    def __init__(self, cfg: dict | None = None):
+        cfg = cfg or {}
+        self.enabled = bool(cfg.get("enabled", True))
+        self.every = max(1, int(cfg.get("every", 20)))       # frames between updates
+        self.rate = float(cfg.get("rate", 0.35))             # share of the way moved toward a new estimate
+        self.gains = None                                    # (blue, green, red)
+        self._lut = None
+        self._count = 0
+
+    @staticmethod
+    def estimate(bgr: np.ndarray, gains=(1.0, 1.0, 1.0), use_colour_test: bool = True):
+        """Gains that make the picture's bright, colourless parts neutral, or None if it has none to go by."""
+        px = bgr[::8, ::8].reshape(-1, 3).astype(np.float32)
+        px = px[px.max(axis=1) > 30]                         # not the black corners of a fisheye frame
+        if len(px) < 200:
+            return None
+        balanced = px * np.asarray(gains, dtype=np.float32)
+        luma = balanced @ _LUMA
+        lo, hi = np.percentile(luma, [55, 98])
+        ok = (luma >= lo) & (luma <= hi) & (px.max(axis=1) < 250)
+        if use_colour_test:
+            ok &= (balanced.max(axis=1) - balanced.min(axis=1)) < 45.0
+        if ok.sum() < 0.02 * len(px):
+            return None
+        blue, green, red = np.median(px[ok], axis=0)
+        return (float(np.clip(green / max(blue, 1.0), 0.4, 3.0)), 1.0, float(np.clip(green / max(red, 1.0), 0.4, 3.0)))
+
+    def update(self, bgr: np.ndarray) -> None:
+        """Call once per frame with the whole frame."""
+        if not self.enabled:
+            return
+        self._count += 1
+        if self.gains is None:
+            gains = self.estimate(bgr, use_colour_test=False) or (1.0, 1.0, 1.0)
+            for _ in range(4):
+                gains = self.estimate(bgr, gains) or gains
+            self._set(gains)
+        elif self._count % self.every == 0:
+            # no colourless pixels left under the old gains means the light itself changed: start over
+            new = self.estimate(bgr, self.gains) or self.estimate(bgr, use_colour_test=False)
+            if new is not None:
+                self._set(tuple(g + self.rate * (n - g) for g, n in zip(self.gains, new)))
+
+    def _set(self, gains) -> None:
+        self.gains = tuple(float(g) for g in gains)
+        if max(abs(g - 1.0) for g in self.gains) < 0.03:
+            self._lut = None                                 # near enough neutral already: nothing to do
+            return
+        ramp = np.arange(256, dtype=np.float32)
+        lut = np.empty((256, 1, 3), dtype=np.uint8)
+        for c in range(3):
+            lut[:, 0, c] = np.clip(ramp * self.gains[c], 0, 255)
+        self._lut = lut
+
+    def apply(self, bgr: np.ndarray) -> np.ndarray:
+        return bgr if self._lut is None else cv2.LUT(bgr, self._lut)
+
+    def strength(self) -> float:
+        """How strong the cast being removed is: 1.0 none, 2.0 one channel doubled or halved."""
+        if self.gains is None:
+            return 1.0
+        return float(max(max(g, 1.0 / g) for g in self.gains))
 
 
 class BallDetector:
@@ -124,11 +204,12 @@ class BallDetector:
         self.max_aspect = float(det.get("max_aspect", 2.8))
         self.min_fill = float(det.get("min_fill", 0.5))
         self.max_fill = float(det.get("max_fill", 1.15))
-        self.min_solidity = float(det.get("min_solidity", 0.8))
+        self.min_solidity = float(det.get("min_solidity", 0.72))
         self.min_ellipse_fill = float(det.get("min_ellipse_fill", 0.78))
         self.shape_min_area = float(det.get("shape_min_area_px", 80))
         self.max_candidates = int(det.get("max_candidates", 150))
         self.seed_frac = float(det.get("seed_frac", 0.15))
+        self.balance = ColourBalance(det.get("balance"))
         self.max_blobs = int(det.get("max_blobs", 10))
         self.ignore_mask = ignore_mask  # 0/255, same size as the frame; 255 = never a ball
         self._kernel = (cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.open_px, self.open_px))
@@ -166,8 +247,13 @@ class BallDetector:
             m = cv2.morphologyEx(m, cv2.MORPH_OPEN, self._kernel)
         return float(cv2.countNonZero(m)) / float(m.size)
 
+    def prepared(self, bgr: np.ndarray) -> np.ndarray:
+        """The frame as the colour tests see it: with the room's colour cast taken out."""
+        self.balance.update(bgr)
+        return self.balance.apply(bgr)
+
     def mask(self, bgr: np.ndarray) -> np.ndarray:
-        m = color_mask(bgr, self.color)
+        m = color_mask(self.prepared(bgr), self.color)
         ignore = self.ignore_for(bgr.shape[1], bgr.shape[0])
         if ignore is not None:
             m[ignore > 0] = 0
@@ -182,7 +268,8 @@ class BallDetector:
             x1, y1 = min(full_w, int(roi[2])), min(full_h, int(roi[3]))
             if x1 - x0 < 4 or y1 - y0 < 4:
                 return []
-        view = bgr[y0:y1, x0:x1]
+        self.balance.update(bgr)
+        view = self.balance.apply(bgr[y0:y1, x0:x1])
         raw, seed = color_masks(view, self.color)
         ignore = self.ignore_for(full_w, full_h)
         if ignore is not None:
@@ -256,6 +343,8 @@ class BallDetector:
             u = px0 + m["m10"] / a + x0
             v = py0 + m["m01"] / a + y0
             gx, gy = bx + x0, by + y0
+            if any(o.x <= u <= o.x + o.w and o.y <= v <= o.y + o.h for o in blobs):
+                continue                              # a fragment of a ball already found (its shaded side, say)
             edge = gx <= 0 or gy <= 0 or gx + bw >= full_w or gy + bh >= full_h
             blobs.append(Blob(float(u), float(v), float(a), gx, gy, bw, bh, bool(edge)))
             if len(blobs) >= self.max_blobs:

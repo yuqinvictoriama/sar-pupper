@@ -30,13 +30,20 @@ CFG = load_config(use_calib=False)
 class ConfigTests(unittest.TestCase):
     def test_calib_files_override_the_main_config(self):
         with tempfile.TemporaryDirectory() as d:
-            save_calib("elp_left_color", {"cameras": {"elp_left": {"color": {"h_min": 41}}}}, calib_dir=d)
+            save_calib("elp_left_color", {"cameras": {"elp_left": {"color": {"h_min": 41, "fit": 2}}}}, calib_dir=d)
             save_calib("elp_left_color", {"cameras": {"elp_left": {"size_scale": 0.97}}}, calib_dir=d)
             cfg = load_config(calib_dir=d)
             self.assertEqual(cfg["cameras"]["elp_left"]["color"]["h_min"], 41)
             self.assertEqual(cfg["cameras"]["elp_left"]["size_scale"], 0.97)
             self.assertEqual(cfg["cameras"]["elp_left"]["color"]["h_max"], CFG["cameras"]["elp_left"]["color"]["h_max"])
             self.assertEqual(cfg["cameras"]["elp_right"]["color"], CFG["cameras"]["elp_right"]["color"])
+
+    def test_colour_limits_fitted_the_old_way_are_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            save_calib("elp_left_color", {"cameras": {"elp_left": {"color": {"h_min": 41}, "size_scale": 0.9}}}, calib_dir=d)
+            cfg = load_config(calib_dir=d)
+            self.assertEqual(cfg["cameras"]["elp_left"]["color"], CFG["cameras"]["elp_left"]["color"])
+            self.assertEqual(cfg["cameras"]["elp_left"]["size_scale"], 0.9)
 
     def test_deep_merge_does_not_touch_its_inputs(self):
         a = {"x": {"y": 1, "z": 2}}
@@ -306,7 +313,7 @@ class BallColourAndShapeTests(unittest.TestCase):
 
     BALL = (60, 235, 140)             # neon green, BGR
     DIM_GREENISH = (25, 55, 35)       # a dark floor under a greenish light: very "saturated", hardly coloured at all
-    WEAK_GREEN = (70, 122, 84)        # ball hue, but only just colourful enough
+    WEAK_GREEN = (82, 122, 92)        # ball hue, but only just colourful enough
 
     def setUp(self):
         from dodge.detect import BallDetector
@@ -391,3 +398,42 @@ class BallColourAndShapeTests(unittest.TestCase):
         got = self.BallDetector(color, det_cfg).detect(picture)
         self.assertEqual(len(got), 1)
         self.assertLess(math.hypot(got[0].u - 1000, got[0].v - 200), 2)
+
+
+class ColourCastTests(unittest.TestCase):
+    """The same room and ball under different white balances must look the same to the detector."""
+
+    def scene(self, cast=(1.0, 1.0, 1.0)):
+        rng = np.random.default_rng(4)
+        img = np.clip(rng.normal(150, 5, (720, 1280, 3)), 0, 255)       # white walls
+        img[400:] = np.clip(rng.normal(60, 5, (320, 1280, 3)), 0, 255) * np.array([0.55, 0.8, 1.0])   # brown floor
+        cv2.circle(img, (640, 300), 20, (60, 200, 130), -1)             # the ball
+        cv2.rectangle(img, (200, 150), (260, 210), (40, 60, 200), -1)   # something red
+        return np.clip(img * np.array(cast), 0, 255).astype(np.uint8)
+
+    def test_the_ball_is_found_under_any_cast_and_the_walls_never_are(self):
+        from dodge.detect import BallDetector
+        for cast in ((1.0, 1.0, 1.0), (0.45, 1.0, 1.2), (1.3, 1.0, 0.75), (0.8, 1.0, 0.8), (0.5, 1.0, 0.85)):   # none, yellow, blue, green, yellow-green
+            det = BallDetector.for_camera(CFG["cameras"]["elp_left"], CFG["detector"])
+            blobs = det.detect(self.scene(cast))
+            self.assertEqual(len(blobs), 1, "cast %s" % (cast,))
+            self.assertLess(math.hypot(blobs[0].u - 640, blobs[0].v - 300), 2, "cast %s" % (cast,))
+            self.assertLess(abs(blobs[0].diameter_px - 40) / 40, 0.1, "cast %s" % (cast,))
+
+    def test_without_the_correction_a_yellow_green_cast_breaks_it(self):
+        from dodge.detect import BallDetector
+        det = BallDetector.for_camera(CFG["cameras"]["elp_left"], dict(CFG["detector"], balance={"enabled": False}))
+        blobs = det.detect(self.scene((0.5, 1.0, 0.85)))                # the white walls are now the ball's colour
+        self.assertFalse(len(blobs) == 1 and math.hypot(blobs[0].u - 640, blobs[0].v - 300) < 2)
+
+    def test_a_ball_filling_the_view_does_not_become_the_new_white(self):
+        from dodge.detect import BallDetector
+        det = BallDetector.for_camera(CFG["cameras"]["elp_left"], dict(CFG["detector"], max_area_frac=0.6))
+        for _ in range(3):
+            det.detect(self.scene())
+        close = self.scene()
+        cv2.circle(close, (640, 330), 250, (60, 200, 130), -1)
+        for _ in range(60):                                             # a second of it
+            blobs = det.detect(close)
+        self.assertLess(det.balance.strength(), 1.15)
+        self.assertEqual(len(blobs), 1)

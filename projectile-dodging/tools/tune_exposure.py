@@ -213,6 +213,26 @@ class Tuner:
                 exposure, level = self.lowest_reaching(self.c_exp, e_pref, e_cap, target)
         cast_before = self.colour_cast(card)
         wb = self.choose_white_balance(wb_mode, card)                # judged on a properly exposed picture
+        if wb_mode == "measure" and wb["value"] not in (None, "auto"):
+            # Does the camera still show that picture when it is opened afresh with these
+            # settings, as every other program will open it? Some do not keep a fixed
+            # white balance across a restart of the stream.
+            settings = dict(self.cfg.get("capture", {}), auto_exposure=False, exposure_100us=int(exposure),
+                            wb_temperature=wb["value"])
+            if self.c_gain:
+                settings["gain"] = int(gain)
+            self.cap.release()
+            self.cap, self.raw = open_capture(self.device, settings, log=lambda _m: None)
+            if self.cap is None:
+                raise SystemExit("%s: the camera would not reopen: %s" % (self.name, open_problem(self.device)))
+            again = self.colour_cast(card)
+            if abs(again - wb["cast"]) > 0.25:
+                self.set(self.c_wb_auto, 1)
+                self.frames(3, 1.5)
+                wb = {"value": "auto", "cast": self.colour_cast(card),
+                      "note": "This camera does not keep a fixed white balance when it is opened again (the cast came "
+                              "back: %s), so its white balance is left on automatic. The detector takes out whatever "
+                              "cast remains." % describe_cast(again)}
         final = self.frames(40, 0.3)
         per_frame = np.array([brightness(f) for f in final])
         level = float(np.median(per_frame))

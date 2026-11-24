@@ -37,7 +37,7 @@ from _common import ROOT, cv2, load_config, np, open_feed, run_tool, wait_first
 
 from dodge.camera_models import Camera
 from dodge.colorfit import fit_color
-from dodge.config import save_calib
+from dodge.config import COLOUR_FIT, save_calib
 from dodge.detect import BallDetector
 
 PRIOR_LO = np.array([15, 60, 50], dtype=np.uint8)     # anything from yellow to green, reasonably saturated
@@ -76,13 +76,22 @@ def has_colour_calibration(cfg: dict, name: str) -> bool:
             data = yaml.safe_load(f) or {}
     except OSError:
         return False
-    return "color" in ((data.get("cameras") or {}).get(name) or {})
+    color = ((data.get("cameras") or {}).get(name) or {}).get("color") or {}
+    return color.get("fit") == COLOUR_FIT
 
 
 def calibrate_color(feed, cfg: dict, name: str, seconds: float) -> None:
     input("\nStep 1: make sure NO ball is in view of %s (put them behind you). Press Enter..." % name)
     bg_frames = grab(feed, 8, 0.1)
     stop_if_dark(cfg, name, bg_frames)
+    # Everything from here on works on pictures with the room's colour cast taken out,
+    # exactly as the detector will see them.
+    seer = BallDetector.for_camera(cfg["cameras"][name], cfg["detector"])
+    bg_frames = [seer.prepared(f) for f in bg_frames]
+    if seer.balance.strength() > 1.8:
+        print("  note: this camera's picture has a strong colour cast (blue x%.2f, red x%.2f to correct it). It is being\n"
+              "  corrected, but colours are poorer for it: tools/tune_exposure.py %s sets the white balance." % (
+                  seer.balance.gains[0], seer.balance.gains[2], name))
     bg = np.median(np.stack(bg_frames), axis=0).astype(np.uint8)
     input("Step 2: hold the ball 0.5-1.5 m from the camera, hand behind it, and move it slowly around\n"
           "        the picture for %.0f seconds: near and far, low and above the camera's eye level (a thrown\n"
@@ -96,7 +105,7 @@ def calibrate_color(feed, cfg: dict, name: str, seconds: float) -> None:
         item = feed.get(5.0)
         if item is None:
             break
-        bgr = item[1]
+        bgr = seer.balance.apply(item[1])          # same correction as the empty room got: do not follow the ball
         changed = (cv2.absdiff(bgr, bg).max(axis=2) > 40).astype(np.uint8) * 255
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         cand = cv2.bitwise_and(changed, cv2.inRange(hsv, PRIOR_LO, PRIOR_HI))
@@ -125,7 +134,7 @@ def calibrate_color(feed, cfg: dict, name: str, seconds: float) -> None:
                          "yellow-green is moving. Nothing was written." % used)
     px = np.concatenate(samples)
     cam_cfg = cfg["cameras"][name]
-    det_cfg = dict(cfg["detector"], max_blobs=50)
+    det_cfg = dict(cfg["detector"], max_blobs=50, balance={"enabled": False})     # these pictures are corrected already
 
     def judge(color: dict):
         """The same limits must leave the empty room empty: (ball-like patches found, share of it ball-coloured)."""
@@ -159,6 +168,7 @@ def calibrate_color(feed, cfg: dict, name: str, seconds: float) -> None:
         print("  note: that is not much margin. The underside of a ball in flight is darker than a ball held in the\n"
               "  light, so some throws will be picked up late or not at all. More light in the room gives more margin\n"
               "  (then tune_exposure.py and this step again).")
+    color["fit"] = COLOUR_FIT
     path = save_calib(name + "_color", {"cameras": {name: {"color": color}}})
     print("  written to %s" % path)
     print("\nNext, the size step:  python3 tools/calibrate_color.py %s --distance 0.5 1 1.5 2" % name)

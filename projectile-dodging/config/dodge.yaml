@@ -35,12 +35,12 @@ cameras:
     size_offset_px: 0.4               # blobs come out about this much too wide
     bearing_sigma_deg: 0.35
     size_sigma_px: 0.5
-    # Ball colour, OpenCV HSV (H 0-179). These are starting values for an uncalibrated camera;
-    # tools/calibrate_color.py replaces them for the room. A pixel is ball-coloured when its hue is in
-    # range, its saturation is at least s_min, its brightness at least v_min, and its colourfulness
-    # (saturation x brightness / 255) at least c_min. A patch of such pixels only counts if some of
-    # them also reach c_seed. The fisheye is red-tinted: neon green sits nearer yellow in it.
-    color: {h_min: 27, h_max: 62, s_min: 100, s_max: 255, v_min: 70, v_max: 255, c_min: 50, c_seed: 88}
+    # Ball colour, OpenCV HSV (H 0-179), judged after the picture's colour cast has been taken out
+    # (detector.balance). These are starting values for an uncalibrated camera; tools/calibrate_color.py
+    # replaces them for the room. A pixel is ball-coloured when its hue is in range, its saturation is
+    # at least s_min, its brightness at least v_min, and its colourfulness (saturation x brightness / 255)
+    # at least c_min. A patch of such pixels only counts if some of them also reach c_seed.
+    color: {h_min: 32, h_max: 72, s_min: 50, s_max: 255, v_min: 45, v_max: 255, c_min: 32, c_seed: 45}
   elp_left:
     enabled: true
     source: v4l2
@@ -61,7 +61,7 @@ cameras:
     size_offset_px: 0.4
     bearing_sigma_deg: 0.25
     size_sigma_px: 0.4
-    color: {h_min: 28, h_max: 68, s_min: 60, s_max: 255, v_min: 50, v_max: 255, c_min: 36, c_seed: 60}
+    color: {h_min: 32, h_max: 72, s_min: 50, s_max: 255, v_min: 45, v_max: 255, c_min: 32, c_seed: 45}
   elp_right:
     enabled: true
     source: v4l2
@@ -78,7 +78,7 @@ cameras:
     size_offset_px: 0.4
     bearing_sigma_deg: 0.25
     size_sigma_px: 0.4
-    color: {h_min: 28, h_max: 68, s_min: 60, s_max: 255, v_min: 50, v_max: 255, c_min: 36, c_seed: 60}
+    color: {h_min: 32, h_max: 72, s_min: 50, s_max: 255, v_min: 45, v_max: 255, c_min: 32, c_seed: 45}
 
 detector:
   min_area_px: 10          # about 3.6 px across; never smaller than this
@@ -91,11 +91,15 @@ detector:
   max_aspect: 2.8          # long side / short side; a 120 deg rectilinear lens stretches the ball near the image edge
   min_fill: 0.5            # small patches (under shape_min_area_px): area / area of the oval in its bounding box
   shape_min_area_px: 80    # from this size up, a patch's shape is judged by the three numbers below
-  min_solidity: 0.8        # area / area of its convex outline: a ball has no dents or holes; clothing and floor patches do
+  min_solidity: 0.72       # area / area of its convex outline: a ball has no big dents or holes; clothing and floor patches do
   min_ellipse_fill: 0.78   # filled outline / best-fitting oval: 1.0 for a disc or oval, 0.64 for a triangle
   max_fill: 1.15           # same number, upper limit: 1.27 for a box
   max_candidates: 150      # patches judged per frame, largest first
   seed_frac: 0.15          # share of a patch's pixels that must clear the colour profile's higher bar (c_seed)
+  # Before the colour tests each picture's colour cast is taken out: blue and red are scaled so the bright,
+  # colourless parts of the room come out neutral. The ball's colour then no longer depends on the camera's
+  # white balance. every: frames between updates; rate: how far each update moves toward the new estimate.
+  balance: {enabled: true, every: 20, rate: 0.35}
   max_blobs: 10
   roi_tracking: true       # while a ball is tracked, look near its predicted position first
   roi_half_deg: 14.0

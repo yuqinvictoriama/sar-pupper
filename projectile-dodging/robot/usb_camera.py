@@ -230,6 +230,45 @@ def apply_controls(device: str, cap_cfg: dict, cap=None, log=print) -> None:
         cap.set(cv2.CAP_PROP_WB_TEMPERATURE, float(wb))
 
 
+def describe_controls(device: str, cap_cfg: dict | None = None) -> str:
+    """What the camera says its exposure, gain and white balance are; flags any that differ from what was asked."""
+    c = read_controls(device)
+    if not c:
+        return ""
+    cap_cfg = cap_cfg or {}
+    parts, wrong = [], []
+    n_auto, n_exp = control_name(c, *EXPOSURE_AUTO), control_name(c, *EXPOSURE_TIME)
+    if n_auto and c[n_auto].get("value") == 3:
+        parts.append("exposure automatic")
+        if not cap_cfg.get("auto_exposure", False):
+            wrong.append("exposure should be fixed")
+    elif n_exp:
+        parts.append("exposure %.1f ms" % (c[n_exp].get("value", 0) / 10.0))
+        want = cap_cfg.get("exposure_100us")
+        if want is not None and c[n_exp].get("value") != int(want):
+            wrong.append("exposure should be %.1f ms" % (int(want) / 10.0))
+    if "gain" in c:
+        parts.append("gain %d" % c["gain"].get("value", 0))
+        if cap_cfg.get("gain") is not None and c["gain"].get("value") != int(cap_cfg["gain"]):
+            wrong.append("gain should be %d" % int(cap_cfg["gain"]))
+    n_wb = control_name(c, *WB_AUTO)
+    want_wb = cap_cfg.get("wb_temperature")
+    if n_wb and c[n_wb].get("value"):
+        parts.append("white balance automatic")
+        if want_wb not in (None, "auto"):
+            wrong.append("white balance should be fixed at %d K" % int(want_wb))
+    elif "white_balance_temperature" in c:
+        parts.append("white balance fixed at %d K" % c["white_balance_temperature"].get("value", 0))
+        if want_wb == "auto":
+            wrong.append("white balance should be automatic")
+        elif want_wb is not None and c["white_balance_temperature"].get("value") != int(want_wb):
+            wrong.append("white balance should be %d K" % int(want_wb))
+    text = ", ".join(parts)
+    if wrong:
+        text += "   <-- THE CAMERA DID NOT TAKE THE SETTINGS: " + "; ".join(wrong)
+    return text
+
+
 # ------------------------------------------------------------------ capture
 
 def open_capture(device: str, cap_cfg: dict, log=print):
@@ -245,6 +284,14 @@ def open_capture(device: str, cap_cfg: dict, log=print):
     cap.set(cv2.CAP_PROP_FPS, float(cap_cfg.get("fps", 120)))
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     apply_controls(device, cap_cfg, cap, log)
+    # Some cameras only take (or keep) white balance and exposure settings once they
+    # are streaming, and fall back to their defaults when a stream starts. So start
+    # the stream, then set everything again, then check what the camera reports.
+    cap.grab()
+    apply_controls(device, cap_cfg, cap, log)
+    state = describe_controls(device, cap_cfg)
+    if state:
+        log("camera settings: %s" % state)
     # Raw mode: get the camera's JPEG bytes untouched (cheap to record, decoded by us).
     raw = False
     if cap_cfg.get("raw_mjpg", True):

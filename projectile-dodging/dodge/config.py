@@ -4,8 +4,12 @@ from __future__ import annotations
 import copy
 import glob
 import os
+import sys
 
 import yaml
+
+COLOUR_FIT = 2      # how colour limits are fitted; a calibration file made for an earlier way no longer applies
+_told = set()
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_CONFIG = os.path.join(ROOT, "config", "dodge.yaml")
@@ -31,7 +35,18 @@ def load_config(path: str | None = None, calib_dir: str | None = None, use_calib
         calib_dir = calib_dir or os.path.join(os.path.dirname(os.path.abspath(path)), "calib")
         for name in sorted(glob.glob(os.path.join(calib_dir, "*.yaml"))):
             with open(name) as f:
-                cfg = deep_merge(cfg, yaml.safe_load(f) or {})
+                data = yaml.safe_load(f) or {}
+            for cam, entry in (data.get("cameras") or {}).items():
+                color = (entry or {}).get("color")
+                if isinstance(color, dict) and color.get("fit") != COLOUR_FIT:
+                    # Fitted before the detector took the colour cast out of its pictures:
+                    # those limits describe a differently coloured ball. Use the starting values.
+                    del entry["color"]
+                    if name not in _told:
+                        _told.add(name)
+                        print("note: the colour calibration in %s is from an earlier version and is being ignored. "
+                              "Redo it:  python3 tools/calibrate_color.py %s" % (name, cam), file=sys.stderr)
+            cfg = deep_merge(cfg, data)
     cfg["_path"] = os.path.abspath(path)
     return cfg
 
