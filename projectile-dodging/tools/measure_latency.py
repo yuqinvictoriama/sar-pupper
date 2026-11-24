@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import time
 
-from _common import cv2, load_config, np, open_feed, ros_node, wait_first
+from _common import cv2, load_config, np, open_feed, ros_node, run_tool, wait_first
 
 from dodge.config import save_calib
 
@@ -97,4 +97,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_tool(main)

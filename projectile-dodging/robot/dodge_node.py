@@ -13,6 +13,11 @@ It also publishes /dodge/state (JSON, 5 Hz) and /dodge/event (JSON, one per
 dodge), offers /dodge/arm (std_srvs/SetBool), and saves a short recording
 around every dodge to data/events/ so each one can be replayed afterwards.
 
+This node holds the two USB cameras, so nothing else can open them. For
+survivor identification it passes their frames on, as the camera's own JPEGs,
+on /elp_left/image/compressed and /elp_right/image/compressed: at most
+node.share_frames_hz a second each, and only while something subscribes.
+
 With armed:=false (the default) it does everything except move the robot: it
 reports the dodge it would have made. Arm it only with someone at the e-stop.
 """
@@ -77,7 +82,7 @@ class DodgeNode(Node):
                 mask = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
                 if mask is None:
                     self.get_logger().warning("%s: mask file %s could not be read" % (name, path))
-            self.detectors[name] = BallDetector(cam["color"], self.det_cfg, mask)
+            self.detectors[name] = BallDetector.for_camera(cam, self.det_cfg, mask)
         self.roi_tracking = bool(self.det_cfg.get("roi_tracking", True))
         self.full_every = max(1, int(self.det_cfg.get("full_frame_every", 3)))
         self.frame_no = {name: 0 for name in self.cam_cfgs}
@@ -116,6 +121,7 @@ class DodgeNode(Node):
 
         # ---- cameras
         self.usb = []
+        self.usb_by_name = {}
         self.fisheye_name = None
         self.fisheye_msg = None
         self.fisheye_event = threading.Event()
@@ -130,6 +136,7 @@ class DodgeNode(Node):
                 cam_thread = UsbCamera(name, cam, self.on_usb_frame, log=lambda m: self.get_logger().info(m))
                 cam_thread.start()
                 self.usb.append(cam_thread)
+                self.usb_by_name[name] = cam_thread
             elif src == "ros_compressed":
                 self.fisheye_name = name
                 self.create_subscription(CompressedImage, cam.get("topic", "/camera/image_raw/compressed"),
@@ -137,6 +144,15 @@ class DodgeNode(Node):
                 threading.Thread(target=self.fisheye_worker, daemon=True, name="fisheye").start()
             else:
                 self.get_logger().error("%s: unknown source %r" % (name, src))
+
+        # ---- rear-camera frames for other nodes (survivor identification)
+        self.share_hz = float(ncfg.get("share_frames_hz", 10.0))
+        self.share_pubs = {}
+        self.share_last = {}
+        if self.share_hz > 0:
+            for name, cam in self.cam_cfgs.items():
+                if cam.get("source") == "v4l2":
+                    self.share_pubs[name] = self.create_publisher(CompressedImage, "/%s/image/compressed" % name, 1)
 
         self.create_timer(1.0 / float(ncfg.get("cmd_rate_hz", 100.0)), self.on_cmd_timer)
         self.create_timer(0.2, self.on_status_timer)
@@ -181,6 +197,31 @@ class DodgeNode(Node):
             self.process_frame(name, t_capture, bgr, jpeg)
         except Exception as exc:
             self.get_logger().error("%s: frame processing failed: %r" % (name, exc), throttle_duration_sec=2.0)
+        try:
+            self.share_frame(name, t_capture, jpeg, bgr)          # after the ball: dodging comes first
+        except Exception as exc:
+            self.get_logger().error("%s: could not pass the frame on: %r" % (name, exc), throttle_duration_sec=5.0)
+
+    def share_frame(self, name: str, t_capture: float, jpeg, bgr) -> None:
+        """Pass a rear-camera frame on to whoever subscribes, a few times a second."""
+        pub = self.share_pubs.get(name)
+        if pub is None or t_capture - self.share_last.get(name, 0.0) < 0.95 / self.share_hz:
+            return
+        if pub.get_subscription_count() == 0:
+            return
+        self.share_last[name] = t_capture
+        if jpeg is None:                   # camera not in pass-through mode: encode this one frame
+            ok, jpeg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if not ok:
+                return
+        msg = CompressedImage()
+        msg.header.stamp.sec = int(t_capture)
+        msg.header.stamp.nanosec = int((t_capture - int(t_capture)) * 1e9)
+        msg.header.frame_id = name
+        msg.format = "jpeg"
+        msg.data = jpeg.tobytes()
+        with self.pub_lock:
+            pub.publish(msg)
 
     def on_fisheye_msg(self, msg: CompressedImage) -> None:
         self.fisheye_msg = (msg, time.time())      # keep only the newest; decoding happens in the worker
@@ -306,6 +347,11 @@ class DodgeNode(Node):
                 cams[name] = {"fps": round(s["fps"], 1), "latency_ms": round(s["latency"] * 1000.0, 1),
                               "proc_ms": round(s["proc_ms"], 1), "alive": (now - s["last"]) < 1.0,
                               "blobs": s["blobs"]}
+                usb = self.usb_by_name.get(name)
+                if usb is not None:
+                    cams[name]["brightness"] = round(usb.brightness, 0)
+                    if usb.problem:
+                        cams[name]["problem"] = usb.problem
                 s["frames"] = 0
                 s["blobs"] = 0
         status["cameras"] = cams
@@ -317,6 +363,8 @@ class DodgeNode(Node):
         self.running = False
         for cam in self.usb:
             cam.stop()
+        for cam in self.usb:
+            cam.close(2.0)        # released before Python exits; exiting mid-capture aborts the process
 
 
 def main() -> None:

@@ -16,31 +16,38 @@ it, and nothing it could fall off.
 
 ## 1. Get the code onto the Pupper
 
-On the Mac (the code is not committed yet):
+The code lives in `https://github.com/yuqinvictoriama/sar-pupper` on branch `main`.
+
+First time, on the Pupper:
+
+```bash
+git clone https://github.com/yuqinvictoriama/sar-pupper.git ~/sar-pupper
+cd ~/sar-pupper/projectile-dodging
+which v4l2-ctl || sudo apt install -y v4l-utils     # needed: sets and tunes the cameras' exposure, gain and white balance
+```
+
+To bring a newer version over later, on the Mac:
 
 ```bash
 cd ~/Desktop/CS123/pi/sar-pupper
-git add projectile-dodging
-git commit -m "Projectile dodging: core, robot node, tools, plan"
-git push -u origin main
+git add projectile-dodging && git commit -m "Projectile dodging: <what changed>" && git push
 ```
 
-On the Pupper:
+then on the Pupper:
 
 ```bash
-git clone https://github.com/yuqinvictoriama/sar-pupper.git ~/sar-pupper     # if it is already there: cd ~/sar-pupper && git pull
-cd ~/sar-pupper/projectile-dodging
-which v4l2-ctl || sudo apt install -y v4l-utils     # used to fix camera exposure and white balance
+cd ~/sar-pupper && git pull && cd projectile-dodging
 ```
 
-Everything else it needs (numpy, OpenCV, PyYAML, SciPy, ROS 2 Jazzy) is already
-on the course image. It also expects `~/gemini_pupper` and `~/pupperv3-monorepo`
-where the labs put them.
+What the calibration tools write on the Pupper (`config/calib/*.yaml`) is not
+touched by a pull. Everything else the code needs (numpy, OpenCV, PyYAML,
+SciPy, ROS 2 Jazzy) is already on the course image. It also expects
+`~/gemini_pupper` and `~/pupperv3-monorepo` where the labs put them.
 
 ## 2. Check the code runs (no robot needed)
 
 ```bash
-python3 -m unittest discover -s tests     # expect: Ran 32 tests ... OK
+python3 -m unittest discover -s tests     # expect: Ran 41 tests ... OK
 python3 tools/sim_report.py --n 20        # simulated throws; takes about a minute on the Pi
 ```
 
@@ -60,37 +67,111 @@ source robot/env.sh                       # in every terminal you use from here 
 `start.sh` refuses to start if a robot stack is already running. If it says so
 and `stop.sh` did not clear it, find what started it (`pgrep -af ros2_control_node`).
 
-## 4. Tell it which USB camera is which
+## 4. Find the rear cameras, set their exposure, look through each
+
+Four steps. Each tool says what is wrong and what to do when something is.
+
+**4a. Are both cameras there and working?**
 
 ```bash
-python3 tools/find_cameras.py             # lists the cameras and their modes, saves data/snapshots/usb*.jpg
+python3 tools/find_cameras.py
+```
+
+It lists each USB camera with its socket, takes a snapshot of each
+(`data/snapshots/usb*.jpg`), and for a camera that will not deliver pictures it
+prints why. What it can report, and the fix:
+
+| It says | Meaning | Fix |
+|---|---|---|
+| `1 USB camera present` | The Pi does not see the other camera at all | Reseat its plug at both ends. Swap the two cameras' sockets: if the fault follows the camera it is the camera or its cable, if it stays with the socket it is power or the socket. `lsusb` shows what the Pi sees |
+| `NOT WORKING: ... in use by another program: pid ...` | Something else has the camera | Stop that program. `bash robot/stop.sh` stops the dodge node; a `view.py` or `record.py` left running in another terminal counts too |
+| `NOT WORKING: ... refuses to deliver video` | The Pi sees it but it will not stream | Unplug and replug it. Then the USB power row below; the tool also prints any recent kernel messages about USB, which usually name the cause |
+| `The Pi is limiting all four USB sockets together to 0.6 A` | On the robot the Pi is not on a 5 A USB-C supply, so it caps USB power; two cameras can exceed the cap and one drops out | `echo usb_max_current_enable=1 \| sudo tee -a /boot/firmware/config.txt`, then `sudo reboot`. Check with `vcgencmd get_config usb_max_current_enable` (want `=1`) |
+| `<-- no camera there now` next to `elp_left` or `elp_right` | The config points at a socket with nothing in it (a plug was moved, or that camera is the missing one) | Fix the camera first, then 4b |
+
+**4b. Which is left, which is right?**
+
+```bash
 python3 tools/find_cameras.py --assign    # cover the LEFT rear camera when asked
 ```
 
-"Left" is the robot's left. The result goes to `config/calib/devices.yaml`.
-Cameras are identified by USB port, so re-run this if you move a plug.
+"Left" is the robot's left. It needs exactly two working cameras and refuses
+otherwise. The result goes to `config/calib/devices.yaml`. Cameras are
+identified by USB socket, so run this again whenever a plug moves.
 
-Look at the mode list it prints. The config asks for 1280×720 at 120 fps
-(`cameras.elp_*.capture` in `config/dodge.yaml`). If your cameras do not offer
-that, set the closest mode that is at least 1280 wide.
+It finishes by running both cameras **at the same time**, which is what the
+dodge node does, and prints the frame rate of each (`python3 tools/find_cameras.py --both`
+repeats just this). If each camera works alone but one fails here, they are
+starving each other: put them on different USB controllers (move one plug
+until the list in 4a shows one camera on `xhci-hcd.0` and the other on
+`xhci-hcd.1`, then `--assign` again), check the USB power note above, or lower
+the mode for both by creating `config/calib/mode.yaml`:
 
-Then look through each camera:
+```yaml
+cameras:
+  elp_left:  {capture: {fps: 60}}
+  elp_right: {capture: {fps: 60}}
+```
+
+The config asks for 1280×720 at 120 fps; a camera that tops out lower in that
+mode simply runs at its own top rate (90 fps on these ELPs), which is fine.
+
+**4c. Set exposure, gain and white balance for the room**
 
 ```bash
+python3 tools/tune_exposure.py all
+```
+
+Do this in the room and light you will throw in, robot where it will stand.
+The rear cameras run a short, fixed exposure (3 ms) so a thrown ball does not
+smear; at the cameras' default gain that is nearly black indoors. The tool
+raises the gain until the picture is bright enough, lengthens the exposure
+only if the gain runs out, locks the white balance the camera picks, and
+writes `config/calib/exposure.yaml`. Read what it prints:
+
+| It says | What to do |
+|---|---|
+| `exposure 3.0 ms, gain N ... picture averages 80-100 of 255` | Nothing. This is the good case |
+| `the exposure is longer than the 3 ms asked for` | It works, but fast balls smear. More light in the room, then run it again |
+| `STILL TOO DARK` | The room is too dim for these cameras. Add light (best), or allow more smear with the command it prints |
+| `the room lights flicker with the mains` | The ball's brightness will pulse. Daylight or a different lamp is better; colour calibration copes if you leave it |
+
+Run it again whenever the lighting changes a lot, and redo the colour
+calibration (stage 5) afterwards.
+
+**4d. Look through each camera**
+
+```bash
+python3 tools/fit_image_circle.py fisheye --write   # once per robot: finds the rim of the fisheye lens
 python3 tools/view.py elp_left            # open http://<pupper-ip>:8090  (Ctrl+C when done)
 python3 tools/view.py elp_right
 python3 tools/view.py fisheye
 ```
 
-Check three things in each:
+The fisheye lights a disc in the middle of its frame, and the very edge of
+that disc splits colours into a fringe that is partly ball-green. The detector
+ignores everything outside the thin red circle `view.py` draws on the fisheye
+picture. `fit_image_circle.py` measures where the disc is on your camera and
+saves a preview (`data/snapshots/fisheye_circle.jpg`): the yellow circle should
+sit on the edge of the lit disc. Point the robot at a normally lit room for it.
+
+Check in each view:
 
 | Check | If not |
 |---|---|
+| Picture is clearly visible, not near-black | `view.py` prints `picture very dark` when it is: go back to 4c |
 | Picture is the right way up | Camera is mounted rotated: put `roll_deg: 180` (or 90 / -90) under that camera's `extrinsics` in a new file `config/calib/mounting.yaml` (same layout as `dodge.yaml`) |
-| The ball looks clearly neon green, not dark or washed out | ELPs: raise or lower `exposure_100us` (units of 0.1 ms) or set `gain`, under that camera's `capture`. Fisheye: exposure is automatic unless you start with `bash robot/start.sh --fisheye-exposure 4000` (microseconds) |
-| The ball is not smeared when you wave it | Shorten the exposure (and add light) |
+| The ball looks clearly neon green, not washed out to white | ELPs: `python3 tools/tune_exposure.py <camera> --target 70`. Fisheye: exposure is automatic unless you start with `bash robot/start.sh --fisheye-exposure 4000` (microseconds) |
+| The ball is not smeared when you wave it | More light, then 4c again |
+| Fisheye: no red boxes along the edge of the lit disc | `fit_image_circle.py fisheye --write` again; if the red circle is right and boxes remain just inside it, add `--margin 0.14` |
+
+Before stage 5, expect a few small red boxes on other yellow-green things, and
+expect the box on the ball to flicker or read the wrong distance: the colour
+settings are still the generic defaults. Stage 5 fits them to this room.
 
 ## 5. Calibrate (each camera, in the room and lighting you will run in)
+
+Do 4c first: colour calibration is only valid for the exposure it was made with.
 
 ```bash
 python3 tools/calibrate_color.py elp_left                     # follow the two prompts
@@ -223,7 +304,12 @@ Each dodge is announced on `/dodge/event` (JSON) so a planner can re-plan.
 | `check_setup.py`: mux does not listen to `/dodge_cmd_vel` | Stack was started by Gemini's own script | `bash robot/stop.sh`, then `bash robot/start.sh` |
 | Tools find no topics / no IMU | Terminal lacks the ROS environment | `source robot/env.sh` |
 | "CANNOT DODGE: no walking controller active" | Robot is relaxed, mid-trick or fell | `bash robot/walk.sh`, or wake it through Gemini |
-| A camera shows `---` in `watch.sh` | Unplugged, wrong port, or another program has it | Stage 4; make sure `view.py`/`record.py` are not still running |
+| A camera shows `---` in `watch.sh` | Unplugged, wrong socket, no power, or another program has it | `bash robot/stop.sh`, then `python3 tools/find_cameras.py` (stage 4a); `/tmp/sar-dodge/robot.log` has the node's own explanation |
+| `cannot open the camera: there is no camera on that USB socket` | That camera is not connected as far as the Pi can tell, or its plug moved | Stage 4a, then 4b |
+| An ELP picture is near-black | Short exposure at the camera's default gain | `python3 tools/tune_exposure.py <camera>` (stage 4c) |
+| One ELP works alone but not with the other | Shared USB bandwidth or power | Stage 4b: different controllers, `usb_max_current_enable=1`, or `fps: 60` |
+| Red boxes around the edge of the fisheye picture | Colour fringe at the lens rim | `python3 tools/fit_image_circle.py fisheye --write` (stage 4d) |
+| Range to a ball on the floor reads far too short and its box flickers | Colour range too wide: the blob is the ball plus the floor it lights up | `calibrate_color.py` for that camera (stage 5) |
 | No track although the ball is in view | Colour profile does not match this lighting | Redo `calibrate_color.py`; check with `view.py --mask` |
 | Tracks appear with no ball | Something else in view is ball-coloured | Remove it, or tighten `s_min` / the hue range for that camera |
 | Range reads consistently wrong | Size calibration | `calibrate_color.py <cam> --distance ...`; check `ball.diameter_m` |
@@ -244,11 +330,19 @@ Logs: `/tmp/sar-dodge/robot.log`. Every dodge (real or dry) is in `data/events/`
   libraries) and the optional fast mux's priority logic. In simulation with the
   default numbers, lobs from the sides and rear are dodged essentially every
   time, front diagonals about 9 in 10, straight from the front about 6 in 10;
-  throws that miss and balls on the floor are ignored.
-- **Not verified – needs the stages above:** anything involving the real
-  cameras (USB capture modes, exposure control, colours, timestamps), the real
-  ROS stack (the launch file has not been run), CPU load on the Pi, and how the
-  real robot accelerates. Expect to adjust numbers in `config/` during stages
-  4–7. The launch file and the USB capture are the two pieces most likely to
-  need a code fix on first contact with the robot; `/tmp/sar-dodge/robot.log`
-  will say which.
+  throws that miss and balls on the floor are ignored. The camera finder, the
+  exposure tuner and the lens-rim fit have only run against stand-in cameras
+  and one screenshot of the real fisheye.
+- **Seen on the robot (2026-11-23, stages 1-4):** the code installs and the
+  stack starts with `start.sh --no-dodge`; the fisheye arrives through ROS and
+  the ball is found in it; one ELP opens at 1280×720, 90 fps, with its JPEG
+  passed through. That run also showed three faults, fixed since: the ELP
+  picture was near-black at the default gain (now stage 4c), the lens rim of
+  the fisheye produced false blobs (now masked, stage 4d), and Ctrl+C aborted
+  the tools instead of ending them. The second ELP could not be opened in that
+  run; the log could not say why, which is what stage 4a now reports.
+- **Not verified - needs the stages above:** the second ELP and both ELPs
+  streaming together, the exposure tuner on the real cameras, colours and
+  timestamps, the dodge node in the real ROS stack, CPU load on the Pi, and how
+  the real robot accelerates. Expect to adjust numbers in `config/` during
+  stages 4-7. `/tmp/sar-dodge/robot.log` says what the node could not do.

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .camera_models import Camera
+from .detect import circle_params
 
 
 @dataclass
@@ -61,6 +62,12 @@ def angular_diameter(camera: Camera, u: float, v: float, area_px: float) -> floa
 
 def measure_blob(camera: Camera, blob, ball_diameter: float) -> Measurement | None:
     cfg = camera.cfg
+    circle = cfg.get("image_circle")
+    if circle:
+        intr = cfg.get("intrinsics", {})
+        c = circle_params(circle, (intr.get("width", 0), intr.get("height", 0)), camera.model.width, camera.model.height)
+        if c is not None and math.hypot(blob.u - c[0], blob.v - c[1]) > c[2]:
+            return None                      # in the fringe at the rim of the lens
     rays_b, rays_c, ok = camera.rays_base(np.array([[blob.u, blob.v]]))
     if not ok[0]:
         return None

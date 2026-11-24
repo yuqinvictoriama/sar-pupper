@@ -17,7 +17,9 @@ import subprocess
 import sys
 import time
 
-from _common import cv2, load_config, np
+import yaml
+
+from _common import cv2, load_config, np, run_tool
 
 results = []
 
@@ -53,8 +55,15 @@ def main() -> None:
         report(calibrated, "%s: colour calibrated" % name, "python3 tools/calibrate_color.py %s" % name)
         if cam.get("source") == "v4l2":
             dev = cam.get("device", "")
-            report(bool(dev) and os.path.exists(dev), "%s: device %s" % (name, dev or "(not set)"),
-                   "python3 tools/find_cameras.py --assign")
+            report(bool(dev) and os.path.exists(dev), "%s: camera present at %s" % (name, dev or "(not set)"),
+                   "python3 tools/find_cameras.py   (it says what is wrong and what to do)")
+            tuned = False
+            try:
+                with open(os.path.join(os.path.dirname(cfg["_path"]), "calib", "exposure.yaml")) as f:
+                    tuned = name in ((yaml.safe_load(f) or {}).get("cameras") or {})
+            except OSError:
+                pass
+            report(tuned, "%s: exposure and gain set for this room" % name, "python3 tools/tune_exposure.py %s" % name)
 
     if args.no_ros:
         print("\n%d problem(s)" % results.count(False))
@@ -103,7 +112,11 @@ def main() -> None:
     if st is not None:
         for name, c in st.get("cameras", {}).items():
             report(c["alive"], "dodge node gets frames from %s (%.0f fps, %.0f ms behind, %.0f ms to process)" % (
-                name, c["fps"], c["latency_ms"], c["proc_ms"]), "check that camera's cable / device path")
+                name, c["fps"], c["latency_ms"], c["proc_ms"]),
+                c.get("problem") or "stop the stack (robot/stop.sh) and run  python3 tools/find_cameras.py")
+            if c["alive"] and 0 <= c.get("brightness", -1) < 25:
+                report(False, "%s: picture bright enough (average %.0f of 255)" % (name, c["brightness"]),
+                       "stop the stack, then  python3 tools/tune_exposure.py %s" % name)
         report(st.get("imu_alive"), "dodge node gets the IMU")
         report(st.get("can_dodge"), "dodge node says it can dodge" + ("" if st.get("can_dodge") else ": " + st.get("cannot_reason", "")))
         print("         dodge node is %s" % ("ARMED" if st.get("armed") else "in dry run (not armed)"))
@@ -111,4 +124,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_tool(main)

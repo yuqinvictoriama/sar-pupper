@@ -1,6 +1,6 @@
 # Projectile dodging – implementation plan (v2)
 
-Updated 2026-11-23. Supersedes the 2026-11-16 plan. **Implemented in this folder** (see `README.md`; deployment steps in `DEPLOY.md`). The code has been tested off the robot only; it has not yet run on the Pupper.
+Updated 2026-11-23. Supersedes the 2026-11-16 plan. **Implemented in this folder** (see `README.md`; deployment steps in `DEPLOY.md`). The first run on the Pupper (2026-11-23) reached deployment stage 4, camera setup; nothing past that has run on the robot yet (see Implementation status).
 
 ## Goal
 
@@ -170,7 +170,7 @@ projectile-dodging/
   plan.md, README.md, DEPLOY.md
   dodge/             pure Python, no ROS: lens models, detect, measure, track, threat, escape, core (state machine), recording, sim
   robot/             on the Pupper: USB capture, dodge_node.py, sar_dodge.launch.py, mux.yaml, fast_mux.py, start/stop/watch/walk scripts
-  tools/             find_cameras, view, calibrate_color / _camera / _extrinsics, record, replay, measure_latency, step_response, check_setup, sim_report
+  tools/             find_cameras, tune_exposure, fit_image_circle, view, calibrate_color / _camera / _extrinsics, record, replay, measure_latency, step_response, check_setup, sim_report
   config/            dodge.yaml (every number) and calib/ (written by the calibration tools, merged on top)
   tests/             off-robot tests
   data/              recordings and saved dodge events (git-ignored)
@@ -180,7 +180,7 @@ projectile-dodging/
 
 **Built:** every pipeline step above, the ROS node, the launch file that wraps the Gemini stack and adds `/dodge_cmd_vel` to the mux, and the Phase 0–3 tools. The dodge node starts unarmed: it reports the dodge it would make and saves a recording of each, but sends no command until armed.
 
-**Checked off the robot (Python 3.11, numpy 1.26, OpenCV 4.11, as on the Pi):** 32 automated tests, including rendered ball images through detection, tracking and replay; the node driven in real time through stand-in ROS libraries and a fake USB camera.
+**Checked off the robot (Python 3.11, numpy 1.26, OpenCV 4.11, as on the Pi):** 41 automated tests, including rendered ball images through detection, tracking and replay; the node driven in real time through stand-in ROS libraries and a fake USB camera.
 
 **Simulated dodge rate, Tier A lobs, shipped config** (fisheye assumed to see the ball from 6 px at 30 fps; robot lag 0.2 s; 30–40 throws per sector):
 
@@ -194,7 +194,14 @@ projectile-dodging/
 
 The front cone moves most with assumptions: 73 % with the fisheye at 60 fps, 97 % if it sees the ball from 5 px, 30 % if the robot's lag is 0.3 s, 93 % with the along-track option at 1.5 m/s. Flat throws (Tier B) are mostly not dodged, as expected. Re-run with `tools/sim_report.py` once the real lag and delay are measured.
 
-**Not verified until it runs on the Pupper:** USB capture modes and exposure control, colour thresholds, timestamps, the launch file, CPU load, and the robot's real acceleration. `DEPLOY.md` walks through these in order.
+**First run on the Pupper (2026-11-23, deployment stages 1–4).** The stack starts, the fisheye arrives through ROS and the ball is found in it, and one ELP opens at 1280×720, 90 fps. Three things were wrong and are fixed:
+- *ELP picture near-black.* A 3 ms exposure at the camera's default gain is too dark indoors. `tools/tune_exposure.py` now sets gain (then exposure, if the gain runs out) from the picture itself and locks the white balance; the node and the tools warn when a picture is too dark to use.
+- *False blobs around the fisheye's edge.* The rim of the lens splits colours and part of the fringe is ball-green. The detector now ignores everything beyond 89 % of the lit disc's radius (`cameras.fisheye.image_circle`; measured per robot with `tools/fit_image_circle.py`). Simulated dodge rates are unchanged by it.
+- *Tools aborted on Ctrl+C.* They now release the cameras and ROS before exiting.
+
+The second ELP could not be opened in that run and the log could not say why. `tools/find_cameras.py` now reports the cause (not connected, in use, no video, USB power limit) and tests both rear cameras streaming together. Also seen: with the default colour profile the fisheye's blob on a ball lying on a beige carpet included the carpet around it, so the range read short; per-room colour calibration (Phase 0) is not optional.
+
+**Not verified until it runs on the Pupper:** the second ELP and both together, the exposure tuner on the real cameras, colour thresholds, timestamps, the dodge node in the real stack, CPU load, and the robot's real acceleration. `DEPLOY.md` walks through these in order.
 
 **Where the build differs from the earlier text of this plan:**
 - Tracker is 3D-ballistic rather than a filter on angles (pipeline step 4).

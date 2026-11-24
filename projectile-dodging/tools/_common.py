@@ -46,8 +46,11 @@ class Feed:
             return self.item
 
     def close(self) -> None:
+        """Release the camera. Call before the program exits (see finish())."""
+        ok = True
         for fn in self.closers:
-            fn()
+            ok = (fn() is not False) and ok
+        self.closed_cleanly = ok
 
 
 _ros = {}
@@ -59,19 +62,79 @@ def ros_node(name: str = "dodge_tool"):
         import rclpy
         from rclpy.executors import SingleThreadedExecutor
         from rclpy.node import Node
+        from rclpy.executors import ExternalShutdownException
         rclpy.init()
         node = Node(name)
         ex = SingleThreadedExecutor()
         ex.add_node(node)
-        threading.Thread(target=ex.spin, daemon=True).start()
+
+        def spin():
+            try:
+                ex.spin()
+            except (KeyboardInterrupt, ExternalShutdownException):
+                pass                              # Ctrl+C: nothing to report
+            except Exception:                     # rclpy raises assorted errors while shutting down
+                if rclpy.ok():
+                    raise
+        threading.Thread(target=spin, daemon=True).start()
         _ros["node"] = node
     return _ros["node"]
+
+
+_feeds = []
+
+
+def finish(code: int = 0) -> None:
+    """End a tool cleanly: release the cameras, stop ROS, then leave.
+
+    A camera thread still inside OpenCV, or a ROS thread still spinning, when
+    Python exits makes the C++ underneath abort ("terminate called without an
+    active exception"). So wait for them, and if one will not stop, leave
+    without running the exit handlers that trip over it.
+    """
+    clean = True
+    for feed in _feeds:
+        feed.close()
+        clean = clean and getattr(feed, "closed_cleanly", True)
+    if "node" in _ros:
+        try:
+            import rclpy
+            rclpy.try_shutdown()
+        except Exception:
+            pass
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if not clean or "node" in _ros:
+        os._exit(code)
+    if code:
+        sys.exit(code)
+
+
+def run_tool(main) -> None:
+    """Run a tool's main() and end cleanly whatever happens (Ctrl+C included)."""
+    code = 0
+    try:
+        main()
+    except KeyboardInterrupt:
+        print()
+    except SystemExit as exc:
+        if isinstance(exc.code, str):
+            print(exc.code, file=sys.stderr)
+            code = 1
+        else:
+            code = int(exc.code or 0)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        code = 1
+    finish(code)
 
 
 def open_feed(cfg: dict, name: str, max_fps: float | None = None) -> Feed:
     """Start delivering frames from the named camera of the config."""
     cam = cfg["cameras"][name]
     feed = Feed(name)
+    _feeds.append(feed)
     if cam.get("source") == "v4l2":
         from usb_camera import UsbCamera
         if not cam.get("device"):
@@ -82,7 +145,7 @@ def open_feed(cfg: dict, name: str, max_fps: float | None = None) -> Feed:
         th = UsbCamera(name, c, lambda _n, t, jpeg, bgr: feed.put(t, bgr, None if jpeg is None else bytes(jpeg)),
                        log=lambda m: print("  " + m))
         th.start()
-        feed.closers.append(th.stop)
+        feed.closers.append(th.close)
         feed.thread = th
     else:
         from sensor_msgs.msg import CompressedImage
@@ -109,8 +172,10 @@ def open_feed(cfg: dict, name: str, max_fps: float | None = None) -> Feed:
 def wait_first(feed: Feed, timeout: float = 10.0):
     item = feed.get(timeout)
     if item is None:
-        hint = ("Is the robot stack running (the fisheye comes from the course camera node)? "
-                "Is ROS_LOCALHOST_ONLY=1 exported like in robot/start.sh?") if not hasattr(feed, "thread") \
-            else "Check the cable and the device path in the config."
-        raise SystemExit("No frames from %s after %.0f s. %s" % (feed.name, timeout, hint))
+        if hasattr(feed, "thread"):
+            hint = feed.thread.problem or "It opened but sent no pictures: run  python3 tools/find_cameras.py"
+        else:
+            hint = ("Is the robot stack running (the fisheye comes from the course camera node)? "
+                    "Did you  source robot/env.sh  in this terminal?")
+        raise SystemExit("\nNo frames from %s after %.0f s.\n  %s" % (feed.name, timeout, hint))
     return item

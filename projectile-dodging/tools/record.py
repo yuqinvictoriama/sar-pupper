@@ -17,7 +17,7 @@ import argparse
 import os
 import time
 
-from _common import ROOT, cv2, load_config, np
+from _common import cv2, load_config, np, ROOT, run_tool
 
 from dodge.config import enabled_cameras
 from dodge.recording import RecordingWriter
@@ -96,7 +96,8 @@ def main() -> None:
         pass
     for th in threads:
         th.stop()
-    time.sleep(0.3)
+    for th in threads:
+        th.close(3.0)
     writer.close()
     dur = max(time.time() - t0, 1e-3)
     print("done: " + ", ".join("%s %.0f fps" % (k, v / dur) for k, v in counts.items()) + ", imu %.0f Hz" % (imu_count[0] / dur))
@@ -108,4 +109,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_tool(main)

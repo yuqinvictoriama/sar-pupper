@@ -6,10 +6,11 @@
 
 Over SSH from a laptop:  ssh -N -L 8090:localhost:8090 pi@<pupper-ip>  and open http://localhost:8090
 
-Each detected ball gets a red box with its range and bearing. The fisheye needs
-the robot stack running (its frames come from the course camera node); the ELP
-cameras are opened directly, so the dodge node must NOT be running at the same
-time (a USB camera can only be opened by one program).
+Each detected ball gets a red box with its range and bearing. On the fisheye a
+thin red circle marks where the detector stops looking (the rim of the lens is
+ignored). The fisheye needs the robot stack running (its frames come from the
+course camera node); the ELP cameras are opened directly, so the dodge node
+must NOT be running at the same time (a USB camera serves one program at a time).
 """
 from __future__ import annotations
 
@@ -18,10 +19,10 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from _common import cv2, load_config, open_feed, wait_first
+from _common import cv2, load_config, open_feed, run_tool, wait_first
 
 from dodge.camera_models import Camera
-from dodge.detect import BallDetector, draw_blobs
+from dodge.detect import BallDetector, circle_params, draw_blobs
 from dodge.measure import measure_blob
 
 latest = {"jpeg": None}
@@ -62,7 +63,7 @@ def main() -> None:
     cfg = load_config(args.config)
     cam_cfg = cfg["cameras"][args.camera]
     camera = Camera.from_config(args.camera, cam_cfg)
-    det = BallDetector(cam_cfg["color"], cfg["detector"])
+    det = BallDetector.for_camera(cam_cfg, cfg["detector"])
     feed = open_feed(cfg, args.camera, max_fps=15)
     wait_first(feed)
     threading.Thread(target=ThreadingHTTPServer(("0.0.0.0", args.port), Handler).serve_forever, daemon=True).start()
@@ -88,6 +89,9 @@ def main() -> None:
                     b.diameter_px, m.range_m, m.azimuth_deg, m.elevation_deg))
             show = cv2.cvtColor(det.mask(bgr), cv2.COLOR_GRAY2BGR) if args.mask else bgr
             show = draw_blobs(show, blobs, labels)
+            circle = circle_params(det.image_circle, det.ref_size, bgr.shape[1], bgr.shape[0])
+            if circle is not None:
+                cv2.circle(show, (int(circle[0]), int(circle[1])), int(circle[2]), (0, 0, 255), 1)
             if show.shape[1] > 1280:
                 show = cv2.resize(show, (1280, int(show.shape[0] * 1280 / show.shape[1])))
             ok, enc = cv2.imencode(".jpg", show, [cv2.IMWRITE_JPEG_QUALITY, 70])
@@ -95,12 +99,14 @@ def main() -> None:
                 latest["jpeg"] = enc.tobytes()
             if time.time() - last_print > 1.0:
                 last_print = time.time()
-                print("%d blob(s)%s" % (len(blobs), ": " + "; ".join(lines) if lines else ""))
-    except KeyboardInterrupt:
-        pass
+                level = float(bgr[::16, ::16].mean())
+                dark = ""
+                if level < 25.0 and cam_cfg.get("source") == "v4l2":
+                    dark = "   [picture very dark, average %.0f of 255: run  python3 tools/tune_exposure.py %s]" % (level, args.camera)
+                print("%d blob(s)%s%s" % (len(blobs), ": " + "; ".join(lines) if lines else "", dark))
     finally:
         feed.close()
 
 
 if __name__ == "__main__":
-    main()
+    run_tool(main)

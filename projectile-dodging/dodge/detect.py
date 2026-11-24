@@ -43,9 +43,39 @@ def color_mask(bgr: np.ndarray, color: dict) -> np.ndarray:
     return cv2.inRange(hsv, lo, hi)
 
 
+def circle_params(image_circle: dict | None, ref_size, width: int, height: int):
+    """(cx, cy, usable radius) of a lens's lit disc in a width x height frame, or None.
+
+    image_circle = {cx, cy, r, margin_frac} is given for frames of ref_size
+    (the size the camera's intrinsics are for). The usable radius stops short
+    of the rim by margin_frac of r: the last few percent of a fisheye picture
+    are colour fringes, some of them ball-green.
+    """
+    if not image_circle or not image_circle.get("r"):
+        return None
+    ref_w, ref_h = ref_size if ref_size and ref_size[0] else (width, height)
+    sx, sy = width / float(ref_w), height / float(ref_h)
+    r = float(image_circle["r"]) * (1.0 - float(image_circle.get("margin_frac", 0.08)))
+    return float(image_circle["cx"]) * sx, float(image_circle["cy"]) * sy, r * 0.5 * (sx + sy)
+
+
+def circle_ignore_mask(image_circle: dict | None, ref_size, width: int, height: int):
+    """0/255 mask (255 = ignore) of everything outside the usable disc, or None."""
+    c = circle_params(image_circle, ref_size, width, height)
+    if c is None:
+        return None
+    mask = np.full((height, width), 255, dtype=np.uint8)
+    cv2.circle(mask, (int(round(c[0])), int(round(c[1]))), max(1, int(c[2])), 0, -1)
+    return mask
+
+
 class BallDetector:
-    def __init__(self, color: dict, det: dict, ignore_mask: np.ndarray | None = None):
+    def __init__(self, color: dict, det: dict, ignore_mask: np.ndarray | None = None,
+                 image_circle: dict | None = None, ref_size=None):
         self.color = dict(color)
+        self.image_circle = dict(image_circle) if image_circle else None
+        self.ref_size = tuple(ref_size) if ref_size else None
+        self._ignore_cache = {}
         self.min_area = float(det.get("min_area_px", 10))
         self.max_area_frac = float(det.get("max_area_frac", 0.25))
         self.open_px = int(det.get("open_px", 3))
@@ -58,10 +88,28 @@ class BallDetector:
         self._kernel = (cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.open_px, self.open_px))
                         if self.open_px >= 2 else None)
 
+    @classmethod
+    def for_camera(cls, cam_cfg: dict, det: dict, ignore_mask: np.ndarray | None = None, color: dict | None = None):
+        """The detector for one camera of the config (its colour profile and, for a fisheye, its lit disc)."""
+        intr = cam_cfg.get("intrinsics", {})
+        return cls(color or cam_cfg["color"], det, ignore_mask, cam_cfg.get("image_circle"),
+                   (intr.get("width", 0), intr.get("height", 0)))
+
+    def ignore_for(self, width: int, height: int):
+        """Pixels that can never be a ball in a frame of this size (0/255), or None."""
+        key = (width, height)
+        if key not in self._ignore_cache:
+            m = circle_ignore_mask(self.image_circle, self.ref_size, width, height)
+            if self.ignore_mask is not None and self.ignore_mask.shape[:2] == (height, width):
+                m = self.ignore_mask.copy() if m is None else cv2.bitwise_or(m, self.ignore_mask)
+            self._ignore_cache[key] = m
+        return self._ignore_cache[key]
+
     def mask(self, bgr: np.ndarray) -> np.ndarray:
         m = color_mask(bgr, self.color)
-        if self.ignore_mask is not None and self.ignore_mask.shape == m.shape:
-            m[self.ignore_mask > 0] = 0
+        ignore = self.ignore_for(bgr.shape[1], bgr.shape[0])
+        if ignore is not None:
+            m[ignore > 0] = 0
         return m
 
     def detect(self, bgr: np.ndarray, roi=None) -> list:
@@ -75,8 +123,9 @@ class BallDetector:
                 return []
         view = bgr[y0:y1, x0:x1]
         raw = color_mask(view, self.color)
-        if self.ignore_mask is not None and self.ignore_mask.shape[:2] == (full_h, full_w):
-            raw[self.ignore_mask[y0:y1, x0:x1] > 0] = 0
+        ignore = self.ignore_for(full_w, full_h)
+        if ignore is not None:
+            raw[ignore[y0:y1, x0:x1] > 0] = 0
         # Components are found on the opened mask (drops speckle); size and
         # centre are then measured on the raw mask so opening does not bias them.
         work = cv2.morphologyEx(raw, cv2.MORPH_OPEN, self._kernel) if self._kernel is not None else raw

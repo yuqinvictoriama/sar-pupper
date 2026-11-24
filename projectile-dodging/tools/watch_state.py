@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import String
 
@@ -32,8 +33,10 @@ def main() -> None:
     node.create_subscription(String, "/dodge/event", lambda m: print("EVENT " + m.data, flush=True), 10)
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    finally:
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

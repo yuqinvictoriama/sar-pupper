@@ -13,8 +13,9 @@ dodge/      the reflex itself, plain Python (no ROS): lens models, colour detect
             3D tracking, hit prediction, escape choice, state machine, simulator
 robot/      what runs on the Pupper: USB camera capture, the ROS node, the launch
             file, start/stop scripts, mux configuration
-tools/      setting up and tuning: find cameras, calibrate colour and lenses, record,
-            replay, measure latency and step response, pre-flight check, simulation report
+tools/      setting up and tuning: find and check the cameras, tune exposure, fit the
+            fisheye's rim, calibrate colour and lenses, record, replay, measure latency
+            and step response, pre-flight check, simulation report
 config/     dodge.yaml (all numbers) and calib/ (what the calibration tools write)
 tests/      off-robot tests
 data/       recordings made on the robot (not in git)
@@ -23,7 +24,7 @@ data/       recordings made on the robot (not in git)
 ## Try it without a robot
 
 ```bash
-python3 -m unittest discover -s tests     # 32 tests, a few seconds
+python3 -m unittest discover -s tests     # 41 tests, a few seconds
 python3 tools/sim_report.py               # simulated throws from every direction
 ```
 

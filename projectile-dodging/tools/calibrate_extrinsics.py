@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import argparse
 
-from _common import cv2, load_config, np
+from _common import cv2, load_config, np, run_tool
 
 from dodge.camera_models import Camera, rotation_base_from_camera
 from dodge.config import save_calib
@@ -67,7 +67,7 @@ def solve(pairs, extr: dict, t_ref: np.ndarray):
 def collect(path: str, cfg: dict, elp: str, ref: str = "fisheye", max_dt: float = 0.02):
     rec = RecordingReader(path)
     cams = {n: Camera.from_config(n, cfg["cameras"][n]) for n in (ref, elp)}
-    dets = {n: BallDetector(cfg["cameras"][n]["color"], cfg["detector"]) for n in (ref, elp)}
+    dets = {n: BallDetector.for_camera(cfg["cameras"][n], cfg["detector"]) for n in (ref, elp)}
     seen = {ref: [], elp: []}
     for t_raw, cam, jpeg in rec.frames([ref, elp]):
         bgr = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -121,4 +121,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_tool(main)

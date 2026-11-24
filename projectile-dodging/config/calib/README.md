@@ -6,6 +6,8 @@ when the config is loaded (same key layout, later file names win).
 | File | Written by |
 |---|---|
 | `devices.yaml` | `tools/find_cameras.py --assign` |
+| `exposure.yaml` | `tools/tune_exposure.py` |
+| `image_circle.yaml` | `tools/fit_image_circle.py --write` |
 | `<camera>_color.yaml` | `tools/calibrate_color.py` |
 | `<camera>_timing.yaml` | `tools/measure_latency.py --write` |
 | `<camera>_intrinsics.yaml` | `tools/calibrate_camera.py` |
@@ -19,7 +21,7 @@ any number without editing `dodge.yaml`:
 cameras:
   elp_left:
     extrinsics: {roll_deg: 180}
-    capture: {exposure_100us: 50}
+    capture: {fps: 60}
 escape:
   vx_forward: 1.5
 ```

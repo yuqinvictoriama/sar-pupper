@@ -31,7 +31,7 @@ from dodge.recording import RecordingReader
 def replay(path: str, cfg: dict, out: str | None = None, cameras=None, latency: float = 0.03, quiet: bool = False) -> dict:
     rec = RecordingReader(path)
     core = DodgeCore(cfg, armed=False)
-    dets = {name: BallDetector(cam["color"], cfg["detector"]) for name, cam in cfg["cameras"].items()}
+    dets = {name: BallDetector.for_camera(cam, cfg["detector"]) for name, cam in cfg["cameras"].items()}
     imu = rec.imu()
     imu_i = 0
     stats = {cam: {"frames": 0, "with_ball": 0} for cam in rec.cameras}

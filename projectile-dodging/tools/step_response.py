@@ -26,7 +26,7 @@ import math
 import os
 import time
 
-from _common import ROOT, load_config, np, ros_node
+from _common import load_config, np, ROOT, ros_node, run_tool
 
 from dodge.config import save_calib
 from dodge.core import quat_to_rot
@@ -134,4 +134,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_tool(main)

@@ -8,9 +8,16 @@ hands every frame it is asked to process to a callback:
 
 t_capture is wall-clock time (time.time() scale) of when the camera captured
 the frame, taken from the kernel's buffer timestamp when that is available.
+
+Also here, because the tools need the same answers as the node: which USB
+cameras are plugged in (usb_camera_nodes), why one will not open
+(open_problem), and reading and setting camera controls through v4l2-ctl.
 """
 from __future__ import annotations
 
+import glob
+import os
+import re
 import shutil
 import subprocess
 import threading
@@ -19,21 +26,158 @@ import time
 import cv2
 import numpy as np
 
+DARK_MEAN = 25.0        # mean grey level (0-255) below which a picture is too dark to find the ball in
 
-def list_controls(device: str) -> dict:
-    """Control names the camera offers, from v4l2-ctl (empty if v4l2-ctl is missing)."""
+
+# ------------------------------------------------------------------ which cameras are there
+
+def usb_camera_nodes() -> list:
+    """USB cameras present now, one entry per camera.
+
+    Each is a dict: path (/dev/v4l/by-path/... name, stable for a USB socket),
+    real (/dev/videoN), controller and port (which USB socket), product, speed
+    (Mbit/s) and max_power_ma as the camera reports them.
+    The Pi lists every camera under two by-path names (...-usb-... and
+    ...-usbv2-...); they are the same camera and are returned once.
+    """
+    by_real = {}
+    for path in sorted(glob.glob("/dev/v4l/by-path/*")):
+        base = os.path.basename(path)
+        if "usb" not in base or not base.endswith("video-index0"):
+            continue
+        real = os.path.realpath(path)
+        by_real.setdefault(real, path)          # sorted: the plain "-usb-" name comes first
+    out = []
+    for real, path in sorted(by_real.items(), key=lambda kv: kv[1]):
+        info = {"path": path, "real": real, "controller": "", "port": "", "product": "", "speed": 0, "max_power_ma": 0}
+        m = re.search(r"platform-([\w.\-]+?)-usb(?:v\d)?-\d+:([\d.]+):", os.path.basename(path))
+        if m:
+            info["controller"], info["port"] = m.group(1), m.group(2)
+        info.update(_sysfs_usb_info(real))
+        out.append(info)
+    return out
+
+
+def _sysfs_usb_info(real: str) -> dict:
+    """Product name, speed and declared current of the USB device behind /dev/videoN."""
+    out = {}
+    node = os.path.realpath(os.path.join("/sys/class/video4linux", os.path.basename(real), "device"))
+    for _ in range(4):                           # walk up from the interface to the USB device
+        if os.path.exists(os.path.join(node, "idVendor")):
+            break
+        node = os.path.dirname(node)
+    else:
+        return out
+
+    def read(name):
+        try:
+            with open(os.path.join(node, name)) as f:
+                return f.read().strip()
+        except OSError:
+            return ""
+    out["product"] = (read("manufacturer") + " " + read("product")).strip()
+    try:
+        out["speed"] = int(float(read("speed") or 0))
+    except ValueError:
+        pass
+    m = re.match(r"(\d+)", read("bMaxPower"))
+    if m:
+        out["max_power_ma"] = int(m.group(1))
+    return out
+
+
+def who_holds(real: str) -> list:
+    """Other programs that have this device open: [(pid, name)]. Only sees this user's programs."""
+    out = []
+    me = os.getpid()
+    for fd_dir in glob.glob("/proc/[0-9]*/fd"):
+        pid = int(fd_dir.split("/")[2])
+        if pid == me:
+            continue
+        try:
+            links = [os.readlink(os.path.join(fd_dir, f)) for f in os.listdir(fd_dir)]
+        except OSError:
+            continue
+        if real in links:
+            try:
+                with open("/proc/%d/cmdline" % pid, "rb") as f:
+                    cmd = f.read().replace(b"\0", b" ").decode(errors="replace").strip()
+            except OSError:
+                cmd = "?"
+            out.append((pid, cmd[:80]))
+    return out
+
+
+def open_problem(device: str) -> str:
+    """Why a camera will not open, in one sentence, with what to do."""
+    if not device:
+        return "no device is set for it: run  python3 tools/find_cameras.py --assign"
+    if not os.path.exists(device):
+        present = [c["path"] for c in usb_camera_nodes()]
+        seen = ("USB cameras present now: " + ", ".join(os.path.basename(p) for p in present)) if present \
+            else "No USB camera is present at all right now"
+        return ("there is no camera on that USB socket (%s). It is unplugged, has lost power, or was moved to "
+                "another socket since find_cameras.py --assign ran. %s. Run  python3 tools/find_cameras.py"
+                % (os.path.basename(device), seen))
+    real = os.path.realpath(device)
+    try:
+        os.close(os.open(real, os.O_RDWR | os.O_NONBLOCK))
+    except PermissionError:
+        return "no permission to open %s: add this user to the 'video' group (sudo usermod -aG video $USER) and log in again" % real
+    except OSError as exc:
+        return "%s is there but will not open (%s): unplug the camera and plug it back in" % (real, exc.strerror)
+    holders = who_holds(real)
+    if holders:
+        return "%s is in use by another program: %s. Stop it (the dodge node, view.py, record.py and a browser all count)" % (
+            real, "; ".join("pid %d %s" % h for h in holders))
+    return ("%s is there but refuses to deliver video. Usual causes: another program has it (check: sudo fuser -v %s), "
+            "too little USB power, or a marginal cable or socket (unplug it and plug it back in)" % (real, real))
+
+
+# ------------------------------------------------------------------ camera controls
+
+def read_controls(device: str) -> dict:
+    """Controls the camera offers: name -> {min, max, step, default, value, inactive}. Empty without v4l2-ctl."""
     if not shutil.which("v4l2-ctl"):
         return {}
     try:
         out = subprocess.run(["v4l2-ctl", "-d", device, "--list-ctrls"], capture_output=True, text=True, timeout=5).stdout
     except (subprocess.TimeoutExpired, OSError):
         return {}
-    names = {}
+    controls = {}
     for line in out.splitlines():
         parts = line.strip().split()
-        if len(parts) >= 2 and parts[1].startswith("0x"):
-            names[parts[0]] = line.strip()
-    return names
+        if len(parts) < 2 or not parts[1].startswith("0x"):
+            continue
+        info = {"inactive": "inactive" in line}
+        for key, value in re.findall(r"(min|max|step|default|value)=(-?\d+)", line):
+            info[key] = int(value)
+        controls[parts[0]] = info
+    return controls
+
+
+def list_controls(device: str) -> dict:
+    """Kept for callers that only need the names."""
+    return read_controls(device)
+
+
+def set_control(device: str, name: str, value) -> str:
+    """Set one control. Returns "" on success, the camera's complaint otherwise."""
+    try:
+        r = subprocess.run(["v4l2-ctl", "-d", device, "-c", "%s=%d" % (name, int(value))],
+                           capture_output=True, text=True, timeout=5)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return str(exc)
+    return "" if r.returncode == 0 else (r.stderr.strip() or "v4l2-ctl failed")
+
+
+def control_name(controls: dict, *options):
+    return next((n for n in options if n in controls), None)
+
+
+EXPOSURE_AUTO = ("auto_exposure", "exposure_auto")
+EXPOSURE_TIME = ("exposure_time_absolute", "exposure_absolute")
+WB_AUTO = ("white_balance_automatic", "white_balance_temperature_auto")
 
 
 def apply_controls(device: str, cap_cfg: dict, cap=None, log=print) -> None:
@@ -42,34 +186,38 @@ def apply_controls(device: str, cap_cfg: dict, cap=None, log=print) -> None:
     exposure = cap_cfg.get("exposure_100us")
     gain = cap_cfg.get("gain")
     wb = cap_cfg.get("wb_temperature")
-    names = list_controls(device)
+    names = read_controls(device)
     if names:
         sets = []
-
-        def first(*options):
-            return next((n for n in options if n in names), None)
-
-        n = first("auto_exposure", "exposure_auto")
+        n = control_name(names, *EXPOSURE_AUTO)
         if n:
-            sets.append("%s=%d" % (n, 3 if auto else 1))        # UVC: 1 = manual, 3 = aperture priority
-        n = first("exposure_time_absolute", "exposure_absolute")
+            sets.append((n, 3 if auto else 1))                  # UVC: 1 = manual, 3 = aperture priority
+        if "exposure_dynamic_framerate" in names:
+            sets.append(("exposure_dynamic_framerate", 0))      # never trade frame rate for brightness
+        n = control_name(names, *EXPOSURE_TIME)
         if n and not auto and exposure is not None:
-            sets.append("%s=%d" % (n, int(exposure)))
+            sets.append((n, exposure))
         if gain is not None and "gain" in names:
-            sets.append("gain=%d" % int(gain))
-        n = first("white_balance_automatic", "white_balance_temperature_auto")
+            sets.append(("gain", gain))
+        n = control_name(names, *WB_AUTO)
         if n and wb is not None:
-            sets.append("%s=0" % n)
+            sets.append((n, 0))
         if wb is not None and "white_balance_temperature" in names:
-            sets.append("white_balance_temperature=%d" % int(wb))
-        for item in sets:      # one at a time: a rejected control must not block the others
-            r = subprocess.run(["v4l2-ctl", "-d", device, "-c", item], capture_output=True, text=True)
-            if r.returncode != 0:
-                log("%s: could not set %s (%s)" % (device, item, r.stderr.strip()))
+            sets.append(("white_balance_temperature", wb))
+        for name, value in (cap_cfg.get("controls") or {}).items():   # anything else, by its v4l2-ctl name
+            if name in names:
+                sets.append((name, value))
+            else:
+                log("%s: this camera has no control called %s" % (device, name))
+        for name, value in sets:       # one at a time: a rejected control must not block the others
+            err = set_control(device, name, value)
+            if err:
+                log("%s: could not set %s=%s (%s)" % (device, name, value, err))
         return
     if cap is None:
         return
-    log("%s: v4l2-ctl not found, setting camera controls through OpenCV (less reliable)" % device)
+    log("%s: v4l2-ctl not found, setting camera controls through OpenCV (less reliable); "
+        "sudo apt install v4l-utils" % device)
     cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3 if auto else 1)
     if not auto and exposure is not None:
         cap.set(cv2.CAP_PROP_EXPOSURE, float(exposure))
@@ -80,8 +228,12 @@ def apply_controls(device: str, cap_cfg: dict, cap=None, log=print) -> None:
         cap.set(cv2.CAP_PROP_WB_TEMPERATURE, float(wb))
 
 
+# ------------------------------------------------------------------ capture
+
 def open_capture(device: str, cap_cfg: dict, log=print):
     """Open the camera in MJPG at the requested mode. Returns (capture, raw_mode)."""
+    if not device or not os.path.exists(device):
+        return None, False                       # (OpenCV would only print a puzzling warning)
     cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
     if not cap.isOpened():
         return None, False
@@ -104,6 +256,15 @@ def open_capture(device: str, cap_cfg: dict, log=print):
     return cap, raw
 
 
+def read_bgr(cap, raw: bool):
+    """One decoded frame from a capture opened by open_capture, or None."""
+    ok, buf = cap.read()
+    if not ok or buf is None:
+        return None
+    frame = cv2.imdecode(buf.reshape(-1), cv2.IMREAD_COLOR) if raw else buf
+    return frame if frame is not None and frame.ndim == 3 else None
+
+
 class UsbCamera(threading.Thread):
     def __init__(self, name: str, cam_cfg: dict, callback, log=print):
         super().__init__(daemon=True, name="usb-" + name)
@@ -119,32 +280,57 @@ class UsbCamera(threading.Thread):
         self.size = (0, 0)
         self.fps_in = 0.0          # frames arriving from the camera per second
         self.fps_out = 0.0         # frames handed to the callback per second
+        self.brightness = -1.0     # mean grey level of the latest frame (0-255), -1 before the first
         self.connected = False
+        self.problem = ""          # why it is not delivering, when it is not
+        self._warned_dark = False
 
     def stop(self) -> None:
         self.running = False
+
+    def close(self, timeout: float = 3.0) -> bool:
+        """Stop and wait for the thread, so the camera is released before the program exits.
+
+        (Exiting while the thread is still inside OpenCV aborts the whole program.)
+        Returns False if the thread did not finish in time.
+        """
+        self.running = False
+        if self.is_alive() and threading.current_thread() is not self:
+            self.join(timeout)
+        return not self.is_alive()
 
     def run(self) -> None:
         while self.running:
             cap, self.raw = open_capture(self.device, self.cap_cfg, self.log)
             if cap is None:
                 self.connected = False
-                self.log("%s: cannot open %r; retrying in 2 s" % (self.cam_name, self.device))
-                time.sleep(2.0)
+                problem = open_problem(self.device)
+                if problem != self.problem:          # say why once, not every two seconds
+                    self.problem = problem
+                    self.log("%s: cannot open the camera: %s" % (self.cam_name, problem))
+                    self.log("%s: will keep trying every 2 s" % self.cam_name)
+                self._sleep(2.0)
                 continue
             self.connected = True
+            self.problem = ""
             self.log("%s: opened %s %dx%d @ %.0f fps (%s)" % (
                 self.cam_name, self.device, cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
                 cap.get(cv2.CAP_PROP_FPS), "camera JPEG passed through" if self.raw else "decoded by OpenCV"))
             try:
                 self._loop(cap)
             except Exception as exc:  # a camera glitch must not take the node down
-                self.log("%s: capture error: %r" % (self.cam_name, exc))
+                self.problem = "capture error: %r" % (exc,)
+                self.log("%s: %s" % (self.cam_name, self.problem))
             finally:
                 cap.release()
                 self.connected = False
             if self.running:
-                time.sleep(1.0)
+                self._sleep(1.0)
+
+    def _sleep(self, seconds: float) -> None:
+        end = time.monotonic() + seconds
+        while self.running and time.monotonic() < end:
+            time.sleep(0.05)
 
     def _loop(self, cap) -> None:
         mono_to_wall = time.time() - time.monotonic()
@@ -152,6 +338,7 @@ class UsbCamera(threading.Thread):
         fails = 0
         n_in = n_out = 0
         window = time.monotonic()
+        frame = None
         while self.running:
             if not cap.grab():
                 fails += 1
@@ -186,3 +373,9 @@ class UsbCamera(threading.Thread):
                 n_in = n_out = 0
                 window = now_mono
                 mono_to_wall = time.time() - time.monotonic()
+                if frame is not None and frame.ndim == 3:
+                    self.brightness = float(frame[::16, ::16].mean())
+                    if self.brightness < DARK_MEAN and not self._warned_dark:
+                        self._warned_dark = True
+                        self.log("%s: the picture is very dark (average %.0f of 255): the ball will not be found. "
+                                 "Run  python3 tools/tune_exposure.py %s" % (self.cam_name, self.brightness, self.cam_name))

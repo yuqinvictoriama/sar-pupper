@@ -26,7 +26,7 @@ import argparse
 import math
 import time
 
-from _common import cv2, load_config, np, open_feed, wait_first
+from _common import cv2, load_config, np, open_feed, run_tool, wait_first
 
 from dodge.camera_models import Camera
 from dodge.config import save_calib
@@ -94,7 +94,7 @@ def calibrate_color(feed, cfg: dict, name: str, seconds: float) -> None:
     # The same thresholds must leave the empty scene empty.
     det_cfg = dict(cfg["detector"])
     for _ in range(12):
-        false = sum(len(BallDetector(color, det_cfg).detect(f)) for f in bg_frames)
+        false = sum(len(BallDetector.for_camera(cfg["cameras"][name], det_cfg, color=color).detect(f)) for f in bg_frames)
         if false == 0:
             break
         color["s_min"] = min(250, color["s_min"] + 8)
@@ -113,7 +113,7 @@ def calibrate_color(feed, cfg: dict, name: str, seconds: float) -> None:
 def calibrate_size(feed, cfg: dict, name: str, distances: list) -> None:
     cam_cfg = cfg["cameras"][name]
     camera = Camera.from_config(name, cam_cfg)
-    det = BallDetector(cam_cfg["color"], cfg["detector"])
+    det = BallDetector.for_camera(cam_cfg, cfg["detector"])
     radius = cfg["ball"]["diameter_m"] / 2.0
     pairs = []
     for dist in distances:
@@ -173,4 +173,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_tool(main)

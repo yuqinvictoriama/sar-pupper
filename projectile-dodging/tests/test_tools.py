@@ -144,3 +144,158 @@ class ExtrinsicsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class LensRimTests(unittest.TestCase):
+    """The fisheye's rim is ignored: its colour fringe passes for the ball."""
+
+    def setUp(self):
+        self.cam = build_cameras(CFG)["fisheye"]
+        self.circle = CFG["cameras"]["fisheye"]["image_circle"]
+
+    def frame_with_patches(self, radii_frac):
+        from test_dodge import BALL_BGR
+        m = self.cam.model
+        img = np.full((m.height, m.width, 3), 110, dtype=np.uint8)
+        centres = []
+        for i, frac in enumerate(radii_frac):
+            ang = 2.3 + 1.1 * i
+            c = (int(self.circle["cx"] + frac * self.circle["r"] * math.cos(ang)),
+                 int(self.circle["cy"] + frac * self.circle["r"] * math.sin(ang)))
+            cv2.circle(img, c, 5, BALL_BGR, -1)
+            centres.append(c)
+        return img, centres
+
+    def test_patches_at_the_rim_are_ignored_and_others_kept(self):
+        from dodge.detect import BallDetector
+        img, centres = self.frame_with_patches([0.5, 0.80, 0.93, 0.97, 1.0])
+        blobs = BallDetector.for_camera(self.cam.cfg, CFG["detector"]).detect(img)
+        found = sorted((round(b.u), round(b.v)) for b in blobs)
+        self.assertEqual(found, sorted(centres[:2]))
+        # without the circle, all five are there
+        plain = BallDetector(self.cam.cfg["color"], CFG["detector"]).detect(img)
+        self.assertEqual(len(plain), 5)
+
+    def test_mask_follows_the_frame_size(self):
+        from dodge.detect import BallDetector
+        img, centres = self.frame_with_patches([0.5, 0.97])
+        half = cv2.resize(img, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST)
+        det = BallDetector.for_camera(self.cam.cfg, dict(CFG["detector"], min_area_px=4))
+        blobs = det.detect(half)
+        self.assertEqual(len(blobs), 1)
+        self.assertLess(abs(blobs[0].u - centres[0][0] / 2), 1.5)
+
+    def test_measurement_outside_the_disc_is_refused(self):
+        from dodge.detect import Blob
+        from dodge.measure import measure_blob
+        c = self.circle
+        inside = Blob(c["cx"] + 0.5 * c["r"], c["cy"], 80.0, 0, 0, 10, 10, False)
+        rim = Blob(c["cx"] - 0.95 * c["r"], c["cy"], 80.0, 0, 0, 10, 10, False)
+        self.assertIsNotNone(measure_blob(self.cam, inside, 0.074))
+        self.assertIsNone(measure_blob(self.cam, rim, 0.074))
+
+    def test_rear_cameras_have_no_rim(self):
+        from dodge.detect import BallDetector
+        cam = build_cameras(CFG)["elp_left"]
+        det = BallDetector.for_camera(cam.cfg, CFG["detector"])
+        self.assertIsNone(det.ignore_for(1280, 720))
+
+    def test_the_lit_disc_is_found_despite_glow_flare_and_a_dark_corner(self):
+        from fit_image_circle import find_image_circle
+        cx, cy, r = 712, 540, 388
+        tex = cv2.GaussianBlur(np.random.default_rng(1).integers(60, 220, (1050, 1400, 3), dtype=np.uint8), (0, 0), 6)
+        disc = np.zeros((1050, 1400), np.uint8)
+        cv2.circle(disc, (cx, cy), r, 255, -1)
+        glow = np.zeros((1050, 1400), np.uint8)
+        cv2.circle(glow, (cx, cy), r + 40, 255, -1)
+        img = np.zeros((1050, 1400, 3), np.uint8)
+        img[(glow > 0) & (disc == 0)] = 35                                       # glow outside the rim
+        img[disc > 0] = tex[disc > 0]
+        cv2.ellipse(img, (cx, cy), (r + 5, r + 5), 0, 200, 250, (0, 0, 0), 120)  # a dark part of the scene
+        cv2.circle(img, (cx + 60, cy - r - 10), 45, (200, 200, 160), -1)         # lens flare past the rim
+        got = find_image_circle([cv2.GaussianBlur(img, (0, 0), 2)])
+        self.assertIsNotNone(got)
+        self.assertLess(abs(got[0] - cx), 3)
+        self.assertLess(abs(got[1] - cy), 3)
+        self.assertLess(abs(got[2] - r), 4)
+        self.assertIsNone(find_image_circle([np.zeros((1050, 1400, 3), np.uint8)]))
+
+
+class UsbCameraHelperTests(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, os.path.join(HERE, "..", "robot"))
+        import usb_camera
+        self.usb = usb_camera
+
+    def test_control_list_is_parsed_with_ranges(self):
+        text = """
+User Controls
+
+                     brightness 0x00980900 (int)    : min=-64 max=64 step=1 default=0 value=0
+                           gain 0x00980913 (int)    : min=0 max=100 step=1 default=0 value=12
+      white_balance_temperature 0x0098091a (int)    : min=2800 max=6500 step=1 default=4600 value=4600 flags=inactive
+
+Camera Controls
+
+                  auto_exposure 0x009a0901 (menu)   : min=0 max=3 default=3 value=1 (Manual Mode)
+         exposure_time_absolute 0x009a0902 (int)    : min=1 max=5000 step=1 default=157 value=30
+"""
+        import subprocess
+        real_run, real_which = subprocess.run, self.usb.shutil.which
+
+        class Done:
+            stdout = text
+            returncode = 0
+        subprocess.run = lambda *a, **k: Done()
+        self.usb.shutil.which = lambda _n: "/usr/bin/v4l2-ctl"
+        try:
+            c = self.usb.read_controls("/dev/video0")
+        finally:
+            subprocess.run, self.usb.shutil.which = real_run, real_which
+        self.assertEqual(c["gain"], {"inactive": False, "min": 0, "max": 100, "step": 1, "default": 0, "value": 12})
+        self.assertEqual((c["exposure_time_absolute"]["max"], c["exposure_time_absolute"]["value"]), (5000, 30))
+        self.assertEqual(c["brightness"]["min"], -64)
+        self.assertTrue(c["white_balance_temperature"]["inactive"])
+        self.assertEqual(self.usb.control_name(c, "exposure_auto", "auto_exposure"), "auto_exposure")
+
+    def test_each_camera_is_listed_once_although_the_pi_names_it_twice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for n in ("video0", "video2"):
+                open(os.path.join(tmp, n), "w").close()
+            links = {"platform-xhci-hcd.0-usb-0:1:1.0-video-index0": "video0",
+                     "platform-xhci-hcd.0-usbv2-0:1:1.0-video-index0": "video0",
+                     "platform-xhci-hcd.1-usb-0:2:1.0-video-index0": "video2",
+                     "platform-xhci-hcd.1-usbv2-0:2:1.0-video-index0": "video2",
+                     "platform-xhci-hcd.1-usb-0:2:1.0-video-index1": "video2",
+                     "platform-1000880000.pisp_be-video-index0": "video0"}
+            for name, target in links.items():
+                os.symlink(os.path.join(tmp, target), os.path.join(tmp, name))
+            real_glob = self.usb.glob.glob
+            self.usb.glob.glob = lambda pattern: real_glob(os.path.join(tmp, "*")) if "by-path" in pattern else real_glob(pattern)
+            try:
+                cams = self.usb.usb_camera_nodes()
+            finally:
+                self.usb.glob.glob = real_glob
+        self.assertEqual([os.path.basename(c["path"]) for c in cams],
+                         ["platform-xhci-hcd.0-usb-0:1:1.0-video-index0", "platform-xhci-hcd.1-usb-0:2:1.0-video-index0"])
+        self.assertEqual([(c["controller"], c["port"]) for c in cams], [("xhci-hcd.0", "1"), ("xhci-hcd.1", "2")])
+
+    def test_a_missing_camera_is_explained(self):
+        msg = self.usb.open_problem("/dev/v4l/by-path/platform-xhci-hcd.0-usb-0:2:1.0-video-index0")
+        self.assertIn("no camera on that USB socket", msg)
+        self.assertIn("find_cameras.py", msg)
+        self.assertIn("--assign", self.usb.open_problem(""))
+        cap, raw = self.usb.open_capture("/dev/v4l/by-path/nothing-here", {})
+        self.assertIsNone(cap)
+
+    def test_camera_thread_reports_why_and_stops_promptly(self):
+        import time as _time
+        said = []
+        cam = self.usb.UsbCamera("elp_right", {"device": "/dev/v4l/by-path/nothing-here"}, lambda *_a: None, log=said.append)
+        cam.start()
+        _time.sleep(0.4)
+        t0 = _time.time()
+        self.assertTrue(cam.close(3.0))
+        self.assertLess(_time.time() - t0, 1.0)
+        self.assertEqual(sum("cannot open the camera" in s for s in said), 1)
+        self.assertIn("no camera on that USB socket", cam.problem)
