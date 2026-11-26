@@ -38,9 +38,11 @@ class Track:
         self.t_last = t         # last time a measurement was accepted
         self.hits = 1
         self.confirmed = False
+        self.flying = False     # seen moving like a thrown ball (set by the tracker, and it stays set)
         self.cams = {cam}
         self.last_cam = cam
         self.history = [(t, np.array(p, dtype=float))]   # recent raw measurement points (world frame)
+        self.p_first = np.array(p, dtype=float)          # where it was first seen
 
     # ---- convenience views of the state
     @property
@@ -58,6 +60,18 @@ class Track:
     @property
     def range_m(self) -> float:
         return float(np.linalg.norm(self.x[:3]))
+
+    @property
+    def travel_m(self) -> float:
+        """How far it has moved ACROSS the line of sight since it was first seen. Range is read from the
+        blob's size and jitters by 10 cm or more from picture to picture, so movement along the line of
+        sight proves nothing; bearing is good to a centimetre. A lob always moves across: it climbs."""
+        d = self.x[:3] - self.p_first
+        n = float(np.linalg.norm(self.p_first))
+        if n > 1e-6:
+            u = self.p_first / n
+            d = d - float(d @ u) * u
+        return float(np.linalg.norm(d))
 
     @property
     def closing_speed(self) -> float:
@@ -122,6 +136,9 @@ class Tracker:
         self.gate = float(cfg.get("gate_chi2", 20.0))
         self.confirm_hits = int(cfg.get("confirm_hits", 3))
         self.max_coast = float(cfg.get("max_coast_s", 0.25))
+        self.flight_coast = float(cfg.get("flight_coast_s", 0.6))
+        self.flight_speed = float(cfg.get("flight_speed", 1.5))
+        self.flight_travel = float(cfg.get("flight_travel_m", 0.15))
         self.tent_coast = float(cfg.get("tentative_coast_s", 0.12))
         self.max_tracks = int(cfg.get("max_tracks", 8))
         self.max_range = float(cfg.get("max_range_m", 8.0))
@@ -202,6 +219,11 @@ class Tracker:
             tr.remember(t, z)
             if tr.hits >= self.confirm_hits:
                 tr.confirmed = True
+                if not tr.flying and tr.travel_m >= self.flight_travel:
+                    # Fast AND gone somewhere across the picture: a still object's jittering range can
+                    # look like speed, but it does not move across the line of sight.
+                    v_fit = tr.fitted_velocity()
+                    tr.flying = v_fit is not None and float(np.linalg.norm(v_fit)) >= self.flight_speed
 
         for mi, (m, z, Rm) in enumerate(items):
             if mi in used_m or len(self.tracks) >= self.max_tracks:
@@ -213,7 +235,9 @@ class Tracker:
     def prune(self, t_now: float) -> None:
         keep = []
         for tr in self.tracks:
-            limit = self.max_coast if tr.confirmed else self.tent_coast
+            # A ball in flight is followed on its arc for longer while unseen: a lob leaves the top of a
+            # rear camera's picture in mid-flight and comes down on the robot from above.
+            limit = (self.flight_coast if tr.flying else self.max_coast) if tr.confirmed else self.tent_coast
             if t_now - tr.t_last <= limit and np.isfinite(tr.x).all():
                 keep.append(tr)
         self.tracks = keep

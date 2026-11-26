@@ -2,13 +2,13 @@
 """Run the whole dodge pipeline on a recording, offline. No ROS needed.
 
     python3 tools/replay.py data/recordings/rear-lobs-01
-    python3 tools/replay.py data/events/20261124-153012 --out /tmp/frames   # also write annotated frames
+    python3 tools/replay.py data/throws/20261124-153012-dry --out /tmp/frames   # also write annotated frames
     python3 tools/replay.py --labels data/labels.csv                        # score many recordings
 
 It decodes every frame, detects the ball, tracks it and reports what the dodge
 node would have decided and when, using the current config (so you can change
 thresholds and replay). Works on tools/record.py recordings and on the short
-recordings the dodge node saves around each dodge.
+recordings the dodge node saves around each throw (data/throws/).
 
 labels.csv has one line per recording:  <folder>,<hit|miss|none>
   hit   a throw that would have hit the robot   -> a dodge is expected

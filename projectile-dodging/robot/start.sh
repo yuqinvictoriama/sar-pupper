@@ -9,13 +9,14 @@
 #   robot/start.sh --fisheye-fps 60 ask the fisheye camera for 60 frames a second
 #   robot/start.sh --fisheye-exposure 4000   fix the fisheye exposure at 4000 microseconds (default: automatic)
 #   robot/start.sh --no-dodge       robot stack only, USB cameras left free (for calibrating and recording)
+#   robot/start.sh --no-view        do not start Pupper Dodging View (the browser page of saved throws, port 8077)
 #
-# Stop everything with robot/stop.sh. Logs: /tmp/sar-dodge/robot.log
+# Stop everything with robot/stop.sh. Logs: /tmp/sar-dodge/robot.log (and dodging_view.log for Pupper Dodging View)
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 GEMINI_DIR=${GEMINI_PUPPER_DIR:-$HOME/gemini_pupper}
 LOG=/tmp/sar-dodge; mkdir -p $LOG /tmp/gemini-pupper
-ARMED=false; GEMINI=0; KIOSK=""; FOLLOWER=true; FASTMUX=false; FPS=0; EXPOSURE=0; DODGE=true
+ARMED=false; GEMINI=0; KIOSK=""; FOLLOWER=true; FASTMUX=false; FPS=0; EXPOSURE=0; DODGE=true; VIEW=true
 while [ $# -gt 0 ]; do
   case "$1" in
     --armed) ARMED=true ;;
@@ -24,6 +25,7 @@ while [ $# -gt 0 ]; do
     --no-follower) FOLLOWER=false ;;
     --fast-mux) FASTMUX=true ;;
     --no-dodge) DODGE=false ;;
+    --no-view) VIEW=false ;;
     --fisheye-fps) shift; FPS=${1:-0} ;;
     --fisheye-exposure) shift; EXPOSURE=${1:-0} ;;
     *) echo "unknown option $1"; exit 1 ;;
@@ -51,6 +53,12 @@ fi
 if [ $DODGE = true ]; then
   if grep -q "dodge node up" $LOG/robot.log; then echo "      $(grep -m1 'dodge node up' $LOG/robot.log | sed 's/.*dodge node up/dodge node up/')"
   else echo "      dodge node has not reported yet; see $LOG/robot.log"; fi
+fi
+
+if [ $VIEW = true ] && ! pgrep -f "[t]ools/dodging_view.py" >/dev/null; then
+  setsid nohup bash -c "$ROS; exec python3 -u $HERE/../tools/dodging_view.py" > $LOG/dodging_view.log 2>&1 < /dev/null &
+  sleep 2
+  echo "      Pupper Dodging View: open  http://$(hostname).local:8077  in a browser (saved throws, videos, timings)"
 fi
 
 if [ $GEMINI = 1 ]; then

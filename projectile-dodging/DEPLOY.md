@@ -12,31 +12,53 @@ always outranks the dodge reflex. Whenever the robot can move (stages 7 and 8),
 have someone at the joystick, the robot on open floor with 1.5 m clear around
 it, and nothing it could fall off.
 
-**Space: this guide assumes 2 m of clear floor around the robot.** Every
-calibration distance and every throw below fits in that.
+**Space: this guide assumes a room of about 4 × 6 m.** Stand Pupper in the
+middle, **facing along the long side**. That gives:
+
+| Throw comes from | Thrower stands | Why |
+|---|---|---|
+| Front or back | 2.5–3 m away (the long way) | Pupper can only sidestep away from these, at 0.5 m/s, so it needs the longer flight |
+| Either side | 2 m away (the short way) | Pupper runs forward or back away from these, at 1.0 m/s |
+| Diagonals | about 2.5 m away | |
+
+Every calibration distance below fits in 2 m.
 
 **The throw**, wherever a stage says to throw a ball:
 
-- Stand **2 m** from the robot (tape a mark). Not closer: from 1.5 m the
-  simulated dodge rate falls off sharply, worst from behind.
-- Underhand lob, released at waist height (about 1 m), **peaking at about
-  shoulder height** (1.4–1.7 m above the floor). Not above your head: the ball
-  then climbs out of the top of the rear cameras' view.
-- Straight from behind, peak a little lower (chest height); straight from the
-  front, a little higher is fine.
-- One ball in the air at a time, 3 s apart. No flat or hard throws: from 2 m
-  they arrive in under half a second, which is not enough.
+- Underhand lob, released at about waist height. One ball in the air at a
+  time, 3 s apart.
+- **From the front and the back, throw high.** A lob that peaks above head
+  height (the ball climbs a metre or more above your hand) is in the air for
+  1.0–1.2 s; one that peaks at shoulder height for about 0.7 s. Pupper can only
+  sidestep away from these, and needs the time.
+- **From the sides, shoulder to head height is enough**, and better than very
+  high: from 2 m a very high lob climbs out of the cameras' view within a tenth
+  of a second, sometimes before it has been seen often enough to track.
+- A lob leaves the top of the rear cameras' picture on the way up. Pupper keeps
+  following it on its arc while it is out of sight.
+- No flat or hard throws: from these distances they arrive in under half a
+  second, which is not enough.
 
-Simulated with the shipped numbers, 40 of these throws per direction (a
+Simulated with the shipped numbers, 40 throws per row and direction (a
 simulation, not a measurement on the robot):
 
-| Throw comes from | Dodged |
-|---|---|
-| Rear diagonals | 100 % |
-| Front diagonals | 100 % |
-| Sides | 95 % |
-| Straight ahead | about 80 % |
-| Straight behind | about 75 % (about 90 % with the lower, chest-height peak) |
+| Throw comes from | Shoulder-height lob | High lob |
+|---|---|---|
+| Sides, 2 m | about 95 % | about 80 % |
+| Behind, 2.5–3.5 m | 100 % | about 99 % |
+| Rear diagonals, 2–2.5 m | 100 % | about 99 % |
+| Front diagonals, 2–2.5 m | about 98 % | 100 % |
+| Straight ahead, 2.5–3.5 m | about 80 % | about 98 % |
+
+These assume the robot gets up to speed as fast as the config says. With a
+robot a third slower, the straight-ahead shoulder-height lob drops to about
+40 % and the high one to about 85 %.
+
+On a smooth floor (hardwood, tile) the robot's feet slip when it sets off
+fast. If it trips while dodging, put it on a rug, a yoga mat or foam tiles
+before lowering speeds: grip is worth more than any setting. The diagonal move
+(forward and sideways at once) is already softened for this
+(`escape.diagonal_scale`, stage 9).
 
 ---
 
@@ -73,7 +95,7 @@ SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 ## 2. Check the code runs (no robot needed)
 
 ```bash
-python3 -m unittest discover -s tests     # expect: Ran 59 tests ... OK
+python3 -m unittest discover -s tests     # expect: Ran 70 tests ... OK
 python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7    # simulated 2 m throws; takes about a minute on the Pi
 ```
 
@@ -340,14 +362,16 @@ bash robot/watch.sh                 # live: state, each camera's frame rate and 
 ```
 
 Throw balls. `watch.sh` prints an `EVENT ... "dodge" ... "dry_run": true` line
-for each one it would have dodged, and the node saves a short recording of every
-such moment under `data/events/` (replay them the same way). In the `watch.sh`
-line, "lag" is how old a frame is when it has been processed and "cpu" is the
-processing time per frame. A healthy line shows the ELPs at about 30 fps (their
-`max_process_fps`), "cpu" under 20 ms and "lag" under 100 ms. If the frame rates
-are far below that, lag climbs, or `top` shows the Pi near 100 % on all cores,
-the Pi is overloaded and no dodge will be in time: lower `max_process_fps` for
-the ELPs, or stop whatever else is using the processor.
+for each one it would have dodged. Every such moment, and every throw it saw
+but would not have dodged, is saved under `data/throws/` and shown in the
+**Pupper Dodging View** (the section after stage 8): open it now, in a browser, at the
+address `start.sh` printed. In the `watch.sh` line, "lag" is how old a frame is
+when it has been processed and "cpu" is the processing time per frame. A healthy
+line shows the ELPs at about 30 fps (their `max_process_fps`), "cpu" under 20 ms
+and "lag" under 100 ms. If the frame rates are far below that, lag climbs, or
+`top` shows the Pi near 100 % on all cores, the Pi is overloaded and no dodge
+will be in time: lower `max_process_fps` for the ELPs, or stop whatever else is
+using the processor.
 
 Now the first step that **moves the robot**. Stand it up:
 
@@ -414,13 +438,15 @@ bash robot/watch.sh arm             # from now on a predicted hit moves the robo
 bash robot/watch.sh disarm          # back to dry run
 ```
 
-Use the throw described at the top (2 m, peaking at shoulder height). Start
-with the easy directions and work toward the hard ones:
+Use the throw and the positions described at the top. Start with the easy
+directions and work toward the hard ones:
 
-1. the **rear diagonals** and the **sides**;
-2. the front diagonals;
-3. straight from the **front** (a slightly higher lob helps here);
-4. straight from **behind**, the weakest direction at 2 m (peak at chest height).
+1. the **sides** (from 2 m) and the **rear diagonals**;
+2. the front diagonals and straight from **behind** (from 2.5–3 m);
+3. straight from the **front** (from 3 m, as high a lob as the ceiling allows):
+   the hardest, because Pupper can only sidestep.
+
+After each throw, mark in Pupper Dodging View whether it was really dodged or hit.
 
 To start the stack already armed: `bash robot/start.sh --armed`. With Gemini
 Pupper as well: `bash robot/start.sh --gemini` (add `--kiosk` for the on-robot
@@ -429,6 +455,105 @@ app, `--armed` to arm). Always stop with `bash robot/stop.sh`.
 After a dodge the node holds the robot still until it is steady, then goes
 quiet; the mux hands control back to Gemini or navigation half a second later.
 Each dodge is announced on `/dodge/event` (JSON) so a planner can re-plan.
+
+## Pupper Dodging View: every throw, recorded
+
+The dodge node saves a few seconds around three kinds of moment, each in its
+own folder under `data/throws/`:
+
+| Folder name ends in | What it is |
+|---|---|
+| `-dodge` | A dodge it made (armed) |
+| `-dry` | A dodge it would have made (dry run) |
+| `-seen` | A ball it tracked in flight but did not dodge, with its reasons |
+| `-mark` | Seconds you asked it to keep (the two buttons below) |
+
+In each folder: the pictures from every camera exactly as they arrived
+(`<camera>.bin` / `.idx`), the IMU (`imu.csv`), a frame-by-frame trace of what
+the node detected and did (`trace.jsonl`), and, added by the page, the timings
+(`throw.json`). `data/throws/throws.csv` has one line per throw, for a
+spreadsheet.
+
+**Video files** (`videos/<camera>.mp4`, plain, and
+`videos/<camera>_detections.mp4` with what Pupper detected drawn on) are made
+when you ask: the **Make video files** button in a throw's panel, or all at
+once with `python3 tools/dodging_view.py --once` after a session. They are not
+made automatically, because encoding video takes processor time the dodge
+needs. The page does not need them: it plays the saved pictures directly.
+
+**Open it.** `robot/start.sh` starts Pupper Dodging View and prints its address:
+
+```
+http://pupper6.local:8077
+```
+
+Open that in a browser on your laptop or phone (same Wi-Fi as the Pupper). If
+the name does not resolve, use the numeric address in `/tmp/sar-dodge/dodging_view.log`,
+or tunnel it and open `http://localhost:8077` on the Mac:
+
+```bash
+ssh -L 8077:localhost:8077 pi@pupper6        # on the Mac; leave it open
+```
+
+To run it by hand: `bash robot/dodging_view.sh`. It cannot move or arm the robot.
+
+**What the page shows.** A list of throws, newest first. Click one for:
+
+- a few plain sentences on what happened, including why it waited if it did
+  and whether the ball went out of sight;
+- a timeline of the throw, in milliseconds;
+- the cameras' pictures playing in step, at ¼ speed by default, with a green
+  ring on the ball it was tracking and yellow boxes on anything else it took
+  for ball-coloured (untick "show what Pupper detected" for the plain picture);
+- the timings below, the planned move drawn from above, and how each camera
+  was doing (pictures per second, how old they were when processed).
+
+| Number | Meaning |
+|---|---|
+| Ball first in a picture → decision | How long Pupper took to make up its mind, from the first picture with the ball in it |
+| Decision → command sent | Should be a few ms |
+| Command → passed on by the mux | The velocity mux's delay. If it is tens of ms, try `bash robot/start.sh --fast-mux` |
+| Command → body starts moving | **The robot's own latency**: from the command to the IMU showing the body turn |
+| Decision → body starts moving | **From recognising the ball to starting to move** |
+| Ball first seen → body starts moving | The whole reaction |
+| Time left at the decision | How long until the ball was due when it decided |
+| Time the move needs | Reaction plus getting clear, as the planner estimates it |
+
+The robot-latency numbers exist only for armed dodges; a dry run sends no
+command.
+
+**Throws it does not react to at all** are not saved on their own, because
+the node did not notice anything. Two buttons at the top right cover them:
+
+- **Record the next throw**: press it, then throw within 3 seconds. Those
+  seconds are saved whatever Pupper does.
+- **Save the last 3 s**: press it straight after a throw (a phone in your
+  hand works).
+
+Then play the video with detections on: either the ball was never ringed
+(a detection problem: lighting, colour calibration, stage 5) or it was
+ringed but too briefly or too late (look at where it first appears).
+
+**Say what really happened.** Pupper cannot tell whether the ball hit it. In
+each throw's panel press *dodged*, *hit*, *off target* or *not a throw*, and
+add a note. The summary cards and `throws.csv` use these.
+
+**Disk space.** A throw takes roughly 30–60 MB. The page shows how much the
+throws use and how much is free; the node stops saving when less than 1.5 GB
+is free. Copy what you want to keep to the Mac, then delete on the Pupper:
+
+```bash
+scp -r pi@pupper6:~/sar-pupper/projectile-dodging/data/throws ~/Desktop/CS123/throws    # on the Mac
+rm -r data/throws/20261126-*                                                           # on the Pupper: one day's throws
+```
+
+Each throw's panel also has a link that downloads its numbers (and videos, once
+made) as one .zip, without the raw pictures.
+
+To get the numbers and videos without the page:
+`python3 tools/dodging_view.py --once` analyses every saved throw, writes the
+videos and `throws.csv`, and prints the summary sentences. Run it with the
+robot idle.
 
 ## 9. If something is off
 
@@ -451,14 +576,14 @@ Each dodge is announced on `/dodge/event` (JSON) so a planner can re-plan.
 | Tracks appear with no ball | Something else in view is ball-coloured | Remove it and redo the colour step for that camera |
 | Range reads consistently wrong | Size calibration | `calibrate_color.py <cam> --distance ...`; check `ball.diameter_m` |
 | Dodges balls that would miss by a lot | Prediction too generous | Lower `threat.k_sigma` or `threat.sigma_cap_m` |
-| Reacts too late from the front | Too little time in the air, or the fisheye is slow | Lob a little higher; `bash robot/start.sh --fisheye-fps 60` |
-| Misses throws from straight behind | The ball climbs out of the top of the rear cameras' view | Lower arc: peak at chest height. Do not throw from closer than 2 m |
+| Reacts too late | Open the throw in Pupper Dodging View: it says where the time went | Few pictures per second or old pictures (age over 100 ms) in "Cameras during this throw": the Pi is overloaded, see stage 7. Ball first seen close to the robot: lighting or colour calibration (stage 5). Long command → body time: `--fast-mux`. Otherwise more time in the air: throw higher, or from further back |
+| Loses a high lob that left the picture | It is followed unseen for 0.6 s; a very high lob is out of sight longer | Raise `tracker.flight_coast_s` (0.8), or throw a little lower |
 | Reacts in time but does not get clear | Robot slower than the config assumes | Raise `escape.accel_lag_s` in steps of 0.05 (or measure it with the stage 7 video), set `react_s` from stage 7; raise `vx_*` if steady |
 | Moves the wrong way | Left/right swapped or a camera is rotated | Stage 4 and the bearing table in stage 5 |
-| Robot stumbles or trips the tilt e-stop when dodging | Command too aggressive | Lower `escape.vx_forward` / `vx_backward`, shorten `max_duration_s` |
+| Robot stumbles or trips when dodging | Feet slipping on a smooth floor, or the command is too aggressive | A rug or mat first. Then lower `escape.diagonal_scale` (0.8 → 0.65) if it is the diagonal move, `escape.vx_forward` / `vx_backward` if it is the straight run |
 | Robot twitches twice per throw | Ball bounces back into view | Raise `fsm.refractory_s` |
 
-Logs: `/tmp/sar-dodge/robot.log`. Every dodge (real or dry) is in `data/events/`.
+Logs: `/tmp/sar-dodge/robot.log` (the page's: `dodging_view.log`). Every throw is in `data/throws/` and in Pupper Dodging View.
 
 ## What has and has not been verified
 
@@ -466,10 +591,10 @@ Logs: `/tmp/sar-dodge/robot.log`. Every dodge (real or dry) is in `data/events/`
   tracking, hit prediction, escape choice, the state machine, the recording
   format and replay, the node's message handling (against stand-in ROS
   libraries) and the optional fast mux's priority logic. In simulation with the
-  default numbers and the 2 m throw, the dodge rates are those in the table at
-  the top; throws that miss and balls on the floor are ignored. (From 3–4 m, the
-  distance the plan was first written for: sides and rear essentially every
-  time, front diagonals about 9 in 10, straight from the front about 6 in 10.) The camera finder, the
+  default numbers and the throws described at the top, the dodge rates are those in the table at
+  the top; a ball on the floor is ignored, and of throws that pass 0.7–1.5 m to
+  the side about 1 in 20 is dodged anyway (none were before lobs were followed
+  out of sight; that is the price of it). The camera finder, the
   exposure tuner and the lens-rim fit have only run against stand-in cameras
   and one screenshot of the real fisheye.
 - **Seen on the robot (2026-11-23, stages 1-4):** the code installs and the
@@ -488,6 +613,19 @@ Logs: `/tmp/sar-dodge/robot.log`. Every dodge (real or dry) is in `data/events/`
   on the other; the detector now removes the colour cast itself. All of this is
   checked against the six pictures taken on the robot so far; none of it has
   run live on the robot yet.
+- **Small room and late reactions (2026-11-26).** In simulation, high lobs
+  thrown from 2 m were almost never dodged from the sides or the rear
+  diagonals: the ball left the top of a rear camera's picture and was dropped
+  after a quarter of a second unseen. Two changes: a ball seen in flight is
+  followed on its arc for 0.6 s while unseen, and a lob is judged while it is
+  still climbing instead of only once it is closing in. Simulated high lobs
+  dodged, of 40: from the sides 4 before, 31 after; rear diagonals 10, then 40;
+  behind 25, then 40; and they are decided about 0.3 s sooner. (The lag
+  measured on the robot the same day had a different cause, the Pi being
+  overloaded, dealt with separately: see `plan.md`.) The diagonal move is 20 % slower, for smooth floors. The
+  throw recorder and Pupper Dodging View have run against a stand-in robot (stand-in
+  ROS, rendered cameras, a body that reacts 110 ms after a command), not on
+  the Pupper; the timings they report for that stand-in match what was put in.
 - **Not verified - needs the stages above:** the second ELP and both ELPs
   streaming together, the exposure tuner on the real cameras, colours and
   timestamps, the dodge node in the real ROS stack, CPU load on the Pi, and how

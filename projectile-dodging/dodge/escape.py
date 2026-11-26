@@ -95,6 +95,7 @@ class EscapePlanner:
         self.vx_b = float(cfg.get("vx_backward", 0.8))
         self.vy = float(cfg.get("vy", 0.5))
         self.comp_min = float(cfg.get("component_min", 0.25))
+        self.diag_scale = float(cfg.get("diagonal_scale", 1.0))
         self.lag = float(cfg.get("accel_lag_s", 0.2))
         self.react = float(cfg.get("react_s", 0.12))
         self.deadband = float(cfg.get("center_deadband_m", 0.04))
@@ -114,6 +115,8 @@ class EscapePlanner:
             vx = self.vx_f if d[0] > 0 else -self.vx_b
         if abs(d[1]) >= self.comp_min:
             vy = self.vy if d[1] > 0 else -self.vy
+        if vx and vy:                      # both at once is the move that trips the robot on a smooth floor
+            vx, vy = vx * self.diag_scale, vy * self.diag_scale
         return vx, vy, vx * d[0] + vy * d[1]
 
     def _candidate(self, d, disp, mode, tau=float("inf")):

@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import sys
@@ -191,6 +192,163 @@ class StepResponseTests(unittest.TestCase):
             self.assertAlmostEqual(load_config(calib_dir=d)["escape"]["accel_lag_s"], 0.20)
             save_calib("step_response", {"escape": {"accel_lag_s": 0.24}}, calib_dir=d)
             self.assertAlmostEqual(load_config(calib_dir=d)["escape"]["accel_lag_s"], 0.24)
+
+
+
+def make_throw_recording(folder, kind="dodge", t0=1000.0):
+    """A saved throw as the dodge node writes it: a ball first seen 100 ms before the decision, out of
+    sight (off the top of the picture) from 100 ms after it, a command, the mux passing it on 15 ms
+    later and the body turning 110 ms after the command."""
+    from dodge.recording import RecordingWriter
+    event = {"t": t0, "event": "dodge", "dry_run": kind == "dry", "late": False,
+             "threat": {"track": 7, "threat": True, "tau": 0.5, "miss_m": 0.02, "bearing_deg": 95.0},
+             "plan": {"vx": 1.0, "vy": 0.0, "direction": [1.0, 0.0], "t_need": 0.45, "duration": 0.5, "reason": "run forward, across the ball's path"}}
+    w = RecordingWriter(folder, {"kind": kind, "event": event})
+    ok, jpeg = cv2.imencode(".jpg", np.full((36, 64, 3), 90, np.uint8))
+    first = t0 - 0.10
+    seen = first
+    for i in range(int(1.3 * 60)):
+        t = t0 - 0.5 + i / 60.0
+        w.add_frame("elp_left", t, jpeg.tobytes())
+        rec = {"k": "f", "cam": "elp_left", "t": round(t, 4), "raw": round(t, 4), "done": round(t + 0.03, 4), "ms": 9.0, "size": [1280, 720]}
+        if first - 1e-6 <= t:
+            visible = t <= t0 + 0.10
+            if visible:
+                seen = t
+                rec["blobs"] = [[640.0, 300.0 - 2800.0 * (t - first), 20, 20]]      # climbing toward the top edge
+            hits = int(round((seen - first) * 60)) + 1
+            rec["core"] = {"state": "TRACK" if t < t0 else "DODGE",
+                           "tracks": [{"id": 7, "t0": round(first, 4), "hits": hits, "confirmed": hits >= 3, "flying": hits >= 3,
+                                       "p": [0.0, 2.0 - 3.0 * (t - first), 0.5], "v": [0.0, -3.0, 2.0], "t": round(t, 4),
+                                       "seen": round(seen, 4), "cam": "elp_left"}],
+                           "threats": [{"track": 7, "threat": hits >= 4, "tau": 0.5}]}
+        w.add_trace(rec)
+    if kind == "dodge":
+        for i in range(50):
+            w.add_trace({"k": "c", "t": round(t0 + 0.002 + i * 0.01, 4), "vx": 1.0, "vy": 0.0})
+            w.add_trace({"k": "m", "t": round(t0 + 0.017 + i * 0.01, 4), "vx": 1.0, "vy": 0.0})
+    rng = np.random.default_rng(1)
+    for i in range(int(2.0 * 200)):
+        t = t0 - 1.0 + i / 200.0
+        turning = kind == "dodge" and t >= t0 + 0.112
+        w.add_imu(t, (1.0, 0.0, 0.0, 0.0), (rng.normal(0, 0.02), (1.2 if turning else 0.0) + rng.normal(0, 0.02), rng.normal(0, 0.02)))
+    w.add_event(event)
+    w.close()
+    return event
+
+
+class ThrowLogTests(unittest.TestCase):
+    """The throw recorder's numbers: when the ball was seen, the decision, the command, the body moving."""
+
+    def test_the_timeline_of_a_dodge(self):
+        from dodge import throwlog
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "20261126-120000-dodge")
+            make_throw_recording(path)
+            t = throwlog.analyse(path)
+            n = t["numbers"]
+            self.assertEqual(t["kind"], "dodge")
+            self.assertFalse(t["late"])
+            self.assertEqual(t["timing"], "ok")
+            self.assertAlmostEqual(n["seen_to_decision_ms"], 100, delta=2)
+            self.assertAlmostEqual(n["first_picture_delay_ms"], 30, delta=2)
+            self.assertAlmostEqual(n["decision_to_command_ms"], 2, delta=1)
+            self.assertAlmostEqual(n["command_to_mux_ms"], 15, delta=1)
+            self.assertAlmostEqual(n["command_to_body_ms"], 110, delta=12)
+            self.assertAlmostEqual(n["decision_to_body_ms"], 112, delta=12)
+            self.assertAlmostEqual(n["seen_to_body_ms"], 212, delta=12)
+            self.assertEqual(n["time_left_at_decision_ms"], 500)
+            self.assertEqual(n["needed_ms"], 450)
+            gap = t["gaps"][0]                                 # out of sight from 100 ms after the decision until it was due
+            self.assertAlmostEqual(gap["duration"], 0.4, delta=0.03)
+            self.assertEqual(gap["where"], "the top of the picture")
+            self.assertTrue(gap["to_the_end"])
+            self.assertTrue(any("top of the picture" in line for line in t["story"]))
+            self.assertEqual(t["cameras"]["elp_left"]["fps"], 60.0)
+            self.assertAlmostEqual(t["cameras"]["elp_left"]["age_ms"], 30, delta=1)
+            self.assertTrue(os.path.exists(os.path.join(path, "throw.json")))
+
+    def test_a_dry_run_has_no_robot_latency_and_old_recordings_say_late_in_words(self):
+        from dodge import throwlog
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "20261126-120001-dry")
+            make_throw_recording(path, kind="dry")
+            with open(os.path.join(path, "meta.json")) as f:
+                meta = json.load(f)
+            meta["event"]["late"] = "False"                    # how the node used to write it
+            with open(os.path.join(path, "meta.json"), "w") as f:
+                json.dump(meta, f)
+            t = throwlog.analyse(path)
+            self.assertEqual(t["kind"], "dry")
+            self.assertFalse(t["late"])
+            self.assertIsNone(t["numbers"]["decision_to_body_ms"])
+            self.assertEqual(t["numbers"]["seen_to_decision_ms"], 100)
+            meta["event"].update(late=True, threat=dict(meta["event"]["threat"], tau=0.2))      # 200 ms left, 450 needed
+            with open(os.path.join(path, "meta.json"), "w") as f:
+                json.dump(meta, f)
+            self.assertEqual(throwlog.analyse(path)["timing"], "late")
+            meta["event"]["threat"]["tau"] = 0.42                                             # 420 of 450: close
+            with open(os.path.join(path, "meta.json"), "w") as f:
+                json.dump(meta, f)
+            self.assertEqual(throwlog.analyse(path)["timing"], "tight")
+
+    def test_videos_labels_and_the_summary_file(self):
+        import csv as csv_mod
+        from dodge import throwlog
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "20261126-120002-dodge")
+            make_throw_recording(path)
+            t = throwlog.analyse(path)
+            made = throwlog.render_videos(path, t)
+            self.assertEqual(made, {"elp_left.mp4": True, "elp_left_detections.mp4": True})
+            throwlog.save_label(path, "dodged", "from the sofa")
+            self.assertEqual(throwlog.load_label(path)["result"], "dodged")
+            out = throwlog.write_summary(d)
+            with open(out) as f:
+                rows = list(csv_mod.DictReader(f))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["result"], "dodged")
+            self.assertEqual(rows[0]["seen_to_decision_ms"], "100")
+            self.assertEqual(rows[0]["move"], "run forward")
+
+    def test_a_recording_without_a_live_trace_is_worked_out_from_its_pictures(self):
+        from dodge import throwlog
+        from dodge.recording import RecordingWriter
+        cams = build_cameras(CFG)
+        throw = aimed_throw(CFG, 100.0, 2.0, rise=0.5)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "20261126-120003")
+            w = RecordingWriter(path, {})
+            for i in range(14):
+                t = i / 60.0
+                img, _ok = render_ball(cams["elp_left"], throw.position(t))
+                w.add_frame("elp_left", 2000.0 + t, cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])[1].tobytes())
+                w.add_imu(2000.0 + t, (1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+            w.close()
+            t = throwlog.analyse(path, cfg=CFG)
+            self.assertTrue(t["rebuilt"])
+            self.assertIsNotNone(t["track"])
+            self.assertGreaterEqual(t["cameras"]["elp_left"]["frames_with_ball"], 8)
+            self.assertAlmostEqual(t["ball"]["first"]["bearing_deg"], 100, delta=6)
+
+    def test_the_dodging_view_lists_throws_and_serves_their_pictures(self):
+        import dodging_view
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "20261126-120004-dodge")
+            make_throw_recording(path)
+            lab = dodging_view.Lab([d], make_videos=False)
+            self.assertFalse(lab.listing()[0]["ready"])        # not analysed yet
+            dodging_view.throwlog.analyse(path)
+            row = lab.listing()[0]
+            self.assertTrue(row["ready"])
+            self.assertEqual(row["move"], "run forward")
+            self.assertEqual(row["from_deg"], 95.0)
+            frames = lab.frame_index(row["id"], path, lab.throw(row["id"], path))["elp_left"]
+            self.assertEqual(len(frames["t"]), 78)
+            self.assertEqual(sum(1 for b in frames["ball"] if b >= 0), 13)
+            self.assertEqual(lab.jpeg(path, "elp_left", 3)[:2], b"\xff\xd8")
+            self.assertIsNone(lab.jpeg(path, "elp_left", 999))
+            self.assertIsNone(lab.path("../" + row["id"]))    # only folders of saved throws can be asked for
 
 
 if __name__ == "__main__":

@@ -7,6 +7,9 @@ A recording is a folder:
     <camera>.idx       one line per frame: time, byte offset, length
     imu.csv            time, quaternion (w x y z), gyro (x y z), accel (x y z)
     events.jsonl       dodge events, one JSON object per line
+    trace.jsonl        what the dodge node did live, one JSON object per line (only in the node's own
+                       recordings): "f" a processed frame with its detections and the tracker's state,
+                       "c" a velocity command sent, "m" the velocity the mux passed on, "e" an event
 
 tools/record.py writes them, the dodge node dumps one around every dodge, and
 tools/replay.py runs the whole dodge core on them offline.
@@ -31,6 +34,7 @@ class RecordingWriter:
         self.imu = open(os.path.join(path, "imu.csv"), "w")
         self.imu.write("t,qw,qx,qy,qz,gx,gy,gz,ax,ay,az\n")
         self.events = open(os.path.join(path, "events.jsonl"), "w")
+        self.trace = None
         with open(os.path.join(path, "meta.json"), "w") as f:
             json.dump(meta or {}, f, indent=1, default=str)
 
@@ -54,10 +58,17 @@ class RecordingWriter:
         with self.lock:
             self.events.write(json.dumps(event, default=str) + "\n")
 
+    def add_trace(self, record: dict) -> None:
+        with self.lock:
+            if self.trace is None:
+                self.trace = open(os.path.join(self.path, "trace.jsonl"), "w")
+            self.trace.write(json.dumps(record, default=str, separators=(",", ":")) + "\n")
+
     def close(self) -> None:
         with self.lock:
-            for f in list(self.bins.values()) + list(self.idxs.values()) + [self.imu, self.events]:
-                f.close()
+            for f in list(self.bins.values()) + list(self.idxs.values()) + [self.imu, self.events, self.trace]:
+                if f is not None:
+                    f.close()
 
 
 class RecordingReader:
@@ -129,6 +140,19 @@ class RecordingReader:
         with open(p) as f:
             return [json.loads(line) for line in f if line.strip()]
 
+    def trace(self) -> list:
+        """The node's live trace, in the order it was written; empty for recordings without one."""
+        p = os.path.join(self.path, "trace.jsonl")
+        if not os.path.exists(p):
+            return []
+        with open(p) as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def jpeg(self, cam: str, i: int) -> bytes:
+        """Frame number i of a camera, as the JPEG it was recorded as."""
+        _t, off, ln = self.index[cam][i]
+        return self.read(cam, off, ln)
+
 
 class RingRecorder:
     """Keeps the last few seconds of frames and IMU in memory; dump() writes a slice as a recording."""
@@ -138,6 +162,7 @@ class RingRecorder:
         self.lock = threading.Lock()
         self.frames: dict = {}
         self.imu: deque = deque()
+        self.trace: deque = deque()
 
     def add_frame(self, cam: str, t: float, jpeg) -> None:
         if jpeg is None:
@@ -154,11 +179,20 @@ class RingRecorder:
             while self.imu and self.imu[0][0] < t - self.seconds:
                 self.imu.popleft()
 
+    def add_trace(self, t: float, record: dict) -> None:
+        with self.lock:
+            self.trace.append((t, record))
+            while self.trace and self.trace[0][0] < t - self.seconds:
+                self.trace.popleft()
+
     def dump(self, path: str, meta: dict | None = None, events=()) -> str:
         with self.lock:
             frames = {cam: list(q) for cam, q in self.frames.items()}
             imu = list(self.imu)
+            trace = [r for _t, r in self.trace]
         w = RecordingWriter(path, meta)
+        for r in trace:
+            w.add_trace(r)
         for cam, items in frames.items():
             for t, jpeg in items:
                 w.add_frame(cam, t, jpeg)

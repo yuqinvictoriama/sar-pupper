@@ -83,6 +83,10 @@ class DodgeCore:
         self.last_threats: list = []
         self.stats = {"frames": 0, "detections": 0, "dodges": 0}
         self._scaled: dict = {}
+        self._flight = None                     # a ball seen in flight that has not (yet) led to a dodge
+        self.hold = ""                          # why a predicted hit has not led to a dodge yet
+        self.report_undodged = bool(fc.get("report_undodged", True))
+        self.undodged_travel = float(fc.get("undodged_min_travel_m", 0.5))
 
     # ------------------------------------------------------------------ inputs
     def set_armed(self, armed: bool) -> None:
@@ -157,11 +161,40 @@ class DodgeCore:
             self.tracker.update(t_frame, meas, self.orientation(t_frame))
             return self._evaluate(t_now)
 
+    def _watch_flight(self, t_now: float, tracks, threats=()) -> None:
+        """Notice throws that never led to a dodge, so they can be looked at afterwards: a "throw_seen"
+        event is reported once such a ball is gone, with what the assessor made of it."""
+        flying = [tr for tr in tracks if tr.flying]
+        if flying:
+            if self._flight is None:
+                self._flight = {"t0": t_now, "t_last": t_now, "dodged": False, "closest_m": float("inf"),
+                                "verdicts": {}, "last": None, "hits": 0, "travel": 0.0}
+            f = self._flight
+            f["t_last"] = t_now
+            f["hits"] = max(f["hits"], max(tr.hits for tr in flying))
+            f["closest_m"] = min(f["closest_m"], min(tr.range_m for tr in flying))
+            f["travel"] = max(f["travel"], max(tr.travel_m for tr in flying))
+            ids = {tr.id for tr in flying}
+            for th in threats:
+                if th.track_id in ids:
+                    f["verdicts"][th.reason] = f["verdicts"].get(th.reason, 0) + 1
+                    f["last"] = th.summary()
+        elif self._flight is not None:
+            f, self._flight = self._flight, None
+            # Only something that really crossed the room counts as a throw worth reporting.
+            if (self.report_undodged and not f["dodged"] and f["hits"] >= 5 and f["travel"] >= self.undodged_travel
+                    and t_now >= self.t_ready):
+                self._event(t_now, "throw_seen", seen_s=round(f["t_last"] - f["t0"], 3), travel_m=round(f["travel"], 2),
+                            closest_m=round(f["closest_m"], 2), verdicts=f["verdicts"], threat=f["last"])
+
     def _evaluate(self, t_now: float) -> bool:
         tracks = self.tracker.confirmed()
         if self.state in (State.DODGE, State.RECOVER):
+            if self._flight is not None:
+                self._flight["dodged"] = True
             return False
         if not tracks:
+            self._watch_flight(t_now, tracks)
             self.state = State.SEARCH
             self.threat_counts.clear()
             self.last_threats = []
@@ -171,28 +204,35 @@ class DodgeCore:
         own = R @ np.array([vx, vy, 0.0]) if (t_now - tv) < 0.6 else None
         threats = [self.assessor.assess(tr, t_now, self.tracker, R, own) for tr in tracks]
         self.last_threats = threats
+        self._watch_flight(t_now, tracks, threats)
         live = {th.track_id for th in threats if th.is_threat}
         self.threat_counts = {k: v for k, v in self.threat_counts.items() if k in live}
         for k in live:
             self.threat_counts[k] = self.threat_counts.get(k, 0) + 1
         danger = [th for th in threats if th.is_threat]
+        self.hold = ""
         if not danger:
             self.state = State.TRACK
             return False
         th = min(danger, key=lambda d: d.tau)
         self.state = State.THREAT
         if t_now < self.t_ready or th.tau < self.min_tau:
+            self.hold = "just dodged" if t_now < self.t_ready else "too late to matter"
             return False
         plan = self.planner.plan(th, self.free_space)
         late = bool(th.tau <= plan.t_need)                # no time left to wait for a better estimate
         if th.tau > plan.t_need + self.trigger_margin:
+            self.hold = "hit predicted, time to spare"
             return False                                  # plenty of time: keep watching
         if not late:
             if self.threat_counts[th.track_id] < self.confirm_cycles:
+                self.hold = "hit predicted, waiting for a second picture to agree"
                 return False                              # want the verdict repeated first
             if not th.confident:
+                self.hold = "hit predicted, but where it passes is still uncertain"
                 return False                              # sideways prediction still vague
         if not self.can_dodge:
+            self.hold = "cannot dodge: " + self.cannot_reason
             self._event(t_now, "cannot_dodge", reason=self.cannot_reason, threat=th.summary())
             self.t_ready = t_now + self.refractory        # do not repeat the report every frame
             return False
@@ -201,6 +241,8 @@ class DodgeCore:
         self.dry_run = not self.armed
         self.state = State.DODGE
         self.stats["dodges"] += 1
+        if self._flight is not None:
+            self._flight["dodged"] = True
         self._event(t_now, "dodge", dry_run=self.dry_run, late=late, threat=th.summary(), plan=plan.summary())
         return True
 
@@ -270,6 +312,18 @@ class DodgeCore:
         px_per_rad = 1.0 / math.sqrt(sr)
         half = max(float(det.get("roi_min_px", 96)), math.radians(float(det.get("roi_half_deg", 14.0))) * px_per_rad)
         return float(uv[0, 0]), float(uv[0, 1]), half
+
+    def trace_state(self):
+        """What the core holds right now, for the throw recorder: None while nothing is tracked."""
+        with self.lock:
+            if not self.tracker.tracks and self.state == State.SEARCH:
+                return None
+            tracks = [{"id": tr.id, "t0": round(tr.t0, 4), "hits": tr.hits, "confirmed": tr.confirmed,
+                       "flying": tr.flying, "p": [round(float(v), 3) for v in tr.x[:3]],
+                       "v": [round(float(v), 2) for v in tr.x[3:]], "t": round(tr.t, 4), "seen": round(tr.t_last, 4),
+                       "cam": tr.last_cam} for tr in self.tracker.tracks]
+            return {"state": self.state.value, "tracks": tracks, "hold": self.hold,
+                    "threats": [th.summary() for th in self.last_threats]}
 
     def snapshot(self, t_now: float) -> dict:
         """Small status dictionary for /dodge/state and logs."""

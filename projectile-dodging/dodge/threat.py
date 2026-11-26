@@ -58,6 +58,7 @@ class ThreatAssessor:
         self.max_closing = float(cfg.get("max_closing_speed", 15.0))
         self.min_range = float(cfg.get("min_range_m", 0.25))
         self.min_ball_speed = float(cfg.get("min_ball_speed", 1.5))
+        self.lobs_count = bool(cfg.get("judge_rising_balls", True))
         self.margin = float(cfg.get("margin_m", 0.05))
         self.k_sigma = float(cfg.get("k_sigma", 1.5))
         self.sigma_cap = float(cfg.get("sigma_cap_m", 0.45))
@@ -83,18 +84,24 @@ class ThreatAssessor:
         th.speed = float(np.linalg.norm(v))
         th.closing_speed = float(-np.dot(p, v) / rng) if rng > 1e-6 else 0.0
         own = float(np.dot(p, robot_vel_w) / rng) if (robot_vel_w is not None and rng > 1e-6) else 0.0
+        v_fit = track.fitted_velocity()
+        ground_speed = None
+        if v_fit is not None:
+            ground_speed = float(np.linalg.norm(v_fit + (robot_vel_w if robot_vel_w is not None else 0.0)))
         if th.closing_speed - max(own, 0.0) < self.min_closing:
-            th.reason = "not approaching"
-            return th
+            # A lob is not closing in yet while it climbs: early in its flight it mostly goes up. So a ball
+            # that is plainly in flight is judged by where its arc comes down, not by its speed toward the robot.
+            lobbed = self.lobs_count and getattr(track, "flying", False) and ground_speed is not None \
+                and ground_speed >= self.min_ball_speed and float(v[2]) > 0.0
+            if not lobbed:
+                th.reason = "not approaching"
+                return th
         if th.closing_speed > self.max_closing or rng < self.min_range:
             th.reason = "implausible track"
             return th
-        v_fit = track.fitted_velocity()
-        if v_fit is not None:
-            v_world = v_fit + (robot_vel_w if robot_vel_w is not None else 0.0)
-            if float(np.linalg.norm(v_world)) < self.min_ball_speed:
-                th.reason = "not moving (a still object)"
-                return th
+        if ground_speed is not None and ground_speed < self.min_ball_speed:
+            th.reason = "not moving (a still object)"
+            return th
 
         ts = self.ts
         a = accel(v, tracker.drag_k)

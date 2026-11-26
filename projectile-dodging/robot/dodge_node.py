@@ -10,13 +10,11 @@ Cameras in, velocity commands out:
     /imu_sensor_broadcaster/imu                                           ┘                (into cmd_vel_mux)
 
 It also publishes /dodge/state (JSON, 5 Hz) and /dodge/event (JSON, one per
-dodge), offers /dodge/arm (std_srvs/SetBool), and saves a short recording
-around every dodge to data/events/ so each one can be replayed afterwards.
-
-This node holds the two USB cameras, so nothing else can open them. For
-survivor identification it passes their frames on, as the camera's own JPEGs,
-on /elp_left/image/compressed and /elp_right/image/compressed: at most
-node.share_frames_hz a second each, and only while something subscribes.
+dodge), offers /dodge/arm (std_srvs/SetBool), and keeps the throw recorder:
+every dodge, every throw it saw but did not dodge, and every manual mark (a
+message on /dodge/mark) is saved to data/throws/ with the camera frames, the
+IMU and a trace of what the node detected and did, frame by frame.
+tools/dodging_view.py (Pupper Dodging View) shows them in a browser; tools/replay.py re-runs them.
 
 With armed:=false (the default) it does everything except move the robot: it
 reports the dodge it would have made. Arm it only with someone at the e-stop.
@@ -25,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -97,7 +96,13 @@ class DodgeNode(Node):
         self.record_events = bool(self.get_parameter("record_events").value)
         self.ring = RingRecorder(float(ncfg.get("event_buffer_s", 1.5)) + float(ncfg.get("event_post_s", 1.0)))
         self.event_post = float(ncfg.get("event_post_s", 1.0))
-        self.event_dir = ncfg.get("event_dir", "data/events")
+        self.event_dir = ncfg.get("event_dir", "data/throws")
+        self.record_undodged = bool(ncfg.get("record_undodged", True))
+        self.record_gap = float(ncfg.get("min_record_gap_s", 4.0))
+        self.min_free = float(ncfg.get("min_free_gb", 1.5)) * 1e9
+        self.last_dump = 0.0
+        self.last_auto = 0.0               # time of the last dodge or undodged throw that is being saved
+        self.disk_warned = False
         if not os.path.isabs(self.event_dir):
             self.event_dir = os.path.join(ROOT, self.event_dir)
 
@@ -112,6 +117,7 @@ class DodgeNode(Node):
         self.create_subscription(Imu, ncfg.get("imu_topic", "/imu_sensor_broadcaster/imu"), self.on_imu, 50)
         self.create_subscription(Empty, ncfg.get("estop_topic", "/emergency_stop"), self.on_estop, 10)
         self.create_subscription(Twist, "/cmd_vel", self.on_cmd_vel, 10)
+        self.create_subscription(String, "/dodge/mark", self.on_mark, 5)
         self.create_subscription(Float32MultiArray, ncfg.get("free_space_topic", "/free_space"), self.on_free_space, 5)
         self.free_space_time = 0.0
         self.imu_seen = 0.0
@@ -149,15 +155,6 @@ class DodgeNode(Node):
             else:
                 self.get_logger().error("%s: unknown source %r" % (name, src))
 
-        # ---- rear-camera frames for other nodes (survivor identification)
-        self.share_hz = float(ncfg.get("share_frames_hz", 10.0))
-        self.share_pubs = {}
-        self.share_last = {}
-        if self.share_hz > 0:
-            for name, cam in self.cam_cfgs.items():
-                if cam.get("source") == "v4l2":
-                    self.share_pubs[name] = self.create_publisher(CompressedImage, "/%s/image/compressed" % name, 1)
-
         self.create_timer(1.0 / float(ncfg.get("cmd_rate_hz", 100.0)), self.on_cmd_timer)
         self.create_timer(0.2, self.on_status_timer)
         self.create_timer(1.0, self.on_controller_timer)
@@ -173,19 +170,33 @@ class DodgeNode(Node):
         det = self.detectors[name]
         self.frame_no[name] += 1
         blobs = None
+        roi = False
         if self.roi_tracking and self.frame_no[name] % self.full_every != 0:
             pred = self.core.predicted_pixel(name, t_frame, size)
             if pred is not None:
                 u, v, half = pred
                 blobs = det.detect(bgr, roi=(u - half, v - half, u + half, v + half))
+                roi = True
                 if not blobs:
                     blobs = None          # not where expected: look everywhere
+                    roi = False
         if blobs is None:
             blobs = det.detect(bgr)
         started = self.core.process_blobs(name, t_frame, blobs, time.time(), size)
         if started:
             self.publish_command()        # do not wait for the timer
         now = time.time()
+        if self.record_events:
+            rec = {"k": "f", "cam": name, "t": round(t_frame, 4), "raw": round(t_raw, 4), "done": round(now, 4),
+                   "ms": round((now - t0) * 1000.0, 1), "size": [size[0], size[1]]}
+            if roi:
+                rec["roi"] = 1
+            if blobs:
+                rec["blobs"] = [[round(b.u, 1), round(b.v, 1), b.w, b.h] for b in blobs]
+            state = self.core.trace_state()
+            if state is not None:
+                rec["core"] = state
+            self.ring.add_trace(now, rec)
         with self.stats_lock:
             s = self.cam_stats[name]
             s["frames"] += 1
@@ -201,31 +212,6 @@ class DodgeNode(Node):
             self.process_frame(name, t_capture, bgr, jpeg)
         except Exception as exc:
             self.get_logger().error("%s: frame processing failed: %r" % (name, exc), throttle_duration_sec=2.0)
-        try:
-            self.share_frame(name, t_capture, jpeg, bgr)          # after the ball: dodging comes first
-        except Exception as exc:
-            self.get_logger().error("%s: could not pass the frame on: %r" % (name, exc), throttle_duration_sec=5.0)
-
-    def share_frame(self, name: str, t_capture: float, jpeg, bgr) -> None:
-        """Pass a rear-camera frame on to whoever subscribes, a few times a second."""
-        pub = self.share_pubs.get(name)
-        if pub is None or t_capture - self.share_last.get(name, 0.0) < 0.95 / self.share_hz:
-            return
-        if pub.get_subscription_count() == 0:
-            return
-        self.share_last[name] = t_capture
-        if jpeg is None:                   # camera not in pass-through mode: encode this one frame
-            ok, jpeg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if not ok:
-                return
-        msg = CompressedImage()
-        msg.header.stamp.sec = int(t_capture)
-        msg.header.stamp.nanosec = int((t_capture - int(t_capture)) * 1e9)
-        msg.header.frame_id = name
-        msg.format = "jpeg"
-        msg.data = jpeg.tobytes()
-        with self.pub_lock:
-            pub.publish(msg)
 
     def on_fisheye_msg(self, msg: CompressedImage) -> None:
         self.fisheye_msg = (msg, time.time())      # keep only the newest; decoding happens in the worker
@@ -266,7 +252,31 @@ class DodgeNode(Node):
             self.ring.add_imu(t, quat, gyro, (a.x, a.y, a.z))
 
     def on_cmd_vel(self, msg: Twist) -> None:
-        self.core.set_robot_velocity(time.time(), msg.linear.x, msg.linear.y)
+        now = time.time()
+        self.core.set_robot_velocity(now, msg.linear.x, msg.linear.y)
+        if self.record_events:          # what the mux passed on to the walking controller, and when
+            self.ring.add_trace(now, {"k": "m", "t": round(now, 4), "vx": round(msg.linear.x, 3),
+                                      "vy": round(msg.linear.y, 3)})
+
+    def on_mark(self, msg: String) -> None:
+        """Someone asked for the last few seconds to be kept (the save buttons in Pupper Dodging View)."""
+        text, wait = str(msg.data)[:200], 0.0
+        if text.startswith("wait="):                 # "wait=3.0;note": save what happens in the next few seconds instead
+            head, _, text = text.partition(";")
+            try:
+                wait = max(0.0, min(self.ring.seconds - 0.2, float(head[5:])))
+            except ValueError:
+                wait = 0.0
+        event = {"t": round(time.time() + wait, 4), "event": "mark", "note": text}
+        self.get_logger().warning("marked: saving %s" % ("the next %.1f s" % wait if wait else "the last few seconds"))
+        if self.record_events:
+            threading.Timer(wait + 0.3, self.dump_mark, args=(event, time.time())).start()
+
+    def dump_mark(self, event: dict, asked: float) -> None:
+        if self.last_auto >= asked:
+            self.get_logger().info("the throw recorded on request was already saved as a dodge or a seen throw")
+            return
+        self.dump_event(event)
 
     def on_estop(self, _msg: Empty) -> None:
         self.core.emergency_stop(time.time())
@@ -318,6 +328,10 @@ class DodgeNode(Node):
         msg.linear.x, msg.linear.y, msg.angular.z = float(cmd[0]), float(cmd[1]), float(cmd[2])
         with self.pub_lock:
             self.cmd_pub.publish(msg)
+        if self.record_events:
+            now = time.time()
+            self.ring.add_trace(now, {"k": "c", "t": round(now, 4), "vx": round(float(cmd[0]), 3),
+                                      "vy": round(float(cmd[1]), 3)})
 
     def on_cmd_timer(self) -> None:
         self.publish_command()
@@ -326,17 +340,46 @@ class DodgeNode(Node):
             with self.pub_lock:
                 self.event_pub.publish(String(data=text))
             self.get_logger().warning("dodge event: " + text)
-            if event["event"] == "dodge" and self.record_events:
+            if not self.record_events:
+                continue
+            self.ring.add_trace(event["t"], dict(event, k="e"))
+            if event["event"] == "dodge":
+                self.last_auto = event["t"]
                 threading.Timer(self.event_post, self.dump_event, args=(event,)).start()
+            elif event["event"] == "throw_seen" and self.record_undodged:
+                if event["t"] - self.last_dump >= self.record_gap:
+                    self.last_auto = event["t"]
+                    threading.Timer(0.5, self.dump_event, args=(event,)).start()
 
     def dump_event(self, event: dict) -> None:
+        """Save the last few seconds as one throw: frames, IMU, the live trace and the event itself."""
         try:
-            name = time.strftime("%Y%m%d-%H%M%S", time.localtime(event["t"])) + ("-dry" if event.get("dry_run") else "")
-            path = self.ring.dump(os.path.join(self.event_dir, name),
-                                  meta={"kind": "dodge event", "event": event, "config": self.cfg}, events=[event])
+            os.makedirs(self.event_dir, exist_ok=True)
+            free = shutil.disk_usage(self.event_dir).free
+            if free < self.min_free:
+                if not self.disk_warned:
+                    self.disk_warned = True
+                    self.get_logger().error("throws are no longer being saved: only %.1f GB free on the disk. Delete old "
+                                            "folders in %s." % (free / 1e9, self.event_dir))
+                return
+            self.disk_warned = False
+            kind = {"dodge": "dry" if event.get("dry_run") else "dodge", "throw_seen": "seen"}.get(event["event"], "mark")
+            self.last_dump = max(self.last_dump, float(event["t"]))
+            name = time.strftime("%Y%m%d-%H%M%S", time.localtime(event["t"])) + "-" + kind
+            path = os.path.join(self.event_dir, name)
+            n = 1
+            while os.path.exists(path):                  # two in the same second
+                n += 1
+                path = os.path.join(self.event_dir, "%s-%d" % (name, n))
+            with self.stats_lock:
+                cams = {c: {"fps": round(s.get("fps", 0.0), 1), "latency_ms": round(s["latency"] * 1000.0, 1),
+                            "proc_ms": round(s["proc_ms"], 1)} for c, s in self.cam_stats.items()}
+            meta = {"kind": kind, "event": event, "armed": self.core.armed, "can_dodge": self.core.can_dodge,
+                    "cannot_reason": self.core.cannot_reason, "cameras": cams, "config": self.cfg}
+            self.ring.dump(path, meta=meta, events=[event])
             self.get_logger().info("saved %s" % path)
         except Exception as exc:
-            self.get_logger().error("could not save the event recording: %r" % (exc,))
+            self.get_logger().error("could not save the throw recording: %r" % (exc,))
 
     def on_status_timer(self) -> None:
         now = time.time()

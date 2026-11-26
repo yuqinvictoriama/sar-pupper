@@ -120,6 +120,11 @@ tracker:
   gate_chi2: 20.0
   confirm_hits: 3
   max_coast_s: 0.25        # drop a confirmed track after this long unseen
+  flight_coast_s: 0.6      # ... but keep following a ball seen in flight this long: a lob leaves the top of a
+                           # rear camera's picture in mid-flight and comes down on the robot from above
+  flight_speed: 1.5        # m/s: a track moving at least this fast ...
+  flight_travel_m: 0.15    # ... that has also moved this far ACROSS the line of sight counts as a ball in flight.
+                           # (Along the line of sight proves nothing: range comes from the blob's size and jitters.)
   tentative_coast_s: 0.12
   max_tracks: 8
   max_range_m: 8.0
@@ -134,12 +139,15 @@ threat:
   max_closing_speed: 15.0  # faster than anyone throws: a tracking glitch
   min_range_m: 0.25
   min_ball_speed: 1.5      # m/s over the ground; slower than this is a still object, not a throw
+  judge_rising_balls: true # a lob is not closing in while it climbs: judge a ball in flight by where its arc comes
+                           # down even before it approaches (decides high lobs about 0.3 s sooner in simulation)
   margin_m: 0.05           # clearance wanted between ball surface and body outline
   k_sigma: 1.5
   sigma_cap_m: 0.45
   sigma_lat_max_m: 0.20    # do not fire early while the sideways prediction is this vague
   confirm_cycles: 2        # consecutive threat verdicts needed
-  trigger_margin_s: 0.30   # fire once time-to-contact <= time needed + this
+  trigger_margin_s: 0.60   # fire once time-to-contact <= time needed + this (0.3 waited longer for a better estimate;
+                           # with a robot slower than assumed, 0.6 dodged more high lobs in simulation, no more false dodges)
   min_tau_s: 0.05          # too late to matter
 
 escape:
@@ -150,6 +158,8 @@ escape:
   vx_backward: 0.8
   vy: 0.5
   component_min: 0.25      # ignore an axis that contributes less than this share of the escape direction
+  diagonal_scale: 0.8      # when a dodge uses both axes at once, both speeds are multiplied by this. The full
+                           # diagonal (1.0 with 0.5) is the move that trips the robot on hardwood; 1.0 = no reduction
   accel_lag_s: 0.20        # first-order lag of the walking response; from tools/step_response.py
   react_s: 0.12            # delay from sending the command to the robot starting to move (mux tick + policy step + legs)
   center_deadband_m: 0.04  # |miss| below this = dead centre: side chosen by free space / preference
@@ -169,6 +179,8 @@ fsm:
   level_tilt_deg: 20.0
   still_gyro_rad_s: 0.6
   abort_tilt_deg: 40.0
+  report_undodged: true    # report a "throw_seen" event for a ball seen in flight that did not lead to a dodge
+  undodged_min_travel_m: 0.5   # ... if it was seen to move at least this far across the line of sight
 
 node:
   cmd_topic: /dodge_cmd_vel
@@ -179,6 +191,12 @@ node:
   free_space_topic: /free_space      # std_msgs/Float32MultiArray: clearance (m) per equal sector, starting at straight ahead, counter-clockwise
   walking_controllers: [gemini_walk, neural_controller_default, neural_controller_default_alt, neural_controller, neural_controller_student, neural_controller_three_legged]
   require_active_controller: true
-  event_buffer_s: 1.5
-  event_post_s: 1.0
-  event_dir: data/events
+  # Throw recorder: every dodge, every throw that was seen but not dodged, and every manual save is kept
+  # with the camera frames and timings from event_buffer_s before to event_post_s after. A saved throw takes
+  # roughly 30-60 MB on the SD card with these values (three cameras, full-size pictures).
+  event_buffer_s: 2.0
+  event_post_s: 1.2
+  event_dir: data/throws
+  record_undodged: true    # also save throws that were seen but not dodged
+  min_free_gb: 1.5         # stop saving throws when the SD card has less free space than this
+  min_record_gap_s: 4.0    # at most one recording of an undodged throw this often

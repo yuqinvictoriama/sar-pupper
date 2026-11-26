@@ -37,33 +37,15 @@ from _common import load_config, np, ROOT, ros_node, run_tool
 from dodge.config import MAX_SAVED_LAG_S, save_calib
 from dodge.core import quat_to_rot
 from dodge.escape import lag_distance
+from dodge.throwlog import reaction_delay  # noqa: F401  (the same test the throw recorder uses)
 
 
-MIN_TURN_RATE = 0.25       # rad/s: the body must turn at least this fast to count as reacting
 LAGS = [round(0.01 * k, 2) for k in range(0, 81)]      # lags tried when fitting, 0 to 0.80 s
 
 
 def has_acceleration(acc) -> bool:
     """False when the IMU's acceleration is all zeros, which is what Pupper's driver sends."""
     return bool(np.abs(np.asarray(acc, dtype=float)).max() > 1e-6) if len(acc) else False
-
-
-def reaction_delay(t, gyro, t_cmd):
-    """Seconds from the command to the body starting to turn, or nan if that cannot be told apart
-    from how much it was already moving. Also returns the turn rate that counted as reacting."""
-    t = np.asarray(t, dtype=float)
-    gyro = np.asarray(gyro, dtype=float).reshape(len(t), 3)
-    before = (t > t_cmd - 1.0) & (t < t_cmd - 0.05)
-    if before.sum() < 5:
-        return float("nan"), MIN_TURN_RATE
-    rate = np.linalg.norm(gyro - gyro[before].mean(axis=0), axis=1)
-    thr = max(MIN_TURN_RATE, float(rate[before].mean() + 6.0 * rate[before].std()))
-    after = np.nonzero(t >= t_cmd)[0]
-    for k in after:
-        nxt = rate[k:k + 3]
-        if rate[k] > thr and (nxt > thr).sum() >= min(2, len(nxt)):      # not a single stray sample
-            return float(t[k] - t_cmd), thr
-    return float("nan"), thr
 
 
 def parse_timed(items):

@@ -1,6 +1,6 @@
 # Projectile dodging – implementation plan (v2)
 
-Updated 2026-11-23. Supersedes the 2026-11-16 plan. **Implemented in this folder** (see `README.md`; deployment steps in `DEPLOY.md`). The first run on the Pupper (2026-11-23) reached deployment stage 4, camera setup; nothing past that has run on the robot yet (see Implementation status).
+Updated 2026-11-26. Supersedes the 2026-11-16 plan. **Implemented in this folder** (see `README.md`; deployment steps in `DEPLOY.md`). On the Pupper it has been through camera setup, calibration and the first armed throws; what those showed, and what has not yet been re-measured on the robot, is under Implementation status.
 
 ## Goal
 
@@ -127,15 +127,15 @@ Everything after detection works in **body-frame angles**, so the tracker does n
    - Angular diameter is used instead of pixel diameter because a rectilinear 120° lens stretches the ball near the image edge and the fisheye compresses it.
 4. **Track (one tracker, body-centred)**
    - As built: a Kalman filter on the ball's 3D position and velocity relative to the robot, assuming free flight (gravity plus drag). Each measurement is the 3D point from step 3 with a small error across the line of sight and a large one along it. Azimuth, elevation, angular size and their rates are read off this state; filtering them directly was the original idea, but a lobbed ball's elevation is not constant on a collision course, and the 3D form handles that and the camera offsets in one go.
-   - Three detections to confirm a track. Detections from two cameras merge into one track; a track hands over between cameras without resetting.
+   - Three detections to confirm a track. Detections from two cameras merge into one track; a track hands over between cameras without resetting. A track that goes unseen is dropped after 0.25 s, except a ball seen in flight (fast, and moving across the line of sight), which is followed on its arc for 0.6 s: a lob leaves the top of a rear camera's picture in mid-flight.
    - The filter runs in a gravity-aligned frame built from the IMU orientation (`/imu_sensor_broadcaster/imu`), so body pitch and roll while trotting do not look like ball motion.
 5. **Predict**
    - The track is flown forward on its arc until it lands. Time-to-contact τ = when it first comes within the margin of the robot's outline (a box in `base_link`); miss distance = the closest the ball's surface gets. For a ball coming straight in this is the same as τ = θ / θ̇.
-   - Threat = predicted miss within margin (0.05 m) plus 1.5 σ of the prediction's own uncertainty, and the ball really is a moving ball: closing at over 1 m/s after removing the robot's own walking speed, and moving over the ground at over 1.5 m/s on a straight-line fit (a still object hanging above the robot would otherwise look like it is falling onto it).
+   - Threat = predicted miss within margin (0.05 m) plus 1.5 σ of the prediction's own uncertainty, and the ball really is a moving ball: closing at over 1 m/s after removing the robot's own walking speed, and moving over the ground at over 1.5 m/s on a straight-line fit (a still object hanging above the robot would otherwise look like it is falling onto it). A ball in flight that is still climbing is exempt from the closing test: early in a lob it mostly goes up, and waiting for it to close in cost about 0.3 s.
    - Approach direction and descent angle come from the predicted velocity at contact.
 6. **Decide (state machine)**
    - SEARCH → TRACK → THREAT → DODGE → RECOVER → SEARCH.
-   - The dodge fires when: a threat is predicted, and τ is below (time needed for that bearing + 0.3 s). With time in hand it waits for a second consistent verdict and a sideways prediction good to 0.2 m; once τ is down to the time needed it goes at once. Trigger early rather than timing it finely – τ is only accurate late.
+   - The dodge fires when: a threat is predicted, and τ is below (time needed for that bearing + 0.6 s; 0.3 s until 2026-11-26). With time in hand it waits for a second consistent verdict and a sideways prediction good to 0.2 m; once τ is down to the time needed it goes at once. Trigger early rather than timing it finely – τ is only accurate late.
    - Ignore anything not growing: a ball lying on the floor stays green and in view forever.
    - Refractory period of about 1 s after a dodge so the bouncing ball does not retrigger.
 7. **Escape selection (new in v2)**
@@ -172,17 +172,17 @@ projectile-dodging/
   plan.md, README.md, DEPLOY.md
   dodge/             pure Python, no ROS: lens models, detect, colorfit, measure, track, threat, escape, core (state machine), recording, sim
   robot/             on the Pupper: USB capture, dodge_node.py, sar_dodge.launch.py, mux.yaml, fast_mux.py, start/stop/watch/walk scripts
-  tools/             find_cameras, tune_exposure, fit_image_circle, view, calibrate_color / _camera / _extrinsics, record, replay, measure_latency, step_response, check_setup, sim_report
+  tools/             find_cameras, tune_exposure, fit_image_circle, view, calibrate_color / _camera / _extrinsics, record, replay, measure_latency, step_response, check_setup, sim_report, dodging_view (+ dodging_view.html)
   config/            dodge.yaml (every number) and calib/ (written by the calibration tools, merged on top)
   tests/             off-robot tests
-  data/              recordings and saved dodge events (git-ignored)
+  data/              recordings and saved throws (git-ignored)
 ```
 
-## Implementation status (2026-11-23)
+## Implementation status (2026-11-26)
 
 **Built:** every pipeline step above, the ROS node, the launch file that wraps the Gemini stack and adds `/dodge_cmd_vel` to the mux, and the Phase 0–3 tools. The dodge node starts unarmed: it reports the dodge it would make and saves a recording of each, but sends no command until armed.
 
-**Checked off the robot (Python 3.11, numpy 1.26, OpenCV 4.11, as on the Pi):** 51 automated tests, including rendered ball images through detection, tracking and replay; the node driven in real time through stand-in ROS libraries and a fake USB camera.
+**Checked off the robot (Python 3.11, numpy 1.26, OpenCV 4.11, as on the Pi):** 70 automated tests, including rendered ball images through detection, tracking and replay; the node driven in real time through stand-in ROS libraries and a fake USB camera.
 
 **Simulated dodge rate, Tier A lobs, shipped config** (fisheye assumed to see the ball from 6 px at 30 fps; robot lag 0.2 s; 30–40 throws per sector):
 
@@ -214,13 +214,19 @@ The second ELP could not be opened in that run and the log could not say why. `t
 
 Also fixed: a dodge event's `late` flag was saved as the text "True" rather than a true/false value.
 
+**Small room, high lobs, and the throw recorder (2026-11-26).** The practice space is about 4 × 6 m, so throws come from 2–3 m, not the 3–4 m of Tier A, and throwing higher had not helped. Apart from the overload above, simulation showed a second reason for the lobs: thrown from 2 m, the ball leaves the top of a rear camera's picture in mid-flight, and the tracker dropped it after 0.25 s unseen, so high lobs from the sides and rear diagonals were almost never dodged. Three changes to the logic: a ball seen in flight is followed on its arc for 0.6 s while unseen (`tracker.flight_coast_s`); a lob is judged while it is still climbing, by where its arc comes down, instead of only once it is closing in (`threat.judge_rising_balls`; "in flight" means fast and moving across the line of sight, since range read from the blob's size jitters too much to prove motion); and the node commits a little earlier (`threat.trigger_margin_s` 0.3 → 0.6). Simulated high lobs dodged, of 40, with the rear cameras at 30 frames a second: from the sides 4 before and 31 after, rear diagonals 10 and 40, behind 25 and 40; they are decided about 0.3 s sooner; shoulder-height lobs are unchanged (sides about 95 %). The high lobs still missed from the sides come from the front-side (60–90°), where the ball is at the edge of a rear camera's picture and leaves it within three frames, before it can be tracked: from the sides, a shoulder-to-head-height lob is the better throw; about 1 in 20 throws passing 0.7–1.5 m wide is now dodged anyway. Straight from the front stays the weak direction (about 80 % for a shoulder-height lob from 3 m, far less if the robot is slower than assumed), because the sidestep is slow: the room layout in `DEPLOY.md` gives the front and back the long 3 m and the sides the short 2 m, and asks for high lobs. The diagonal move is 20 % slower (`escape.diagonal_scale`) because it trips the robot on hardwood.
+
+To see where the time goes on the real robot, the node now records every throw (`data/throws/`): dodges, dry-run dodges, throws it tracked but did not dodge (with its reasons), and seconds saved on request. Each has the cameras' frames, the IMU and a frame-by-frame trace. `tools/dodging_view.py`, the page called Pupper Dodging View (started by `robot/start.sh`, port 8077), turns each into timings (first sight of the ball, decision, command, the mux passing it on, the body starting to turn, expected contact, each camera's rate and picture age) and a `throws.csv`, and serves a page that plays the cameras with the detections drawn on. Video files (plain and annotated) are made on request, not automatically, so that encoding does not take processor time from the dodge. Run so far only against a stand-in robot.
+
+The step-response tool no longer reports distance or lag: Pupper's IMU driver leaves the accelerometer off, so the tool had been integrating zeros. It reports the reaction delay (from the gyro) and tilt, and fits the lag to timings from a slow-motion video if given.
+
 **Not verified until it runs on the Pupper:** the second ELP and both together, the exposure tuner on the real cameras, colour thresholds, timestamps, the dodge node in the real stack, CPU load, and the robot's real acceleration. `DEPLOY.md` walks through these in order.
 
 **Where the build differs from the earlier text of this plan:**
 - Tracker is 3D-ballistic rather than a filter on angles (pipeline step 4).
 - Decision D1: the fisheye is read from the course camera node's compressed topic. Owning the sensor directly is not implemented.
 - Decision D2: the monorepo mux is the default; `robot/fast_mux.py` is there as the alternative (`--fast-mux`).
-- Decision D3: ELP mode and processing rate are config values (1280×720 at 120 fps requested, 60 fps processed) to be set from Phase 0.
+- Decision D3: ELP mode and processing rate are config values (1280×720 at 120 fps requested, 30 fps processed since the first armed throws) to be set from Phase 0.
 - Latency is measured by tapping the robot (IMU jolt vs image jolt) rather than with a light flash; step response uses the IMU.
 - Added: a roundness check and a still-object check against false dodges; compensation for the robot's own walking speed; a size-offset correction for blob width.
 

@@ -283,6 +283,111 @@ class ClosedLoopTests(unittest.TestCase):
         self.assertLess(abs(((ev["threat"]["bearing_deg"] - 135 + 180) % 360) - 180), 12)
 
 
+class HighLobAndSmoothFloorTests(unittest.TestCase):
+    """Throws in a small room: lobs that leave the top of a rear camera's picture, and a gentler diagonal."""
+
+    def test_a_ball_in_flight_is_followed_while_out_of_sight(self):
+        from dodge.track import Tracker
+        from dodge.measure import Measurement
+
+        def feed(tracker, velocity, frames=6):
+            p = np.array([-2.0, 0.5, 0.6])
+            for i in range(frames):
+                t = i / 60.0
+                pos = p + np.array(velocity) * t
+                rng = float(np.linalg.norm(pos))
+                tracker.update(t, [Measurement("elp_left", np.zeros(3), pos / rng, 0.074 / rng, rng, 0.01, 0.08, False)], np.eye(3))
+            return (frames - 1) / 60.0
+
+        flying = Tracker(CFG["tracker"], CFG["ball"])
+        t_last = feed(flying, (4.0, -1.0, 3.0))
+        self.assertTrue(flying.confirmed()[0].flying)
+        flying.update(t_last + 0.4, [], np.eye(3))                       # unseen for 0.4 s: still followed
+        self.assertEqual(len(flying.confirmed()), 1)
+        flying.update(t_last + float(CFG["tracker"]["flight_coast_s"]) + 0.05, [], np.eye(3))
+        self.assertEqual(len(flying.confirmed()), 0)
+
+        still = Tracker(CFG["tracker"], CFG["ball"])
+        t_last = feed(still, (0.0, 0.0, 0.0))
+        self.assertFalse(still.confirmed()[0].flying)
+        still.update(t_last + 0.4, [], np.eye(3))                        # a still object is dropped as before
+        self.assertEqual(len(still.confirmed()), 0)
+
+    def test_a_still_object_whose_range_jitters_is_not_a_throw(self):
+        # Range comes from the blob's size, so a still green thing appears to jump back and forth along the
+        # line of sight. That must not count as flight, or as a throw to report and save.
+        from dodge.measure import Measurement
+        core = DodgeCore(CFG, armed=True)
+        core.set_can_dodge(True)
+        rng_gen = np.random.default_rng(5)
+        ray = np.array([-0.8, 0.5, 0.2]) / np.linalg.norm([-0.8, 0.5, 0.2])
+        t = 10.0
+        for _ in range(120):                                             # four seconds at 30 pictures a second
+            rng = 1.8 + rng_gen.normal(0, 0.12)
+            core.process_measurements("elp_left", t, [Measurement("elp_left", np.zeros(3), ray, 0.074 / rng, rng, 0.01, 0.15, False)], t)
+            t += 1 / 30.0
+            self.assertFalse(any(tr.flying for tr in core.tracker.tracks))
+        for _ in range(40):
+            core.process_measurements("elp_left", t, [], t)
+            t += 1 / 30.0
+        self.assertEqual(core.pop_events(), [])
+
+    def test_high_lobs_from_the_side_and_rear_are_dodged(self):
+        # The ball climbs out of the rear cameras' picture and comes down on the robot from above.
+        dodged = 0
+        for bearing, dist, seed in ((95, 2.0, 1), (-100, 1.9, 2), (140, 2.3, 3), (-150, 2.4, 4), (175, 3.0, 5)):
+            r = run_closed_loop(CFG, aimed_throw(CFG, bearing, dist, rise=1.3), seed=seed)
+            self.assertTrue(r["would_hit"])
+            dodged += 0 if r["hit"] else 1
+        self.assertGreaterEqual(dodged, 4)
+
+    def test_a_lob_is_judged_while_it_is_still_climbing(self):
+        # Early in a high lob the ball goes mostly up and is not yet closing in. It must be judged by where
+        # its arc comes down, so the dodge starts with most of the flight still to go.
+        import copy
+        left_new, left_old = [], []
+        old = copy.deepcopy(CFG)
+        old["threat"]["judge_rising_balls"] = False
+        for bearing, seed in ((140, 1), (-135, 2), (150, 3)):
+            throw = aimed_throw(CFG, bearing, 2.3, rise=1.4)
+            left_new.append(run_closed_loop(CFG, throw, seed=seed)["time_left"] or 0.0)
+            left_old.append(run_closed_loop(old, throw, seed=seed)["time_left"] or 0.0)
+        self.assertGreater(float(np.median(left_new)), float(np.median(left_old)) + 0.15)
+        self.assertGreater(float(np.median(left_new)), 0.8)
+
+    def test_the_diagonal_move_is_gentler(self):
+        planner = EscapePlanner(dict(CFG["escape"], diagonal_scale=0.8), CFG["robot"], CFG["ball"], 0.05)
+        vx, vy, _speed = planner.command_for(np.array([0.7071, 0.7071]))
+        self.assertAlmostEqual(vx, 0.8 * CFG["escape"]["vx_forward"])
+        self.assertAlmostEqual(vy, 0.8 * CFG["escape"]["vy"])
+        vx, vy, _speed = planner.command_for(np.array([1.0, 0.0]))       # a single axis keeps its full speed
+        self.assertAlmostEqual(vx, CFG["escape"]["vx_forward"])
+        self.assertEqual(vy, 0.0)
+
+    def test_a_throw_that_is_seen_but_not_dodged_is_reported(self):
+        import json
+        from dodge.measure import Measurement
+        core = DodgeCore(CFG, armed=True)
+        core.set_can_dodge(True)
+        t = 50.0
+        for i in range(14):                                   # a ball flying past, 1.5 m to the side
+            pos = np.array([-2.0, 1.5, 0.5]) + np.array([4.0, 0.0, 1.0]) * (i / 60.0)
+            rng = float(np.linalg.norm(pos))
+            core.process_measurements("elp_left", t, [Measurement("elp_left", np.zeros(3), pos / rng, 0.074 / rng, rng, 0.01, 0.08, False)], t)
+            t += 1 / 60.0
+        for _ in range(80):                                   # then gone
+            core.process_measurements("elp_left", t, [], t)
+            t += 1 / 60.0
+        events = core.pop_events()
+        self.assertEqual([e["event"] for e in events], ["throw_seen"])
+        self.assertIn("verdicts", events[0])
+        json.dumps(events[0])                                 # must be plain data: it is saved and sent as JSON
+
+        r = run_closed_loop(CFG, aimed_throw(CFG, 90, 2.0, rise=0.6), seed=3)
+        self.assertIn(json.loads(json.dumps(r["dodge_event"]))["late"], (True, False))    # a real true/false, not a word
+        self.assertFalse([e for e in r["events"] if e["event"] == "throw_seen"])           # a dodged throw is not also "seen"
+
+
 class CoreStateTests(unittest.TestCase):
     def test_quaternion_convention(self):
         self.assertTrue(np.allclose(quat_to_rot(1, 0, 0, 0), np.eye(3)))

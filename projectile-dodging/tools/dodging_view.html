@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pupper Dodging View</title>
+<style>
+  :root {
+    --bg: #f4f2ee; --panel: #ffffff; --ink: #1d1f1c; --soft: #63685f; --line: #dcd8cf;
+    --accent: #2f7d32; --ball: #5fbf2a; --warn: #b3541e; --bad: #b3261e; --info: #1f5f99; --mark: #6b4fa3;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161815; --panel: #20231f; --ink: #e9ebe4; --soft: #9aa093; --line: #353a33;
+            --accent: #7fd183; --warn: #f0a070; --bad: #ff8a80; --info: #8ec1f2; --mark: #c3acf0; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+  h1 { font-size: 17px; margin: 0; letter-spacing: .01em; }
+  h1 span { color: var(--ball); }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--soft); margin: 22px 0 8px; font-weight: 600; }
+  #live { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
+  .pill { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 12px; white-space: nowrap; }
+  .pill.ok { border-color: var(--accent); color: var(--accent); }
+  .pill.warn { border-color: var(--warn); color: var(--warn); }
+  .pill.bad { border-color: var(--bad); color: var(--bad); }
+  button, select, input[type=text] { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--soft); }
+  button.on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+  button.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  main { display: grid; grid-template-columns: minmax(470px, 5fr) 7fr; gap: 20px; padding: 16px 20px 60px; align-items: start; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; }
+  #cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .card b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+  .card small { color: var(--soft); }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--soft); font-weight: 600; padding: 4px 8px 6px 0; border-bottom: 1px solid var(--line); }
+  td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  #list tbody tr { cursor: pointer; }
+  #list tbody tr:hover td { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+  #list tbody tr.sel td { background: color-mix(in srgb, var(--ball) 16%, transparent); }
+  .num { text-align: right; }
+  .tag { display: inline-block; white-space: nowrap; border-radius: 4px; padding: 0 6px; font-size: 11px; font-weight: 600; border: 1px solid currentColor; }
+  .k-dodge { color: var(--accent); } .k-dry { color: var(--info); } .k-seen { color: var(--warn); } .k-mark { color: var(--mark); }
+  .late { color: var(--bad); } .tight { color: var(--warn); } .muted { color: var(--soft); }
+  #story { margin: 8px 0 0; padding-left: 18px; } #story li { margin: 3px 0; } #story li:first-child { font-weight: 600; }
+  #labels { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
+  #note { flex: 1; min-width: 160px; }
+  svg { display: block; width: 100%; height: auto; } svg text { fill: var(--ink); font: 11px system-ui, sans-serif; }
+  #cams { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; align-items: start; }
+  #top { max-width: 330px; }
+  .cam { position: relative; background: #000; border-radius: 8px; overflow: hidden; }
+  .cam canvas { display: block; width: 100%; height: auto; }
+  .cam .cap { position: absolute; left: 8px; bottom: 6px; color: #fff; font: 11px var(--mono); text-shadow: 0 0 3px #000, 0 0 3px #000; }
+  #controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 2px; }
+  #seek { flex: 1; min-width: 200px; accent-color: var(--ball); }
+  #clock { font: 13px var(--mono); min-width: 84px; text-align: right; }
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 24px; }
+  .files a { color: var(--info); margin-right: 12px; white-space: nowrap; }
+  code { font-family: var(--mono); font-size: 12px; }
+  #empty { color: var(--soft); padding: 30px 6px; }
+  #toast { position: fixed; right: 18px; bottom: 18px; background: var(--ink); color: var(--panel); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .25s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pupper <span>Dodging View</span></h1>
+  <div id="live"><span class="pill">connecting…</span></div>
+  <button id="next" class="primary" title="Press, then throw: what the cameras see in the next few seconds is saved, whether or not Pupper reacts">Record the next throw</button>
+  <button id="mark" title="Keep what the cameras saw in the last few seconds, for a throw Pupper did not react to">Save the last few seconds</button>
+</header>
+<main>
+  <section>
+    <div id="cards"></div>
+    <div class="panel">
+      <table id="list">
+        <thead><tr><th>Time</th><th>What happened</th><th class="num" title="degrees: 0 ahead, +90 left, 180 behind">From</th><th class="num" title="ball first in a picture → decision">Seen→decide</th><th class="num" title="decision → body starts to move">→ moving</th><th class="num" title="time before contact when it decided">Time left</th><th>Result</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div id="empty" hidden>No throws saved yet. Throw a ball at Pupper with the stack running: every dodge and every throw it sees is saved here. To keep a throw whether or not it reacts, press “Record the next throw” first.</div>
+      <p class="muted files" style="margin:12px 0 0">Folder: <code id="folder"></code> · <a href="/csv">throws.csv</a> <span id="disk"></span> <span id="busy"></span></p>
+    </div>
+  </section>
+  <section id="detail" class="panel" hidden>
+    <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">
+      <b id="d-title" style="font-size:16px"></b><span id="d-kind"></span><span id="d-late"></span>
+    </div>
+    <ul id="story"></ul>
+    <div id="labels"><span class="muted">What really happened:</span><span id="result-buttons"></span><input type="text" id="note" placeholder="note (who threw, from where…)"></div>
+
+    <h2>Timeline <span class="muted" style="text-transform:none;letter-spacing:0" id="tl-note"></span></h2>
+    <svg id="timeline" viewBox="0 0 900 150"></svg>
+
+    <h2>What the cameras saw</h2>
+    <div id="cams"></div>
+    <div id="controls">
+      <button id="play">Play</button>
+      <button id="back" title="one picture back">◀</button><button id="fwd" title="one picture forward">▶</button>
+      <select id="speed"><option value="1">real speed</option><option value="0.5">½ speed</option><option value="0.25" selected>¼ speed</option><option value="0.1">1/10 speed</option></select>
+      <input type="range" id="seek" min="0" max="1000" value="0">
+      <span id="clock"></span>
+      <label><input type="checkbox" id="overlay" checked> show what Pupper detected</label>
+    </div>
+    <p class="muted" style="margin:4px 0 0">Green ring: the ball it was tracking. Yellow box: other ball-coloured things it noticed.</p>
+
+    <div class="two">
+      <div><h2>Timings</h2><table id="numbers"></table></div>
+      <div><h2>The move, seen from above</h2><svg id="top" viewBox="0 0 300 240"></svg><p class="muted" style="margin:4px 0 0">Green: where the ball was tracked. Red arrow: the planned move.</p></div>
+    </div>
+    <h2>Cameras during this throw</h2>
+    <table id="camtable"></table>
+    <h2>Files</h2>
+    <p class="files" id="files"></p>
+  </section>
+</main>
+<div id="toast"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const ms = (v) => (v == null ? "–" : v + " ms");
+let throws = [], selected = null, cur = null, results = [], windowS = 3.2;
+const SHORT = {dodge: "dodged", dry: "dry run", seen: "seen, no dodge", mark: "saved by hand"};
+
+function toast(text) { const t = $("toast"); t.textContent = text; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2600); }
+async function getJSON(url, opts) { const r = await fetch(url, opts); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
+function median(a) { a = a.filter((v) => v != null).sort((x, y) => x - y); return a.length ? a[Math.floor((a.length - 1) / 2)] : null; }
+
+// ---------------------------------------------------------------- live state
+function renderLive(s, busy) {
+  const out = [];
+  if (!s.ros) out.push('<span class="pill">saved throws only (not connected to the robot)</span>');
+  else if (!s.live) out.push('<span class="pill bad">dodge node not running</span>');
+  else {
+    const st = s.state;
+    out.push('<span class="pill ' + (st.armed ? "warn" : "ok") + '">' + (st.armed ? "ARMED: will move" : "dry run") + "</span>");
+    out.push('<span class="pill">' + esc(st.state) + "</span>");
+    if (!st.can_dodge) out.push('<span class="pill bad">cannot dodge: ' + esc(st.cannot_reason) + "</span>");
+    if (st.imu_alive === false) out.push('<span class="pill bad">no IMU</span>');
+    for (const [name, c] of Object.entries(st.cameras || {})) {
+      const bad = !c.alive || c.problem;
+      out.push('<span class="pill ' + (bad ? "bad" : c.latency_ms > 90 ? "warn" : "") + '" title="pictures per second processed · how old a picture is when processed">' +
+        esc(name) + (bad ? " not working" : " " + Math.round(c.fps) + " fps · " + Math.round(c.latency_ms) + " ms") + "</span>");
+    }
+  }
+  $("live").innerHTML = out.join("");
+  $("busy").textContent = busy ? "· " + busy + "…" : "";
+  $("mark").disabled = $("next").disabled = !s.live;
+}
+
+// ---------------------------------------------------------------- list
+function renderCards() {
+  const ready = throws.filter((t) => t.ready);
+  const real = ready.filter((t) => t.kind === "dodge" || t.kind === "dry");
+  const lab = (r) => throws.filter((t) => t.label.result === r).length;
+  const cards = [
+    [throws.length, "throws saved"],
+    [lab("dodged") + " / " + (lab("dodged") + lab("hit")), "dodged, of those you marked dodged or hit"],
+    [ms(median(real.map((t) => t.numbers.seen_to_decision_ms))), "typical: ball seen → decision"],
+    [ms(median(real.map((t) => t.numbers.decision_to_body_ms))), "typical: decision → body moving"],
+    [ms(median(real.map((t) => t.numbers.time_left_at_decision_ms))), "typical: time left at the decision"],
+    [real.filter((t) => t.timing === "late").length + " / " + real.length, "decided too late to finish the move"],
+  ];
+  $("cards").innerHTML = cards.map((c) => '<div class="card"><b>' + esc(c[0]) + "</b><small>" + esc(c[1]) + "</small></div>").join("");
+}
+function when(id) { const m = /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)/.exec(id); return m ? m[4] + ":" + m[5] + ":" + m[6] : id; }
+function day(id) { const m = /^(\d{4})(\d\d)(\d\d)/.exec(id); return m ? m[1] + "-" + m[2] + "-" + m[3] : ""; }
+function renderList() {
+  $("empty").hidden = throws.length > 0;
+  $("list").hidden = throws.length === 0;
+  let lastDay = "";
+  $("list").tBodies[0].innerHTML = throws.map((t) => {
+    let head = "";
+    if (day(t.id) !== lastDay) { lastDay = day(t.id); head = '<tr><td colspan="7" class="muted" style="cursor:default;padding-top:10px">' + lastDay + "</td></tr>"; }
+    if (!t.ready) return head + '<tr data-id="' + esc(t.id) + '"><td>' + when(t.id) + '</td><td colspan="6" class="muted">' + esc(t.error ? "could not be read: " + t.error : "being worked out…") + "</td></tr>";
+    const n = t.numbers;
+    const what = '<span class="tag k-' + t.kind + '">' + esc(SHORT[t.kind] || t.kind_text) + "</span>" + (t.move && t.plan.vx !== undefined ? " " + esc(t.move) : "") +
+      (t.timing !== "ok" ? ' <span class="' + t.timing + '">' + t.timing + "</span>" : "") + (!t.tracked ? ' <span class="muted">no ball tracked</span>' : "") +
+      (t.gap_ms >= 120 ? ' <span class="muted" title="longest time the ball was out of sight while tracked">· unseen ' + t.gap_ms + " ms</span>" : "");
+    return head + '<tr data-id="' + esc(t.id) + '"' + (t.id === selected ? ' class="sel"' : "") + "><td>" + when(t.id) + "</td><td>" + what + '</td><td class="num">' +
+      (t.from_deg == null ? "–" : Math.round(t.from_deg) + "°") + '</td><td class="num">' + ms(n.seen_to_decision_ms) + '</td><td class="num">' + ms(n.decision_to_body_ms) +
+      '</td><td class="num' + (t.timing !== "ok" ? " " + t.timing : "") + '">' + ms(n.time_left_at_decision_ms) + "</td><td>" + esc(t.label.result || "") + "</td></tr>";
+  }).join("");
+}
+async function refresh() {
+  try {
+    const j = await getJSON("/api/throws");
+    throws = j.throws; results = j.results;
+    $("folder").textContent = j.folder; windowS = j.window_s;
+    $("mark").textContent = "Save the last " + Math.floor(j.window_s) + " s";
+    $("disk").innerHTML = "· throws use " + j.disk.throws_gb + " GB, " + (j.disk.free_gb < 3 ? '<b class="late">' + j.disk.free_gb + " GB free: delete old throws</b>" : j.disk.free_gb + " GB free");
+    renderLive(j.status, j.busy); renderCards(); renderList();
+    if (!selected && throws.length) {
+      const m = /^#([^@]+)(?:@(-?\d+))?$/.exec(location.hash), want = m && throws.find((t) => t.id === m[1] && t.ready);
+      if (want) select(want.id, m[2] == null ? null : parseInt(m[2], 10) / 1000);
+      else if (throws[0].ready) select(throws[0].id);
+    }
+  } catch (e) { $("live").innerHTML = '<span class="pill bad">Pupper Dodging View is not answering</span>'; }
+}
+$("list").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-id]"); if (tr) select(tr.dataset.id); });
+async function mark(wait) {
+  try {
+    const j = await getJSON("/api/mark", {method: "POST", body: JSON.stringify({note: wait ? "recorded from Pupper Dodging View" : "saved from Pupper Dodging View", wait: wait})});
+    if (!j.ok) return toast(j.error);
+    if (!wait) return toast("Saved. It appears in the list in a few seconds.");
+    const b = $("next"), label = b.textContent, until = Date.now() + wait * 1000;
+    b.classList.add("on");
+    const timer = setInterval(() => {
+      const left = (until - Date.now()) / 1000;
+      if (left <= 0) { clearInterval(timer); b.textContent = label; b.classList.remove("on"); toast("Recorded. It appears in the list in a few seconds."); }
+      else b.textContent = "Throw now: " + left.toFixed(1) + " s";
+    }, 100);
+  } catch (e) { toast(String(e.message || e)); }
+}
+$("mark").addEventListener("click", () => mark(0));
+$("next").addEventListener("click", () => mark(Math.max(1, windowS - 0.2)));
+
+// ---------------------------------------------------------------- one throw
+const MARKS = [
+  ["first_seen", "ball first in a picture", "var(--ball)"], ["tracked", "tracked as a ball", "var(--accent)"],
+  ["decision", "decided to dodge", "var(--bad)"], ["command", "command sent", "var(--warn)"],
+  ["body", "body starts moving", "var(--info)"], ["contact", "ball due", "var(--ink)"],
+];
+async function select(id, at) {
+  selected = id; renderList();
+  if (at == null) history.replaceState(null, "", "#" + id);
+  let j;
+  try { j = await getJSON("/api/throw/" + encodeURIComponent(id)); } catch (e) { toast(String(e.message || e)); return; }
+  if (selected !== id) return;
+  stop();
+  cur = {id: id, t: j.throw, frames: j.frames, label: j.label, images: new Map(), shown: {}, T: 0};
+  const t = j.throw;
+  $("detail").hidden = false;
+  $("d-title").textContent = day(id) + " " + when(id);
+  $("d-kind").innerHTML = '<span class="tag k-' + t.kind + '">' + esc(t.kind_text) + "</span>" + (t.rebuilt ? ' <span class="muted" title="This recording has no live trace, so detections and timings were worked out again from the pictures">(re-analysed)</span>' : "");
+  $("d-late").innerHTML = t.timing === "late" ? '<span class="late">decided too late</span>' : t.timing === "tight" ? '<span class="tight">decided at the last moment</span>' : "";
+  $("story").innerHTML = t.story.map((s) => "<li>" + esc(s) + "</li>").join("");
+  $("result-buttons").innerHTML = results.filter((r) => r).map((r) => '<button data-r="' + esc(r) + '"' + (j.label.result === r ? ' class="on"' : "") + ">" + esc(r) + "</button>").join(" ");
+  $("note").value = j.label.note || "";
+  renderNumbers(t); renderCamTable(t); renderTop(t); buildCams();
+  renderFiles(j);
+  const first = t.times.first_seen != null ? t.times.first_seen : t.window[0];
+  cur.T0 = Math.max(t.window[0], first - 0.25); cur.T1 = t.window[1];
+  renderTimeline();
+  seekTo(at == null ? cur.T0 : at);
+}
+function renderFiles(j) {
+  const id = cur.id;
+  cur.videos = j.videos.length; cur.making = j.making;
+  $("files").innerHTML = (j.videos.length ? j.videos.map((v) => '<a href="/video/' + encodeURIComponent(id) + "/" + encodeURIComponent(v) + '" target="_blank">' + esc(v) + "</a>").join(" ") + " "
+      : j.making ? '<span class="muted">making the video files… (about half a minute) </span>'
+      : '<button id="mkvideo" title="Writes an .mp4 per camera, plain and with the detections drawn on, into this throw\'s folder. Takes processor time: do it between throws, not during them.">Make video files</button> ') +
+    '<a href="/zip/' + encodeURIComponent(id) + '">numbers' + (j.videos.length ? " and videos" : "") + ' as a .zip</a><br><span class="muted">Folder: <code>' + esc(j.folder) + "</code></span>";
+}
+$("files").addEventListener("click", async (e) => {
+  if (e.target.id !== "mkvideo" || !cur) return;
+  try { await getJSON("/api/videos/" + encodeURIComponent(cur.id), {method: "POST", body: "{}"}); renderFiles({videos: [], making: true, folder: $("files").querySelector("code").textContent}); }
+  catch (err) { toast(String(err.message || err)); }
+});
+async function pollFiles() {
+  if (!cur || !cur.making) return;
+  try { const j = await getJSON("/api/throw/" + encodeURIComponent(cur.id) + "?files"); if (j.videos.length || !j.making) renderFiles(j); } catch (e) { /* next time */ }
+}
+async function saveLabel(result) {
+  if (!cur) return;
+  try {
+    const j = await getJSON("/api/label/" + encodeURIComponent(cur.id), {method: "POST", body: JSON.stringify({result: result, note: $("note").value})});
+    cur.label = j.label;
+    for (const b of $("result-buttons").children) b.classList.toggle("on", b.dataset.r === j.label.result);
+    const row = throws.find((x) => x.id === cur.id); if (row) row.label = j.label;
+    renderCards(); renderList();
+  } catch (e) { toast(String(e.message || e)); }
+}
+$("result-buttons").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) saveLabel(cur.label.result === b.dataset.r ? "" : b.dataset.r); });
+$("note").addEventListener("change", () => saveLabel(cur.label.result));
+
+function renderNumbers(t) {
+  const n = t.numbers;
+  const rows = [
+    ["Ball first in a picture → decision", n.seen_to_decision_ms, "how long Pupper took to make up its mind"],
+    ["· that first picture reaching the tracker", n.first_picture_delay_ms, "camera and processing delay"],
+    ["· then until it counted as a ball", n.tracking_ms, "it waits for three pictures that agree"],
+    ["Decision → command sent", n.decision_to_command_ms, ""],
+    ["Command → passed on by the mux", n.command_to_mux_ms, ""],
+    ["Command → body starts moving", n.command_to_body_ms, "the robot's own latency"],
+    ["Decision → body starts moving", n.decision_to_body_ms, "recognised → moving"],
+    ["Ball first seen → body starts moving", n.seen_to_body_ms, "the whole reaction"],
+    ["Time left at the decision", n.time_left_at_decision_ms, "until the ball was due"],
+    ["Time the move needs", n.needed_ms, "reaction plus getting clear"],
+    ["Time left once the body was moving", n.time_left_when_moving_ms, ""],
+  ];
+  $("numbers").innerHTML = rows.map((r) => "<tr><td>" + esc(r[0]) + (r[2] ? '<br><span class="muted">' + esc(r[2]) + "</span>" : "") + '</td><td class="num"><b>' + ms(r[1]) + "</b></td></tr>").join("") +
+    (t.plan && t.plan.reason ? '<tr><td colspan="2">Planned move: <b>' + esc(t.plan.reason) + "</b>, vx " + t.plan.vx + ", vy " + t.plan.vy + " m/s for " + t.plan.duration + " s" +
+      (t.threat && t.threat.miss_m != null ? '<br><span class="muted">ball predicted to pass ' + Math.round(t.threat.miss_m * 100) + " cm from the body, from " + Math.round(t.threat.bearing_deg) + "°</span>" : "") + "</td></tr>" : "");
+}
+function renderCamTable(t) {
+  $("camtable").innerHTML = "<tr><th>Camera</th><th class='num'>Pictures / s</th><th class='num' title='how old a picture was when it had been processed'>Picture age</th><th class='num'>Processing</th><th class='num'>Pictures with the ball</th><th class='num'>First saw it</th></tr>" +
+    Object.entries(t.cameras).map(([name, c]) => "<tr><td>" + esc(name) + '</td><td class="num">' + c.fps + '</td><td class="num">' + c.age_ms + ' ms</td><td class="num">' + c.process_ms +
+      ' ms</td><td class="num">' + c.frames_with_ball + " of " + c.frames + '</td><td class="num">' + (c.first_ball == null ? "never" : Math.round(c.first_ball * 1000) + " ms") + "</td></tr>").join("");
+}
+function renderTop(t) {
+  // The robot's own frame: x forward is up on the page, y left is left.
+  const S = 50, cx = 150, cy = 120, P = (x, y) => [cx - y * S, cy - x * S];
+  const box = t.box || {x_min: -0.15, x_max: 0.17, y_min: -0.12, y_max: 0.12};
+  const [bx, by] = P(box.x_max, box.y_max), [bx2, by2] = P(box.x_min, box.y_min);
+  let s = '<circle cx="' + cx + '" cy="' + cy + '" r="' + S + '" fill="none" stroke="var(--line)"/><circle cx="' + cx + '" cy="' + cy + '" r="' + 2 * S + '" fill="none" stroke="var(--line)"/>' +
+    '<text x="' + (cx + S + 3) + '" y="' + (cy + 4) + '" style="fill:var(--soft)">1 m</text><text x="' + (cx + 2 * S - 22) + '" y="' + (cy - 8) + '" style="fill:var(--soft)">2 m</text>' +
+    '<rect x="' + bx + '" y="' + by + '" width="' + (bx2 - bx) + '" height="' + (by2 - by) + '" rx="4" fill="var(--soft)"/><text x="' + cx + '" y="' + (cy - 2 * S - 5) + '" text-anchor="middle" style="fill:var(--soft)">front of the robot</text><text x="' + cx + '" y="' + (cy + 2 * S + 14) + '" text-anchor="middle" style="fill:var(--soft)">behind</text>';
+  for (const p of t.path) { const [x, y] = P(p[1], p[2]); if (x > -20 && x < 320 && y > -20 && y < 260) s += '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="2.4" fill="var(--ball)" opacity="' + (p[0] <= 0 ? 1 : 0.45) + '"/>'; }
+  if (t.plan && t.plan.direction) {
+    const d = t.plan.direction, len = 0.55, [x1, y1] = P(0, 0), [x2, y2] = P(d[0] * len, d[1] * len);
+    s += '<defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--bad)"/></marker></defs>' +
+      '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '" stroke="var(--bad)" stroke-width="3" marker-end="url(#ah)"/>';
+  }
+  $("top").innerHTML = s;
+}
+function tlX(v) { const a = cur.tl; return 30 + (v - a[0]) / (a[1] - a[0]) * 840; }
+function renderTimeline() {
+  const t = cur.t, times = t.times;
+  const vals = Object.values(times).concat([0]);
+  let lo = Math.min(...vals) - 0.08, hi = Math.max(...vals) + 0.12;
+  if (hi - lo < 0.5) { hi = lo + 0.5; }
+  cur.tl = [lo, hi];
+  let s = '<line x1="30" y1="70" x2="870" y2="70" stroke="var(--line)" stroke-width="2"/>';
+  const stepTick = (hi - lo) > 1.6 ? 0.2 : 0.1;
+  for (let v = Math.ceil(lo / stepTick) * stepTick; v <= hi; v += stepTick) s += '<line x1="' + tlX(v) + '" y1="66" x2="' + tlX(v) + '" y2="74" stroke="var(--soft)"/><text x="' + tlX(v) + '" y="88" text-anchor="middle" style="fill:var(--soft)">' + Math.round(v * 1000) + "</text>";
+  for (const g of t.gaps) if (g.duration >= 0.08) s += '<rect x="' + tlX(g.start) + '" y="60" width="' + Math.max(2, tlX(g.end) - tlX(g.start)) + '" height="20" fill="var(--warn)" opacity=".28"><title>ball out of sight for ' + Math.round(g.duration * 1000) + " ms</title></rect>";
+  const lanes = [[20, -999], [128, -999], [8, -999], [141, -999]];     // label rows: y, x of the last label put there
+  for (const [key, label, colour] of MARKS) {
+    if (times[key] == null) continue;
+    const x = tlX(times[key]), text = label + " " + Math.round(times[key] * 1000);
+    const need = text.length * 6.2 + 14;
+    const lane = lanes.find((l) => x - l[1] >= need) || lanes[0];
+    lane[1] = x;
+    const y = lane[0], above = y < 70, right = x > 740;
+    s += '<line x1="' + x + '" y1="' + (above ? y + 4 : 70) + '" x2="' + x + '" y2="' + (above ? 70 : y - 11) + '" stroke="' + colour + '" stroke-width="1.5"/><circle cx="' + x + '" cy="70" r="5" fill="' + colour + '"/>' +
+      '<text x="' + (right ? x - 4 : x + 4) + '" y="' + y + '" text-anchor="' + (right ? "end" : "start") + '" style="fill:' + colour + ';font-weight:600">' + text + "</text>";
+  }
+  s += '<line id="cursor" x1="0" y1="52" x2="0" y2="92" stroke="var(--ink)" stroke-width="1.5" opacity=".7"/>';
+  if (t.gaps.some((g) => g.duration >= 0.08)) s += '<text x="870" y="106" text-anchor="end" style="fill:var(--warn)">shaded: ball out of sight</text>';
+  $("timeline").innerHTML = s;
+  $("tl-note").textContent = "— milliseconds; 0 = " + ({dodge: "the decision", dry: "the decision", seen: "the last time the ball was tracked", mark: "when it was saved by hand"}[t.kind]) + ". Click to jump there.";
+  moveCursor();
+}
+function moveCursor() { const c = $("cursor"); if (c && cur) { const x = Math.max(30, Math.min(870, tlX(cur.T))); c.setAttribute("x1", x); c.setAttribute("x2", x); } }
+$("timeline").addEventListener("click", (e) => {
+  if (!cur) return;
+  const r = $("timeline").getBoundingClientRect(), x = (e.clientX - r.left) / r.width * 900;
+  seekTo(cur.tl[0] + (x - 30) / 840 * (cur.tl[1] - cur.tl[0]));
+});
+
+// ---------------------------------------------------------------- the player
+let playing = false, lastTick = 0;
+function camOrder() {
+  const c = cur.t.cameras;
+  return Object.keys(cur.frames).filter((n) => cur.frames[n].t.length).sort((a, b) => ((c[b] || {}).frames_with_ball || 0) - ((c[a] || {}).frames_with_ball || 0));
+}
+function buildCams() {
+  $("cams").innerHTML = camOrder().map((name) => {
+    const f = cur.frames[name], size = f.size || [1280, 720], w = 640, h = Math.round(640 * size[1] / size[0]);
+    return '<div class="cam"><canvas id="cv-' + name + '" width="' + w + '" height="' + h + '"></canvas><span class="cap" id="cap-' + name + '"></span></div>';
+  }).join("");
+}
+function frameAt(f, T) { let lo = 0, hi = f.t.length - 1; if (T <= f.t[0]) return 0; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (f.t[mid] <= T) lo = mid; else hi = mid - 1; } return lo; }
+function image(name, i) {
+  const key = name + "/" + i;
+  let img = cur.images.get(key);
+  if (!img) {
+    img = new Image();
+    img.src = "/api/frame/" + encodeURIComponent(cur.id) + "/" + encodeURIComponent(name) + "/" + i + ".jpg";
+    cur.images.set(key, img);
+    if (cur.images.size > 500) cur.images.delete(cur.images.keys().next().value);
+  }
+  return img;
+}
+function draw(name, i) {
+  const me = cur, f = me.frames[name], cv = $("cv-" + name);
+  if (!cv) return;
+  const img = image(name, i);
+  const paint = () => {
+    if (cur !== me || me.shown[name] !== i) return;
+    const g = cv.getContext("2d");
+    g.drawImage(img, 0, 0, cv.width, cv.height);
+    if ($("overlay").checked) {
+      const k = cv.width / ((f.size || [img.naturalWidth])[0] || img.naturalWidth);
+      f.blobs[i].forEach((b, j) => {
+        if (j === f.ball[i]) { g.strokeStyle = "#5fff3a"; g.lineWidth = 2.5; g.beginPath(); g.arc(b[0] * k, b[1] * k, Math.max(b[2], b[3]) * k / 2 + 6, 0, 7); g.stroke(); }
+        else { g.strokeStyle = "#ffd500"; g.lineWidth = 1.5; g.strokeRect((b[0] - b[2] / 2) * k - 3, (b[1] - b[3] / 2) * k - 3, b[2] * k + 6, b[3] * k + 6); }
+      });
+    }
+    $("cap-" + name).textContent = name + "  " + (f.t[i] >= 0 ? "+" : "") + Math.round(f.t[i] * 1000) + " ms" + ($("overlay").checked && f.state[i] ? "  " + f.state[i] : "");
+  };
+  if (img.complete && img.naturalWidth) paint(); else img.addEventListener("load", paint, {once: true});
+  for (let n = 1; n <= 3; n++) if (i + n < f.t.length) image(name, i + n);
+}
+function show() {
+  for (const name of Object.keys(cur.frames)) {
+    const f = cur.frames[name];
+    if (!f.t.length) continue;
+    const i = frameAt(f, cur.T);
+    if (cur.shown[name] !== i) { cur.shown[name] = i; draw(name, i); }
+  }
+  $("seek").value = Math.round((cur.T - cur.T0) / (cur.T1 - cur.T0) * 1000);
+  $("clock").textContent = (cur.T >= 0 ? "+" : "") + Math.round(cur.T * 1000) + " ms";
+  moveCursor();
+}
+function seekTo(T) { cur.T = Math.max(cur.T0, Math.min(cur.T1, T)); show(); }
+function redraw() { cur.shown = {}; show(); }
+function tick(now) {
+  if (!playing || !cur) return;
+  const dt = Math.min(0.1, (now - lastTick) / 1000); lastTick = now;
+  cur.T += dt * parseFloat($("speed").value);
+  if (cur.T >= cur.T1) { cur.T = cur.T1; show(); stop(); return; }
+  show(); requestAnimationFrame(tick);
+}
+function stop() { playing = false; $("play").textContent = "Play"; }
+$("play").addEventListener("click", () => {
+  if (!cur) return;
+  if (playing) return stop();
+  if (cur.T >= cur.T1 - 0.01) cur.T = cur.T0;
+  playing = true; $("play").textContent = "Pause"; lastTick = performance.now(); requestAnimationFrame(tick);
+});
+function stepFrame(dir) {
+  if (!cur) return; stop();
+  const name = camOrder()[0], f = cur.frames[name], i = Math.max(0, Math.min(f.t.length - 1, frameAt(f, cur.T) + dir));
+  seekTo(f.t[i] + 1e-4);
+}
+$("back").addEventListener("click", () => stepFrame(-1));
+$("fwd").addEventListener("click", () => stepFrame(1));
+$("seek").addEventListener("input", () => { if (cur) { stop(); seekTo(cur.T0 + $("seek").value / 1000 * (cur.T1 - cur.T0)); } });
+$("overlay").addEventListener("change", () => cur && redraw());
+document.addEventListener("keydown", (e) => {
+  if (!cur || e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.key === " ") { e.preventDefault(); $("play").click(); }
+  if (e.key === "ArrowLeft") stepFrame(-1);
+  if (e.key === "ArrowRight") stepFrame(1);
+});
+
+refresh();
+setInterval(refresh, 3000);
+setInterval(pollFiles, 3000);
+</script>
+</body>
+</html>
