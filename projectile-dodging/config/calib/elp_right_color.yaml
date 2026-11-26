@@ -1,0 +1,14 @@
+cameras:
+  elp_right:
+    color:
+      h_min: 35
+      h_max: 72
+      s_min: 106
+      s_max: 255
+      v_min: 35
+      v_max: 255
+      c_min: 54
+      c_seed: 75
+      fit: 2
+    size_scale: 1.3805
+    size_offset_px: 1.729

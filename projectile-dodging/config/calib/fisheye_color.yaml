@@ -1,0 +1,14 @@
+cameras:
+  fisheye:
+    color:
+      h_min: 9
+      h_max: 28
+      s_min: 40
+      s_max: 255
+      v_min: 58
+      v_max: 255
+      c_min: 22
+      c_seed: 29
+      fit: 2
+    size_scale: 1.0579
+    size_offset_px: 0.881

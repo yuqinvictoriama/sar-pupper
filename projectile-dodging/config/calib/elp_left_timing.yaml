@@ -1,0 +1,3 @@
+cameras:
+  elp_left:
+    time_offset_s: 0.0242

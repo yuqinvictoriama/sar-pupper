@@ -1,0 +1,13 @@
+cameras:
+  elp_left:
+    capture:
+      auto_exposure: false
+      exposure_100us: 30
+      gain: 95
+      wb_temperature: 3858
+  elp_right:
+    capture:
+      auto_exposure: false
+      exposure_100us: 30
+      gain: 111
+      wb_temperature: 3858
