@@ -66,6 +66,10 @@ class DodgeNode(Node):
 
         self.cfg = load_config(self.get_parameter("config").value or None)
         ncfg = self.cfg["node"]
+        # Each camera already has a thread of its own. Left alone, OpenCV also splits every
+        # operation across all the cores, and three cameras' worth of that fight each other
+        # and the walking controller for the Pi's four cores.
+        cv2.setNumThreads(int(ncfg.get("opencv_threads", 1)))
         only = [c.strip() for c in str(self.get_parameter("cameras").value).split(",") if c.strip()]
         if only:
             for name, cam in self.cfg["cameras"].items():

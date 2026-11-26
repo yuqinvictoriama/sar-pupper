@@ -73,7 +73,7 @@ SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 ## 2. Check the code runs (no robot needed)
 
 ```bash
-python3 -m unittest discover -s tests     # expect: Ran 56 tests ... OK
+python3 -m unittest discover -s tests     # expect: Ran 59 tests ... OK
 python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7    # simulated 2 m throws; takes about a minute on the Pi
 ```
 
@@ -343,8 +343,11 @@ Throw balls. `watch.sh` prints an `EVENT ... "dodge" ... "dry_run": true` line
 for each one it would have dodged, and the node saves a short recording of every
 such moment under `data/events/` (replay them the same way). In the `watch.sh`
 line, "lag" is how old a frame is when it has been processed and "cpu" is the
-processing time per frame. If lag climbs or `top` shows the Pi near 100 % on all
-cores, lower `max_process_fps` for the ELPs.
+processing time per frame. A healthy line shows the ELPs at about 30 fps (their
+`max_process_fps`), "cpu" under 20 ms and "lag" under 100 ms. If the frame rates
+are far below that, lag climbs, or `top` shows the Pi near 100 % on all cores,
+the Pi is overloaded and no dodge will be in time: lower `max_process_fps` for
+the ELPs, or stop whatever else is using the processor.
 
 Now the first step that **moves the robot**. Stand it up:
 

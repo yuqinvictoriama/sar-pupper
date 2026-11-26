@@ -211,6 +211,11 @@ class BallDetector:
         self.seed_frac = float(det.get("seed_frac", 0.15))
         self.balance = ColourBalance(det.get("balance"))
         self.max_blobs = int(det.get("max_blobs", 10))
+        # Whole-frame searches look at every coarse_step-th pixel first and then
+        # measure, at full resolution, only the places that showed ball colour.
+        self.coarse_step = max(1, int(det.get("coarse_step", 2)))
+        self.coarse_min_px = int(det.get("coarse_min_px", 60000))    # search areas smaller than this are done directly
+        self._coarse_off = 0       # whole-frame searches still to do directly, after one found colour all over
         self.ignore_mask = ignore_mask  # 0/255, same size as the frame; 255 = never a ball
         self._kernel = (cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.open_px, self.open_px))
                         if self.open_px >= 2 else None)
@@ -269,6 +274,102 @@ class BallDetector:
             if x1 - x0 < 4 or y1 - y0 < 4:
                 return []
         self.balance.update(bgr)
+        if self.coarse_step > 1 and (x1 - x0) * (y1 - y0) >= self.coarse_min_px:
+            if self._coarse_off > 0:
+                self._coarse_off -= 1
+            else:
+                windows = self._coarse_windows(bgr, x0, y0, x1, y1)
+                if windows is not None:
+                    found = []
+                    for win in windows:
+                        found += self._measure_window(bgr, win, (x0, y0, x1, y1))
+                    return self._largest_first(found)
+                self._coarse_off = 30                 # a picture like that is followed by more like it
+        return self._measure(bgr, x0, y0, x1, y1)[0]
+
+    def _min_area(self, full_w: int) -> float:
+        scale = full_w / float(self.ref_size[0]) if self.ref_size and self.ref_size[0] else 1.0
+        return max(self.min_area, self.far_area * scale * scale)
+
+    def _coarse_windows(self, bgr: np.ndarray, x0: int, y0: int, x1: int, y1: int):
+        """Where in the search area anything ball-coloured is: a list of (x0, y0, x1, y1), most colour first.
+
+        Looks at every coarse_step-th pixel only. Returns None when so much of
+        the picture is ball-coloured, or in so many places, that searching all
+        of it directly is cheaper.
+        """
+        step = self.coarse_step
+        full_h, full_w = bgr.shape[:2]
+        size = ((x1 - x0 + step - 1) // step, (y1 - y0 + step - 1) // step)
+        small = cv2.resize(bgr[y0:y1, x0:x1], size, interpolation=cv2.INTER_NEAREST)
+        raw = color_mask(self.balance.apply(small), self.color)
+        ignore = self.ignore_for(full_w, full_h)
+        if ignore is not None:
+            raw[cv2.resize(ignore[y0:y1, x0:x1], size, interpolation=cv2.INTER_NEAREST) > 0] = 0
+        if cv2.countNonZero(raw) == 0:
+            return []
+        # neighbouring pixels of colour are one place to look at, not several
+        n, labels, stats, _cent = cv2.connectedComponentsWithStats(cv2.dilate(raw, _GROW), connectivity=8)
+        counts = np.bincount(labels[raw > 0], minlength=n)[1:]
+        # A ball of the smallest size that counts covers about min_area / step^2 of
+        # the pixels looked at. Fewer than 0.4 of that is a speck of noise.
+        need = max(1, int(0.4 * self._min_area(full_w) / (step * step)))
+        keep = np.nonzero(counts >= need)[0]
+        if len(keep) > self.max_candidates:
+            return None                               # colour all over the picture: one direct search costs less
+        keep = keep[np.argsort(-counts[keep])] + 1
+        pad = 2
+        windows, covered = [], 0
+        for i in keep:
+            bx, by, bw, bh = (int(v) for v in stats[i, :4])
+            wx0, wy0 = max(x0, x0 + (bx - pad) * step), max(y0, y0 + (by - pad) * step)
+            wx1, wy1 = min(x1, x0 + (bx + bw + pad) * step), min(y1, y0 + (by + bh + pad) * step)
+            windows.append((wx0, wy0, wx1, wy1))
+            covered += (wx1 - wx0) * (wy1 - wy0)
+        if covered > 0.6 * (x1 - x0) * (y1 - y0):
+            return None
+        return windows
+
+    def _measure_window(self, bgr: np.ndarray, win, limit) -> list:
+        """Blobs in one window of the frame, each seen whole.
+
+        A patch that runs into the window's border may be cut off there, and a
+        cut-off patch has the wrong shape and size, so the window is widened on
+        that side and measured again. limit is the search area it may not leave.
+        """
+        wx0, wy0, wx1, wy1 = win
+        lx0, ly0, lx1, ly1 = limit
+        blobs, cut = [], (False, False, False, False)
+        for grow in (16, 48, 0):
+            blobs, cut = self._measure(bgr, wx0, wy0, wx1, wy1)
+            cut = (cut[0] and wx0 > lx0, cut[1] and wy0 > ly0, cut[2] and wx1 < lx1, cut[3] and wy1 < ly1)
+            if not any(cut) or grow == 0:
+                break
+            wx0, wy0 = max(lx0, wx0 - grow * cut[0]), max(ly0, wy0 - grow * cut[1])
+            wx1, wy1 = min(lx1, wx1 + grow * cut[2]), min(ly1, wy1 + grow * cut[3])
+        if any(cut):
+            # still cut off after widening twice: something large. Leave out what cannot be seen whole.
+            blobs = [b for b in blobs if not ((cut[0] and b.x <= wx0) or (cut[1] and b.y <= wy0)
+                                              or (cut[2] and b.x + b.w >= wx1) or (cut[3] and b.y + b.h >= wy1))]
+        return blobs
+
+    def _largest_first(self, found: list) -> list:
+        blobs = []
+        for b in sorted(found, key=lambda k: -k.area):
+            if any(o.x <= b.u <= o.x + o.w and o.y <= b.v <= o.y + o.h for o in blobs):
+                continue                              # the same patch seen through two windows, or a fragment of it
+            blobs.append(b)
+            if len(blobs) >= self.max_blobs:
+                break
+        return blobs
+
+    def _measure(self, bgr: np.ndarray, x0: int, y0: int, x1: int, y1: int):
+        """Full-resolution search of one part of the frame.
+
+        Returns (blobs, cut): blobs largest first, and for each side of the part
+        (left, top, right, bottom) whether a patch worth judging runs into it.
+        """
+        full_h, full_w = bgr.shape[:2]
         view = self.balance.apply(bgr[y0:y1, x0:x1])
         raw, seed = color_masks(view, self.color)
         ignore = self.ignore_for(full_w, full_h)
@@ -278,11 +379,11 @@ class BallDetector:
         # measured on the raw mask, so opening does not shave its edge.
         work = cv2.morphologyEx(raw, cv2.MORPH_OPEN, self._kernel) if self._kernel is not None else raw
         n, labels, stats, _cent = cv2.connectedComponentsWithStats(work, connectivity=8)
+        cut = [False, False, False, False]
         if n <= 1:
-            return []
+            return [], cut
         max_area = self.max_area_frac * full_w * full_h
-        scale = full_w / float(self.ref_size[0]) if self.ref_size and self.ref_size[0] else 1.0
-        min_area = max(self.min_area, self.far_area * scale * scale)
+        min_area = self._min_area(full_w)
         areas = stats[1:, cv2.CC_STAT_AREA]
         keep = np.nonzero((areas >= max(1.0, min_area * 0.5)) & (areas <= max_area))[0]
         # Every patch gets judged, largest first: a far ball is small, and must
@@ -292,6 +393,10 @@ class BallDetector:
         vh, vw = raw.shape[:2]
         for i in order:
             bx, by, bw, bh, _area = (int(v) for v in stats[i])
+            cut[0] |= bx <= 0
+            cut[1] |= by <= 0
+            cut[2] |= bx + bw >= vw
+            cut[3] |= by + bh >= vh
             px0, py0 = max(0, bx - 1), max(0, by - 1)
             px1, py1 = min(vw, bx + bw + 1), min(vh, by + bh + 1)
             # this patch only: its opened core, grown back by one pixel into the raw mask
@@ -349,7 +454,7 @@ class BallDetector:
             blobs.append(Blob(float(u), float(v), float(a), gx, gy, bw, bh, bool(edge)))
             if len(blobs) >= self.max_blobs:
                 break
-        return blobs
+        return blobs, cut
 
 
 def draw_blobs(bgr: np.ndarray, blobs, labels=None) -> np.ndarray:

@@ -135,6 +135,46 @@ class DetectAndMeasureTests(unittest.TestCase):
         self.assertAlmostEqual(full.u, part.u, places=6)
         self.assertAlmostEqual(full.area, part.area, places=6)
 
+    def test_coarse_search_finds_exactly_what_a_direct_search_finds(self):
+        direct_cfg = dict(CFG["detector"], coarse_step=1)
+        for name, seed in (("elp_left", 1), ("elp_right", 2), ("fisheye", 3)):
+            cam = self.cams[name]
+            w, h = cam.model.width, cam.model.height
+            rng = np.random.default_rng(seed)
+            img = np.full((h, w, 3), 110, dtype=np.float32)
+            cv2.rectangle(img, (500, 200), (640, 480), BALL_BGR, -1)      # a neon shirt
+            cv2.line(img, (100, 600), (400, 620), BALL_BGR, 6)            # a neon strap
+            for r in (2.5, 3.0, 4.0, 5.5, 8.0, 13.0, 22.0, 45.0, 90.0):   # balls from far away to very close
+                cx, cy = rng.uniform(0, w), rng.uniform(0, h)             # some run off the edge of the picture
+                cv2.circle(img, (int(cx * 16), int(cy * 16)), int(r * 16), BALL_BGR, -1, cv2.LINE_AA, shift=4)
+            for _ in range(300):                                          # single stray pixels of ball colour
+                img[rng.integers(0, h), rng.integers(0, w)] = BALL_BGR
+            img = np.clip(img + rng.normal(0, 5, img.shape), 0, 255).astype(np.uint8)
+            for roi in (None, (150, 90, 1000, 650)):
+                coarse = BallDetector.for_camera(cam.cfg, CFG["detector"]).detect(img, roi)
+                direct = BallDetector.for_camera(cam.cfg, direct_cfg).detect(img, roi)
+                self.assertGreaterEqual(len(direct), 3, name)
+                key = lambda b: (b.x, b.y, b.w, b.h)
+                coarse, direct = sorted(coarse, key=key), sorted(direct, key=key)
+                self.assertEqual([(key(b), b.area, b.touches_edge) for b in coarse],
+                                 [(key(b), b.area, b.touches_edge) for b in direct], name)
+                for c, d in zip(coarse, direct):
+                    self.assertAlmostEqual(c.u, d.u, places=9)
+                    self.assertAlmostEqual(c.v, d.v, places=9)
+
+    def test_colour_all_over_the_picture_falls_back_to_a_direct_search(self):
+        cam = self.cams["elp_left"]
+        img, _ = render_ball(cam, [-1.5, 1.2, 0.6])
+        rng = np.random.default_rng(4)
+        for _ in range(400):                                              # hundreds of small ball-coloured things
+            x, y = int(rng.integers(0, cam.model.width - 6)), int(rng.integers(0, cam.model.height // 2))
+            img[y:y + 5, x:x + 5] = BALL_BGR
+        det = BallDetector.for_camera(cam.cfg, CFG["detector"])
+        self.assertIsNone(det._coarse_windows(img, 0, 0, cam.model.width, cam.model.height))
+        direct = BallDetector.for_camera(cam.cfg, dict(CFG["detector"], coarse_step=1))
+        self.assertEqual([(b.x, b.y, b.area) for b in det.detect(img)], [(b.x, b.y, b.area) for b in direct.detect(img)])
+        self.assertGreater(det._coarse_off, 0)                            # and it does not try again straight away
+
     def test_green_clothing_is_not_a_ball(self):
         cam = self.cams["elp_left"]
         img = np.full((cam.model.height, cam.model.width, 3), 110, dtype=np.uint8)
@@ -228,6 +268,12 @@ class ClosedLoopTests(unittest.TestCase):
         self.assertTrue(r["dodge_event"]["dry_run"])
         self.assertLess(np.linalg.norm(r["robot_shift"]), 1e-6)
         self.assertTrue(r["hit"])
+
+    def test_event_is_plain_json(self):
+        import json
+        ev = self.run_throw(-90, armed=False)["dodge_event"]
+        self.assertIsInstance(ev["late"], bool)                           # not numpy's, which is saved as the text "True"
+        self.assertEqual(json.loads(json.dumps(ev))["late"], ev["late"])  # and nothing else needs default=str either
 
     def test_events_tell_the_story(self):
         r = self.run_throw(135)

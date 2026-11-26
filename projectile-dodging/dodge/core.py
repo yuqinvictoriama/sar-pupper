@@ -184,7 +184,7 @@ class DodgeCore:
         if t_now < self.t_ready or th.tau < self.min_tau:
             return False
         plan = self.planner.plan(th, self.free_space)
-        late = th.tau <= plan.t_need                      # no time left to wait for a better estimate
+        late = bool(th.tau <= plan.t_need)                # no time left to wait for a better estimate
         if th.tau > plan.t_need + self.trigger_margin:
             return False                                  # plenty of time: keep watching
         if not late:

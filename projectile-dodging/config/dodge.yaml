@@ -50,7 +50,10 @@ cameras:
     # tools/tune_exposure.py finds exposure, gain and white balance for the room and writes config/calib/exposure.yaml.
     # wb_temperature: a fixed colour temperature in kelvin, or auto. controls: any other v4l2-ctl control by name, e.g. {gamma: 120}.
     capture: {width: 1280, height: 720, fps: 120, exposure_100us: 30, gain: null, auto_exposure: false, wb_temperature: 4600, controls: {}}
-    max_process_fps: 60               # raise toward the camera rate once CPU headroom is measured
+    # Frames looked at per second. Measured on the Pupper (2026-11-26): at 60 for both rear cameras the Pi could not
+    # keep up and every camera fell to about 4 a second. Raise it only while robot/watch.sh shows each camera
+    # reaching this rate with "cpu" well under the time between frames (33 ms at 30).
+    max_process_fps: 30
     model: pinhole
     intrinsics: {hfov_deg: 120.0, width: 1280, height: 720}   # replaced by tools/calibrate_camera.py
     extrinsics: {x: 0.0450, y: 0.0315, z: 0.1521, yaw_deg: 122.5, pitch_deg: 0.0, roll_deg: 0.0}
@@ -67,7 +70,7 @@ cameras:
     source: v4l2
     device: ""
     capture: {width: 1280, height: 720, fps: 120, exposure_100us: 30, gain: null, auto_exposure: false, wb_temperature: 4600, controls: {}}
-    max_process_fps: 60
+    max_process_fps: 30
     model: pinhole
     intrinsics: {hfov_deg: 120.0, width: 1280, height: 720}
     extrinsics: {x: 0.0450, y: -0.0315, z: 0.1521, yaw_deg: -122.5, pitch_deg: 0.0, roll_deg: 0.0}
@@ -101,6 +104,10 @@ detector:
   # white balance. every: frames between updates; rate: how far each update moves toward the new estimate.
   balance: {enabled: true, every: 20, rate: 0.35}
   max_blobs: 10
+  # A whole-frame search first looks at every coarse_step-th pixel across and down, then measures at full
+  # resolution only the places that showed ball colour. Same blobs, about a third of the work. 1 = off.
+  coarse_step: 2
+  coarse_min_px: 60000     # search areas smaller than this (the region around a tracked ball) are done directly
   roi_tracking: true       # while a ball is tracked, look near its predicted position first
   roi_half_deg: 14.0
   roi_min_px: 96
@@ -166,6 +173,7 @@ fsm:
 node:
   cmd_topic: /dodge_cmd_vel
   cmd_rate_hz: 100.0
+  opencv_threads: 1        # OpenCV worker threads; the cameras already run one thread each
   imu_topic: /imu_sensor_broadcaster/imu
   estop_topic: /emergency_stop
   free_space_topic: /free_space      # std_msgs/Float32MultiArray: clearance (m) per equal sector, starting at straight ahead, counter-clockwise
