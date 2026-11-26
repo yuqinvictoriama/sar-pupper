@@ -1,0 +1,7 @@
+cameras:
+  fisheye:
+    image_circle:
+      cx: 678.1
+      cy: 508.7
+      r: 378.0
+      margin_frac: 0.11
