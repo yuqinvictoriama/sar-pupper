@@ -497,25 +497,39 @@ ssh -L 8077:localhost:8077 pi@pupper6        # on the Mac; leave it open
 
 To run it by hand: `bash robot/dodging_view.sh`. It cannot move or arm the robot.
 
-**What the page shows.** A list of throws, newest first. Click one for:
+**Finding your way around.**
 
-- a few plain sentences on what happened, including why it waited if it did
-  and whether the ball went out of sight;
-- a timeline of the throw, in milliseconds;
-- the cameras' pictures playing in step, at ¼ speed by default, with a green
-  ring on the ball it was tracking and yellow boxes on anything else it took
-  for ball-coloured (untick "show what Pupper detected" for the plain picture);
-- the timings below, the planned move drawn from above, and how each camera
-  was doing (pictures per second, how old they were when processed).
+- **Top bar:** what the robot is doing now (armed or dry run, and each camera's
+  pictures per second and how old they are), and the two buttons for keeping a
+  throw.
+- **Left: the list of throws**, newest first, always in view. Each line says
+  what Pupper did, when, where the ball came from (the green dot on the small
+  dial; the robot's nose points up) and how many milliseconds were left. The
+  buttons above the list show one kind only. Click a throw, or walk the list
+  with the up and down arrow keys.
+- **Right: the chosen throw.** One sentence on what happened, then the detail:
+  why it waited if it did, and whether the ball went out of sight.
+- **The strip under that is the throw in time.** The top lane is the ball
+  (pale green while tracked, a dark mark for every picture it was found in,
+  amber where it was out of sight). The bottom lane is Pupper: making up its
+  mind, the command on its way, moving. Red is the instant it decided. **Drag
+  along the strip to move through the video**; the cameras under it follow.
+- **The cameras** play in step, at quarter speed unless you change it, with a
+  green ring on the ball it was tracking and yellow boxes on anything else it
+  took for ball-coloured. Untick "Show what Pupper detected" for the plain
+  picture. Space plays and pauses; the left and right arrow keys step one
+  picture.
+- **Below:** the timings in the table that follows, the planned move drawn from
+  above, and how each camera was doing during the throw.
 
 | Number | Meaning |
 |---|---|
-| Ball first in a picture → decision | How long Pupper took to make up its mind, from the first picture with the ball in it |
-| Decision → command sent | Should be a few ms |
-| Command → passed on by the mux | The velocity mux's delay. If it is tens of ms, try `bash robot/start.sh --fast-mux` |
-| Command → body starts moving | **The robot's own latency**: from the command to the IMU showing the body turn |
-| Decision → body starts moving | **From recognising the ball to starting to move** |
-| Ball first seen → body starts moving | The whole reaction |
+| Ball first in a picture, to the decision | How long Pupper took to make up its mind, from the first picture with the ball in it |
+| Decision, to the command being sent | Should be a few ms |
+| Command, to the mux passing it on | The velocity mux's delay. If it is tens of ms, try `bash robot/start.sh --fast-mux` |
+| Command, to the body starting to move | **The robot's own latency**: from the command to the IMU showing the body turn |
+| Decision, to the body starting to move | **From recognising the ball to starting to move** |
+| Ball first seen, to the body moving | The whole reaction |
 | Time left at the decision | How long until the ball was due when it decided |
 | Time the move needs | Reaction plus getting clear, as the planner estimates it |
 
@@ -527,7 +541,7 @@ the node did not notice anything. Two buttons at the top right cover them:
 
 - **Record the next throw**: press it, then throw within 3 seconds. Those
   seconds are saved whatever Pupper does.
-- **Save the last 3 s**: press it straight after a throw (a phone in your
+- **Keep the last 3 s**: press it straight after a throw (a phone in your
   hand works).
 
 Then play the video with detections on: either the ball was never ringed
@@ -536,7 +550,7 @@ ringed but too briefly or too late (look at where it first appears).
 
 **Say what really happened.** Pupper cannot tell whether the ball hit it. In
 each throw's panel press *dodged*, *hit*, *off target* or *not a throw*, and
-add a note. The summary cards and `throws.csv` use these.
+add a note. The summary above the list and `throws.csv` use these.
 
 **Disk space.** A throw takes roughly 30–60 MB. The page shows how much the
 throws use and how much is free; the node stops saving when less than 1.5 GB
@@ -576,7 +590,7 @@ robot idle.
 | Tracks appear with no ball | Something else in view is ball-coloured | Remove it and redo the colour step for that camera |
 | Range reads consistently wrong | Size calibration | `calibrate_color.py <cam> --distance ...`; check `ball.diameter_m` |
 | Dodges balls that would miss by a lot | Prediction too generous | Lower `threat.k_sigma` or `threat.sigma_cap_m` |
-| Reacts too late | Open the throw in Pupper Dodging View: it says where the time went | Few pictures per second or old pictures (age over 100 ms) in "Cameras during this throw": the Pi is overloaded, see stage 7. Ball first seen close to the robot: lighting or colour calibration (stage 5). Long command → body time: `--fast-mux`. Otherwise more time in the air: throw higher, or from further back |
+| Reacts too late | Open the throw in Pupper Dodging View: it says where the time went | Few pictures per second or old pictures (age over 100 ms) in "Cameras during this throw": the Pi is overloaded, see stage 7. Ball first seen close to the robot: lighting or colour calibration (stage 5). A long time from command to body moving: `--fast-mux`. Otherwise more time in the air: throw higher, or from further back |
 | Loses a high lob that left the picture | It is followed unseen for 0.6 s; a very high lob is out of sight longer | Raise `tracker.flight_coast_s` (0.8), or throw a little lower |
 | Reacts in time but does not get clear | Robot slower than the config assumes | Raise `escape.accel_lag_s` in steps of 0.05 (or measure it with the stage 7 video), set `react_s` from stage 7; raise `vx_*` if steady |
 | Moves the wrong way | Left/right swapped or a camera is rotated | Stage 4 and the bearing table in stage 5 |

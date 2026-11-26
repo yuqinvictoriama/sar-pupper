@@ -5,229 +5,372 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pupper Dodging View</title>
 <style>
+  /* Colour means actor, everywhere on the page:
+     green = the ball, blue = Pupper, red = the instant it decided, amber = ball out of sight. */
   :root {
-    --bg: #f4f2ee; --panel: #ffffff; --ink: #1d1f1c; --soft: #63685f; --line: #dcd8cf;
-    --accent: #2f7d32; --ball: #5fbf2a; --warn: #b3541e; --bad: #b3261e; --info: #1f5f99; --mark: #6b4fa3;
-    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #161815; --panel: #20231f; --ink: #e9ebe4; --soft: #9aa093; --line: #353a33;
-            --accent: #7fd183; --warn: #f0a070; --bad: #ff8a80; --info: #8ec1f2; --mark: #c3acf0; }
+    --floor: #E9EDF2; --sheet: #FFFFFF; --ink: #17233A; --graphite: #56647B; --rule: #CCD4DF;
+    --ball: #63C416; --ball-ink: #2C7408; --ball-wash: #E3F5D2;
+    --robot: #2456D6; --robot-wash: #D5DFF9;
+    --decide: #D5322F; --unseen: #E3A008; --unseen-ink: #8A5F00;
+    --display: "DIN Alternate", "Bahnschrift", "Roboto Condensed", "DejaVu Sans Condensed", "Arial Narrow", sans-serif;
+    --body: "Avenir Next", "Segoe UI Variable Text", "Segoe UI", "Noto Sans", system-ui, sans-serif;
+    --log-w: 348px; --bar-h: 52px;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
-  h1 { font-size: 17px; margin: 0; letter-spacing: .01em; }
-  h1 span { color: var(--ball); }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--soft); margin: 22px 0 8px; font-weight: 600; }
-  #live { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
-  .pill { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 12px; white-space: nowrap; }
-  .pill.ok { border-color: var(--accent); color: var(--accent); }
-  .pill.warn { border-color: var(--warn); color: var(--warn); }
-  .pill.bad { border-color: var(--bad); color: var(--bad); }
-  button, select, input[type=text] { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
-  button { cursor: pointer; }
-  button:hover { border-color: var(--soft); }
-  button.on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
-  button.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-  main { display: grid; grid-template-columns: minmax(470px, 5fr) 7fr; gap: 20px; padding: 16px 20px 60px; align-items: start; }
-  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; }
-  #cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 14px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
-  .card b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
-  .card small { color: var(--soft); }
-  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--soft); font-weight: 600; padding: 4px 8px 6px 0; border-bottom: 1px solid var(--line); }
-  td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-  #list tbody tr { cursor: pointer; }
-  #list tbody tr:hover td { background: color-mix(in srgb, var(--ink) 5%, transparent); }
-  #list tbody tr.sel td { background: color-mix(in srgb, var(--ball) 16%, transparent); }
-  .num { text-align: right; }
-  .tag { display: inline-block; white-space: nowrap; border-radius: 4px; padding: 0 6px; font-size: 11px; font-weight: 600; border: 1px solid currentColor; }
-  .k-dodge { color: var(--accent); } .k-dry { color: var(--info); } .k-seen { color: var(--warn); } .k-mark { color: var(--mark); }
-  .late { color: var(--bad); } .tight { color: var(--warn); } .muted { color: var(--soft); }
-  #story { margin: 8px 0 0; padding-left: 18px; } #story li { margin: 3px 0; } #story li:first-child { font-weight: 600; }
-  #labels { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
-  #note { flex: 1; min-width: 160px; }
-  svg { display: block; width: 100%; height: auto; } svg text { fill: var(--ink); font: 11px system-ui, sans-serif; }
-  #cams { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; align-items: start; }
-  #top { max-width: 330px; }
-  .cam { position: relative; background: #000; border-radius: 8px; overflow: hidden; }
-  .cam canvas { display: block; width: 100%; height: auto; }
-  .cam .cap { position: absolute; left: 8px; bottom: 6px; color: #fff; font: 11px var(--mono); text-shadow: 0 0 3px #000, 0 0 3px #000; }
-  #controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 2px; }
-  #seek { flex: 1; min-width: 200px; accent-color: var(--ball); }
-  #clock { font: 13px var(--mono); min-width: 84px; text-align: right; }
-  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 24px; }
-  .files a { color: var(--info); margin-right: 12px; white-space: nowrap; }
-  code { font-family: var(--mono); font-size: 12px; }
-  #empty { color: var(--soft); padding: 30px 6px; }
-  #toast { position: fixed; right: 18px; bottom: 18px; background: var(--ink); color: var(--panel); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .25s; pointer-events: none; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--floor); color: var(--ink); font: 15px/1.45 var(--body); }
+  button, select, input { font: inherit; color: inherit; }
+  button { cursor: pointer; background: var(--sheet); border: 1px solid var(--rule); border-radius: 4px; padding: 6px 12px; }
+  button:hover:not(:disabled) { border-color: var(--ink); }
+  button:disabled { cursor: default; color: var(--graphite); background: transparent; }
+  select { background: var(--sheet); border: 1px solid var(--rule); border-radius: 4px; padding: 6px 8px; }
+  :focus-visible { outline: 2px solid var(--robot); outline-offset: 2px; }
+  .num { font-family: var(--display); font-variant-numeric: tabular-nums; }
+  .quiet { color: var(--graphite); }
+
+  /* ---- top bar: what the robot is doing now, and the two ways to keep a throw */
+  #bar { position: sticky; top: 0; z-index: 10; height: var(--bar-h); display: flex; align-items: center; gap: 20px;
+         padding: 0 20px; background: var(--ink); color: #fff; }
+  #bar .name { font: 600 19px/1 var(--display); letter-spacing: .02em; white-space: nowrap; }
+  #live { flex: 1; display: flex; gap: 18px; align-items: baseline; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 13px; color: #C5CEDD; }
+  #live b { color: #fff; font-weight: 600; }
+  #live .armed, #live .armed b { color: #FFB4B0; } #live .down, #live .down b { color: #FFD27A; }
+  #bar button { background: transparent; color: #fff; border-color: #5B6B88; white-space: nowrap; }
+  #bar button.primary { background: #fff; color: var(--ink); border-color: #fff; font-weight: 600; }
+  #bar button:hover:not(:disabled) { border-color: #fff; }
+  #bar button:disabled { color: #8794AB; border-color: #3A4763; background: transparent; font-weight: 400; }
+  #bar button.counting { background: var(--decide); border-color: var(--decide); color: #fff; }
+
+  /* ---- two panes: the log of throws stays put, the chosen throw scrolls */
+  #app { display: grid; grid-template-columns: var(--log-w) minmax(0, 1fr); align-items: start; }
+  #log { position: sticky; top: var(--bar-h); height: calc(100vh - var(--bar-h)); display: flex; flex-direction: column;
+         background: var(--sheet); border-right: 1px solid var(--rule); }
+  #summary { margin: 0; padding: 14px 16px 10px; font-size: 13.5px; line-height: 1.4; }
+  #summary b { font-family: var(--display); font-size: 16px; }
+  #filters { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px 10px; border-bottom: 1px solid var(--rule); }
+  #filters button { padding: 2px 9px; font-size: 13px; border-radius: 3px; }
+  #filters button[aria-pressed=true] { background: var(--ink); color: #fff; border-color: var(--ink); }
+  #list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+  #list .day { padding: 10px 16px 4px; font-size: 12.5px; color: var(--graphite); background: var(--sheet); position: sticky; top: 0; }
+  .row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; column-gap: 10px; align-items: center;
+         padding: 8px 16px 8px 12px; border-left: 4px solid transparent; border-bottom: 1px solid var(--floor); cursor: pointer; }
+  .row:hover { background: #F5F7FA; }
+  .row.sel { background: var(--floor); border-left-color: var(--ink); }
+  .row .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .sub { font-size: 12.5px; color: var(--graphite); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .left { text-align: right; line-height: 1.1; }
+  .row .left b { font: 600 19px/1 var(--display); }
+  .row .left span { display: block; font-size: 11.5px; color: var(--graphite); }
+  .row.k-seen .title, .row.k-mark .title { font-weight: 500; }
+  .tight { color: var(--unseen-ink); } .late { color: var(--decide); }
+  .verdict-dodged { color: var(--ball-ink); font-weight: 600; } .verdict-hit { color: var(--decide); font-weight: 600; }
+  #logfoot { padding: 10px 16px; border-top: 1px solid var(--rule); font-size: 12.5px; color: var(--graphite); line-height: 1.5; }
+  #logfoot a { color: var(--robot); } #logfoot .warn { color: var(--decide); font-weight: 600; }
+  #logfoot code { font-family: var(--body); color: var(--ink); word-break: break-all; }
+
+  /* ---- one throw */
+  #throw, #nothing { padding: 22px 28px 60px; max-width: 1180px; }
+  #nothing { color: var(--graphite); max-width: 60ch; } #nothing h1 { color: var(--ink); }
+  .crumb { display: flex; align-items: center; gap: 12px; font-size: 13.5px; color: var(--graphite); }
+  .crumb .kind { font-weight: 600; } .crumb .spacer { flex: 1; }
+  .crumb button { padding: 3px 10px; font-size: 13px; color: var(--ink); }
+  h1 { font: 600 26px/1.2 var(--display); margin: 10px 0 8px; max-width: 34em; letter-spacing: .005em; }
+  h2 { font: 600 17px/1.2 var(--display); margin: 0 0 10px; }
+  #story { margin: 0 0 14px; padding: 0; list-style: none; max-width: 76ch; color: #33415A; }
+  #story li { margin: 2px 0; }
+  #verdict { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0 0; border-top: 1px solid var(--rule); }
+  #verdict .ask { font-weight: 600; margin-right: 4px; }
+  #verdict button[aria-pressed=true] { background: var(--ink); color: #fff; border-color: var(--ink); }
+  #note { flex: 1; min-width: 200px; border: 1px solid var(--rule); border-radius: 4px; padding: 6px 10px; background: var(--sheet); }
+
+  #flight { margin-top: 20px; background: var(--sheet); border: 1px solid var(--rule); }
+  #strip { display: block; width: 100%; height: auto; touch-action: none; cursor: ew-resize; user-select: none; -webkit-user-select: none; }
+  #strip text { font-family: var(--body); font-size: 12px; fill: var(--ink); }
+  #strip text.t { font-family: var(--display); font-size: 12.5px; fill: var(--graphite); }
+  #strip text.m { paint-order: stroke; stroke: var(--sheet); stroke-width: 5px; stroke-linejoin: round; font-weight: 600; }
+  #cams { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 2px; align-items: start; background: #0E1626; border-top: 1px solid var(--rule); }
+  .cam { position: relative; aspect-ratio: 16 / 9; } .cam canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
+  .cam .cap { position: absolute; left: 8px; bottom: 6px; color: #fff; font-size: 12px; text-shadow: 0 0 3px #000, 0 0 3px #000; }
+  #transport { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 10px 12px; border-top: 1px solid var(--rule); }
+  #transport #play { min-width: 74px; background: var(--ink); color: #fff; border-color: var(--ink); font-weight: 600; }
+  #clock { font: 600 17px/1 var(--display); min-width: 86px; text-align: right; }
+  #transport .spacer { flex: 1; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 0 12px 10px; font-size: 12.5px; color: var(--graphite); }
+  .legend i { display: inline-block; width: 12px; height: 12px; margin-right: 5px; vertical-align: -1px; }
+
+  .split { display: grid; grid-template-columns: minmax(0, 11fr) minmax(0, 9fr); gap: 28px 36px; margin-top: 28px; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { padding: 6px 0; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: baseline; }
+  th { font-weight: 500; font-size: 12.5px; color: var(--graphite); }
+  td.v, th.v { text-align: right; white-space: nowrap; padding-left: 14px; }
+  td.v { font: 600 16px/1.2 var(--display); }
+  tr.group td { border-bottom: 0; padding: 14px 0 2px; font-size: 12.5px; color: var(--graphite); }
+  tr.group:first-child td { padding-top: 0; }
+  td small { display: block; color: var(--graphite); font-size: 12.5px; }
+  #top { display: block; width: 100%; max-width: 300px; height: auto; }
+  #top text { font-family: var(--body); font-size: 11px; fill: var(--graphite); }
+  #files { margin: 0; line-height: 1.9; } #files a { color: var(--robot); margin-right: 14px; white-space: nowrap; }
+  #files code { font-family: var(--body); color: var(--graphite); word-break: break-all; }
+  .block { margin-top: 26px; }
+
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 9px 16px;
+           border-radius: 4px; opacity: 0; pointer-events: none; transition: opacity .2s; max-width: 90vw; }
   #toast.show { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+
+  @media (max-width: 980px) {
+    #app { grid-template-columns: minmax(0, 1fr); }
+    #log { position: static; height: auto; max-height: 46vh; border-right: 0; border-bottom: 1px solid var(--rule); }
+    #throw, #nothing { padding: 16px 14px 50px; }
+    .split { grid-template-columns: 1fr; }
+    #bar { height: auto; flex-wrap: wrap; padding: 8px 14px; gap: 8px 14px; position: static; }
+    #live { order: 3; flex-basis: 100%; flex-wrap: wrap; white-space: normal; gap: 4px 14px; }
+    h1 { font-size: 22px; }
+    #cams { grid-template-columns: 1fr; }
+    .crumb { flex-wrap: wrap; gap: 4px 12px; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>Pupper <span>Dodging View</span></h1>
-  <div id="live"><span class="pill">connecting…</span></div>
-  <button id="next" class="primary" title="Press, then throw: what the cameras see in the next few seconds is saved, whether or not Pupper reacts">Record the next throw</button>
-  <button id="mark" title="Keep what the cameras saw in the last few seconds, for a throw Pupper did not react to">Save the last few seconds</button>
+<header id="bar">
+  <span class="name">Pupper Dodging View</span>
+  <div id="live" aria-live="polite">Connecting</div>
+  <button id="next" class="primary" title="Press, then throw. What the cameras see in the next few seconds is kept, whether or not Pupper reacts.">Record the next throw</button>
+  <button id="mark" title="Keeps what the cameras saw in the last few seconds, for a throw Pupper did not react to.">Keep the last 3 s</button>
 </header>
-<main>
-  <section>
-    <div id="cards"></div>
-    <div class="panel">
-      <table id="list">
-        <thead><tr><th>Time</th><th>What happened</th><th class="num" title="degrees: 0 ahead, +90 left, 180 behind">From</th><th class="num" title="ball first in a picture → decision">Seen→decide</th><th class="num" title="decision → body starts to move">→ moving</th><th class="num" title="time before contact when it decided">Time left</th><th>Result</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <div id="empty" hidden>No throws saved yet. Throw a ball at Pupper with the stack running: every dodge and every throw it sees is saved here. To keep a throw whether or not it reacts, press “Record the next throw” first.</div>
-      <p class="muted files" style="margin:12px 0 0">Folder: <code id="folder"></code> · <a href="/csv">throws.csv</a> <span id="disk"></span> <span id="busy"></span></p>
+
+<div id="app">
+  <nav id="log" aria-label="Saved throws">
+    <p id="summary"></p>
+    <div id="filters" role="group" aria-label="Show"></div>
+    <ol id="list"></ol>
+    <div id="logfoot"></div>
+  </nav>
+
+  <main id="nothing">
+    <h1>No throw chosen</h1>
+    <p>Throw a ball at Pupper with the stack running. Every dodge, and every throw it sees but does not dodge, appears in the list. To keep a throw whether or not Pupper reacts, press “Record the next throw” first.</p>
+  </main>
+
+  <main id="throw" hidden>
+    <div class="crumb">
+      <span id="d-when" class="num"></span><span id="d-kind" class="kind"></span><span id="d-note"></span>
+      <span class="spacer"></span>
+      <button id="newer" title="Up arrow">Newer</button><button id="older" title="Down arrow">Older</button>
     </div>
-  </section>
-  <section id="detail" class="panel" hidden>
-    <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">
-      <b id="d-title" style="font-size:16px"></b><span id="d-kind"></span><span id="d-late"></span>
-    </div>
+    <h1 id="headline"></h1>
     <ul id="story"></ul>
-    <div id="labels"><span class="muted">What really happened:</span><span id="result-buttons"></span><input type="text" id="note" placeholder="note (who threw, from where…)"></div>
-
-    <h2>Timeline <span class="muted" style="text-transform:none;letter-spacing:0" id="tl-note"></span></h2>
-    <svg id="timeline" viewBox="0 0 900 150"></svg>
-
-    <h2>What the cameras saw</h2>
-    <div id="cams"></div>
-    <div id="controls">
-      <button id="play">Play</button>
-      <button id="back" title="one picture back">◀</button><button id="fwd" title="one picture forward">▶</button>
-      <select id="speed"><option value="1">real speed</option><option value="0.5">½ speed</option><option value="0.25" selected>¼ speed</option><option value="0.1">1/10 speed</option></select>
-      <input type="range" id="seek" min="0" max="1000" value="0">
-      <span id="clock"></span>
-      <label><input type="checkbox" id="overlay" checked> show what Pupper detected</label>
+    <div id="verdict">
+      <span class="ask">What really happened?</span>
+      <span id="result-buttons"></span>
+      <input type="text" id="note" placeholder="Note: who threw, from where" aria-label="Note">
     </div>
-    <p class="muted" style="margin:4px 0 0">Green ring: the ball it was tracking. Yellow box: other ball-coloured things it noticed.</p>
 
-    <div class="two">
-      <div><h2>Timings</h2><table id="numbers"></table></div>
-      <div><h2>The move, seen from above</h2><svg id="top" viewBox="0 0 300 240"></svg><p class="muted" style="margin:4px 0 0">Green: where the ball was tracked. Red arrow: the planned move.</p></div>
+    <section id="flight" aria-label="The throw, in time">
+      <svg id="strip" viewBox="0 0 1000 158" role="img" aria-label="Timeline of the throw. Drag to move through the video."></svg>
+      <div class="legend">
+        <span><i style="background:var(--ball-wash);border-bottom:3px solid var(--ball-ink)"></i>Ball tracked (dark marks: pictures it was seen in)</span>
+        <span><i style="background:var(--unseen)"></i>Ball out of sight</span>
+        <span><i style="background:var(--sheet);border:1.5px solid var(--ink)"></i>Pupper making up its mind</span>
+        <span><i style="background:var(--robot-wash)"></i>Command on its way</span>
+        <span><i style="background:var(--robot)"></i>Pupper moving</span>
+      </div>
+      <div id="cams"></div>
+      <div id="transport">
+        <button id="play">Play</button>
+        <button id="back" title="Left arrow" aria-label="One picture back">◀</button>
+        <button id="fwd" title="Right arrow" aria-label="One picture forward">▶</button>
+        <select id="speed" aria-label="Playback speed">
+          <option value="1">Real speed</option><option value="0.5">Half speed</option>
+          <option value="0.25" selected>Quarter speed</option><option value="0.1">One tenth</option>
+        </select>
+        <label><input type="checkbox" id="overlay" checked> Show what Pupper detected</label>
+        <span class="spacer"></span>
+        <span id="clock" class="num"></span>
+      </div>
+    </section>
+
+    <div class="split">
+      <section>
+        <h2>Where the time went</h2>
+        <table id="numbers"></table>
+      </section>
+      <section>
+        <h2>The move, from above</h2>
+        <svg id="top" viewBox="0 0 300 250"></svg>
+        <p class="quiet" id="move-text" style="margin:6px 0 0;font-size:13.5px"></p>
+      </section>
     </div>
-    <h2>Cameras during this throw</h2>
-    <table id="camtable"></table>
-    <h2>Files</h2>
-    <p class="files" id="files"></p>
-  </section>
-</main>
-<div id="toast"></div>
+
+    <section class="block">
+      <h2>Cameras during this throw</h2>
+      <table id="camtable"></table>
+    </section>
+    <section class="block">
+      <h2>Files</h2>
+      <p id="files"></p>
+    </section>
+  </main>
+</div>
+<div id="toast" role="status"></div>
+
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
-const ms = (v) => (v == null ? "–" : v + " ms");
-let throws = [], selected = null, cur = null, results = [], windowS = 3.2;
-const SHORT = {dodge: "dodged", dry: "dry run", seen: "seen, no dodge", mark: "saved by hand"};
+const ms = (v) => (v == null ? "not measured" : v + " ms");
+const signed = (sec) => (sec >= 0 ? "+" : "−") + Math.abs(Math.round(sec * 1000));
+let throws = [], selected = null, cur = null, results = [], windowS = 3.2, filter = "all";
+const KIND = {dodge: "Dodged (armed)", dry: "Dry run", seen: "Seen, no dodge", mark: "Saved by hand"};
+const FILTERS = [["all", "All"], ["dodge", "Dodged"], ["dry", "Dry run"], ["seen", "No dodge"], ["mark", "Saved by hand"]];
 
-function toast(text) { const t = $("toast"); t.textContent = text; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2600); }
+function toast(text) { const t = $("toast"); t.textContent = text; t.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), 2800); }
 async function getJSON(url, opts) { const r = await fetch(url, opts); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
 function median(a) { a = a.filter((v) => v != null).sort((x, y) => x - y); return a.length ? a[Math.floor((a.length - 1) / 2)] : null; }
+function when(id) { const m = /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)/.exec(id); return m ? m[4] + ":" + m[5] + ":" + m[6] : id; }
+function day(id) {
+  const m = /^(\d{4})(\d\d)(\d\d)/.exec(id); if (!m) return "";
+  return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(undefined, {weekday: "long", day: "numeric", month: "long"});
+}
+function fromWhere(deg) {
+  if (deg == null) return "";
+  const a = Math.abs(((deg + 180) % 360 + 360) % 360 - 180), side = deg >= 0 ? "left" : "right";
+  return a <= 22 ? "from the front" : a <= 67 ? "from the front-" + side : a <= 112 ? "from the " + side : a <= 157 ? "from the rear-" + side : "from behind";
+}
+function title(t) {
+  if (!t.ready) return t.error ? "Could not be read" : "Being worked out";
+  if ((t.kind === "dodge" || t.kind === "dry") && t.move) {
+    return t.kind === "dry" ? "Would " + t.move : t.move.replace(/^run /, "Ran ").replace(/^sidestep /, "Sidestepped ");
+  }
+  if (t.kind === "seen") return "Seen, no dodge";
+  return t.tracked ? "Saved by hand" : "Saved by hand, no ball tracked";
+}
+function headline(t) {
+  // The throw in one short sentence; the full account follows underneath.
+  const n = t.numbers, move = t.plan && t.plan.vx !== undefined ? title({ready: true, kind: t.kind, move: describeMove(t.plan)}) : "";
+  if ((t.kind === "dodge" || t.kind === "dry") && move) {
+    let s = move;
+    if (n.seen_to_decision_ms != null) s += (t.kind === "dry" ? ": decided " : " ") + n.seen_to_decision_ms + " ms after first seeing the ball";
+    if (n.time_left_at_decision_ms != null) s += ", with " + n.time_left_at_decision_ms + " ms left";
+    return s + ".";
+  }
+  if (t.kind === "seen") return "Saw the ball in flight and did not dodge.";
+  if (t.kind === "mark") return t.track == null ? "Saved by hand. No ball was tracked." : "Saved by hand. A ball was tracked.";
+  return "";
+}
+function describeMove(plan) {
+  const fore = plan.vx > 0 ? "forward" : plan.vx < 0 ? "backward" : "", side = plan.vy > 0 ? "left" : plan.vy < 0 ? "right" : "";
+  return fore && side ? "run " + fore + "-" + side : fore ? "run " + fore : side ? "sidestep " + side : "stay";
+}
+function dial(deg) {
+  // The robot's nose points up; the dot is where the ball came from.
+  let dot = "";
+  if (deg != null) { const b = deg * Math.PI / 180; dot = '<circle cx="' + (13 - Math.sin(b) * 8.5).toFixed(1) + '" cy="' + (13 - Math.cos(b) * 8.5).toFixed(1) + '" r="3.6" fill="var(--ball)" stroke="var(--ball-ink)" stroke-width="1"/>'; }
+  return '<svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="8.5" fill="none" stroke="var(--rule)" stroke-width="1.5"/><path d="M13 8.2 L15.6 15 H10.4 Z" fill="var(--graphite)"/>' + dot + "</svg>";
+}
 
-// ---------------------------------------------------------------- live state
-function renderLive(s, busy) {
-  const out = [];
-  if (!s.ros) out.push('<span class="pill">saved throws only (not connected to the robot)</span>');
-  else if (!s.live) out.push('<span class="pill bad">dodge node not running</span>');
+// ---------------------------------------------------------------- what the robot is doing now
+function renderLive(s) {
+  let h;
+  if (!s.ros) h = "<span>Saved throws only. Not connected to the robot.</span>";
+  else if (!s.live) h = '<span class="down"><b>The dodge node is not running.</b> Start it with robot/start.sh</span>';
   else {
-    const st = s.state;
-    out.push('<span class="pill ' + (st.armed ? "warn" : "ok") + '">' + (st.armed ? "ARMED: will move" : "dry run") + "</span>");
-    out.push('<span class="pill">' + esc(st.state) + "</span>");
-    if (!st.can_dodge) out.push('<span class="pill bad">cannot dodge: ' + esc(st.cannot_reason) + "</span>");
-    if (st.imu_alive === false) out.push('<span class="pill bad">no IMU</span>');
+    const st = s.state, parts = [];
+    parts.push(st.armed ? '<span class="armed"><b>Armed.</b> Pupper will move.</span>' : "<span><b>Dry run.</b> Pupper will not move.</span>");
+    if (!st.can_dodge) parts.push('<span class="down"><b>Cannot dodge:</b> ' + esc(st.cannot_reason) + "</span>");
+    if (st.imu_alive === false) parts.push('<span class="down"><b>No IMU</b></span>');
     for (const [name, c] of Object.entries(st.cameras || {})) {
       const bad = !c.alive || c.problem;
-      out.push('<span class="pill ' + (bad ? "bad" : c.latency_ms > 90 ? "warn" : "") + '" title="pictures per second processed · how old a picture is when processed">' +
-        esc(name) + (bad ? " not working" : " " + Math.round(c.fps) + " fps · " + Math.round(c.latency_ms) + " ms") + "</span>");
+      parts.push("<span" + (bad || c.latency_ms > 100 ? ' class="down"' : "") + ' title="Pictures per second, and how old a picture is once processed">' + esc(name) + " " +
+        (bad ? "<b>not working</b>" : '<b class="num">' + Math.round(c.fps) + '</b> a second, <b class="num">' + Math.round(c.latency_ms) + "</b> ms old") + "</span>");
     }
+    h = parts.join("");
   }
-  $("live").innerHTML = out.join("");
-  $("busy").textContent = busy ? "· " + busy + "…" : "";
+  $("live").innerHTML = h;
   $("mark").disabled = $("next").disabled = !s.live;
 }
 
-// ---------------------------------------------------------------- list
-function renderCards() {
-  const ready = throws.filter((t) => t.ready);
-  const real = ready.filter((t) => t.kind === "dodge" || t.kind === "dry");
-  const lab = (r) => throws.filter((t) => t.label.result === r).length;
-  const cards = [
-    [throws.length, "throws saved"],
-    [lab("dodged") + " / " + (lab("dodged") + lab("hit")), "dodged, of those you marked dodged or hit"],
-    [ms(median(real.map((t) => t.numbers.seen_to_decision_ms))), "typical: ball seen → decision"],
-    [ms(median(real.map((t) => t.numbers.decision_to_body_ms))), "typical: decision → body moving"],
-    [ms(median(real.map((t) => t.numbers.time_left_at_decision_ms))), "typical: time left at the decision"],
-    [real.filter((t) => t.timing === "late").length + " / " + real.length, "decided too late to finish the move"],
-  ];
-  $("cards").innerHTML = cards.map((c) => '<div class="card"><b>' + esc(c[0]) + "</b><small>" + esc(c[1]) + "</small></div>").join("");
-}
-function when(id) { const m = /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)/.exec(id); return m ? m[4] + ":" + m[5] + ":" + m[6] : id; }
-function day(id) { const m = /^(\d{4})(\d\d)(\d\d)/.exec(id); return m ? m[1] + "-" + m[2] + "-" + m[3] : ""; }
-function renderList() {
-  $("empty").hidden = throws.length > 0;
-  $("list").hidden = throws.length === 0;
-  let lastDay = "";
-  $("list").tBodies[0].innerHTML = throws.map((t) => {
-    let head = "";
-    if (day(t.id) !== lastDay) { lastDay = day(t.id); head = '<tr><td colspan="7" class="muted" style="cursor:default;padding-top:10px">' + lastDay + "</td></tr>"; }
-    if (!t.ready) return head + '<tr data-id="' + esc(t.id) + '"><td>' + when(t.id) + '</td><td colspan="6" class="muted">' + esc(t.error ? "could not be read: " + t.error : "being worked out…") + "</td></tr>";
-    const n = t.numbers;
-    const what = '<span class="tag k-' + t.kind + '">' + esc(SHORT[t.kind] || t.kind_text) + "</span>" + (t.move && t.plan.vx !== undefined ? " " + esc(t.move) : "") +
-      (t.timing !== "ok" ? ' <span class="' + t.timing + '">' + t.timing + "</span>" : "") + (!t.tracked ? ' <span class="muted">no ball tracked</span>' : "") +
-      (t.gap_ms >= 120 ? ' <span class="muted" title="longest time the ball was out of sight while tracked">· unseen ' + t.gap_ms + " ms</span>" : "");
-    return head + '<tr data-id="' + esc(t.id) + '"' + (t.id === selected ? ' class="sel"' : "") + "><td>" + when(t.id) + "</td><td>" + what + '</td><td class="num">' +
-      (t.from_deg == null ? "–" : Math.round(t.from_deg) + "°") + '</td><td class="num">' + ms(n.seen_to_decision_ms) + '</td><td class="num">' + ms(n.decision_to_body_ms) +
-      '</td><td class="num' + (t.timing !== "ok" ? " " + t.timing : "") + '">' + ms(n.time_left_at_decision_ms) + "</td><td>" + esc(t.label.result || "") + "</td></tr>";
+// ---------------------------------------------------------------- the log
+function shown() { return throws.filter((t) => filter === "all" || t.kind === filter); }
+function renderSummary() {
+  const real = throws.filter((t) => t.ready && (t.kind === "dodge" || t.kind === "dry"));
+  const count = (r) => throws.filter((t) => t.label.result === r).length, dodged = count("dodged"), hit = count("hit");
+  let s = "<b>" + throws.length + "</b> " + (throws.length === 1 ? "throw" : "throws") + " saved.";
+  if (dodged + hit) s += " Of the " + (dodged + hit) + " you marked, <b>" + dodged + "</b> dodged and <b>" + hit + "</b> hit.";
+  const decide = median(real.map((t) => t.numbers.seen_to_decision_ms)), start = median(real.map((t) => t.numbers.decision_to_body_ms));
+  if (decide != null) s += " Pupper typically decides <b>" + decide + "</b> ms after first seeing the ball" + (start != null ? " and is moving <b>" + start + "</b> ms later." : ".");
+  $("summary").innerHTML = s;
+  $("filters").innerHTML = FILTERS.map(([key, name]) => {
+    const n = key === "all" ? throws.length : throws.filter((t) => t.kind === key).length;
+    return n || key === "all" ? '<button data-f="' + key + '" aria-pressed="' + (filter === key) + '">' + name + ' <span class="num">' + n + "</span></button>" : "";
   }).join("");
+}
+function renderList() {
+  let last = "";
+  const rows = shown().map((t) => {
+    let head = "";
+    if (day(t.id) !== last) { last = day(t.id); head = '<li class="day">' + esc(last) + "</li>"; }
+    const n = t.numbers || {}, left = n.time_left_at_decision_ms;
+    const sub = [when(t.id), t.ready ? fromWhere(t.from_deg) : (t.error || "")].filter(Boolean).join(", ");
+    let right = "";
+    if (t.ready && left != null) right = '<b class="' + (t.timing !== "ok" ? t.timing : "") + '">' + left + "</b><span>ms left" + (t.timing !== "ok" ? ", " + t.timing : "") + "</span>";
+    else if (t.ready && t.gap_ms >= 120) right = "<b>" + t.gap_ms + "</b><span>ms unseen</span>";
+    const verdict = t.label.result ? ', <span class="verdict-' + esc(t.label.result.replace(/ /g, "-")) + '">' + esc(t.label.result) + "</span>" : "";
+    return head + '<li class="row k-' + (t.kind || "none") + (t.id === selected ? " sel" : "") + '" data-id="' + esc(t.id) + '" tabindex="0">' + dial(t.ready ? t.from_deg : null) +
+      '<div><div class="title">' + esc(title(t)) + '</div><div class="sub">' + esc(sub) + verdict + '</div></div><div class="left">' + right + "</div></li>";
+  });
+  $("list").innerHTML = rows.join("") || '<li class="day">' + (throws.length ? "Nothing of this kind yet." : "No throws saved yet.") + "</li>";
+}
+function renderFoot(j) {
+  $("logfoot").innerHTML = (j.busy ? esc(j.busy.charAt(0).toUpperCase() + j.busy.slice(1)) + ".<br>" : "") +
+    "Kept in <code>" + esc(j.folder) + '</code><br><a href="/csv">Download throws.csv</a><br>' +
+    (j.disk.free_gb < 3 ? '<span class="warn">Only ' + j.disk.free_gb + " GB free. Delete old throws.</span>" : "Throws use " + j.disk.throws_gb + " GB; " + j.disk.free_gb + " GB free.");
 }
 async function refresh() {
   try {
     const j = await getJSON("/api/throws");
-    throws = j.throws; results = j.results;
-    $("folder").textContent = j.folder; windowS = j.window_s;
-    $("mark").textContent = "Save the last " + Math.floor(j.window_s) + " s";
-    $("disk").innerHTML = "· throws use " + j.disk.throws_gb + " GB, " + (j.disk.free_gb < 3 ? '<b class="late">' + j.disk.free_gb + " GB free: delete old throws</b>" : j.disk.free_gb + " GB free");
-    renderLive(j.status, j.busy); renderCards(); renderList();
+    throws = j.throws; results = j.results; windowS = j.window_s;
+    if (!$("next").classList.contains("counting")) $("mark").textContent = "Keep the last " + Math.floor(j.window_s) + " s";
+    renderLive(j.status); renderSummary(); renderList(); renderFoot(j);
     if (!selected && throws.length) {
       const m = /^#([^@]+)(?:@(-?\d+))?$/.exec(location.hash), want = m && throws.find((t) => t.id === m[1] && t.ready);
       if (want) select(want.id, m[2] == null ? null : parseInt(m[2], 10) / 1000);
       else if (throws[0].ready) select(throws[0].id);
     }
-  } catch (e) { $("live").innerHTML = '<span class="pill bad">Pupper Dodging View is not answering</span>'; }
+  } catch (e) { $("live").innerHTML = '<span class="down"><b>Pupper Dodging View is not answering.</b> Is it still running on the Pupper?</span>'; }
 }
-$("list").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-id]"); if (tr) select(tr.dataset.id); });
-async function mark(wait) {
+$("list").addEventListener("click", (e) => { const li = e.target.closest(".row"); if (li) select(li.dataset.id); });
+$("list").addEventListener("keydown", (e) => { if (e.key === "Enter") { const li = e.target.closest(".row"); if (li) select(li.dataset.id); } });
+$("filters").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { filter = b.dataset.f; renderSummary(); renderList(); } });
+function step(dir) {
+  const list = shown().filter((t) => t.ready), i = list.findIndex((t) => t.id === selected);
+  const next = list[Math.max(0, Math.min(list.length - 1, i + dir))];
+  if (next && next.id !== selected) select(next.id);
+}
+$("newer").addEventListener("click", () => step(-1));
+$("older").addEventListener("click", () => step(1));
+
+async function keep(wait) {
   try {
-    const j = await getJSON("/api/mark", {method: "POST", body: JSON.stringify({note: wait ? "recorded from Pupper Dodging View" : "saved from Pupper Dodging View", wait: wait})});
+    const j = await getJSON("/api/mark", {method: "POST", body: JSON.stringify({note: wait ? "recorded on request" : "kept on request", wait: wait})});
     if (!j.ok) return toast(j.error);
-    if (!wait) return toast("Saved. It appears in the list in a few seconds.");
+    if (!wait) return toast("Kept. It appears in the list in a few seconds.");
     const b = $("next"), label = b.textContent, until = Date.now() + wait * 1000;
-    b.classList.add("on");
+    b.classList.add("counting");
     const timer = setInterval(() => {
       const left = (until - Date.now()) / 1000;
-      if (left <= 0) { clearInterval(timer); b.textContent = label; b.classList.remove("on"); toast("Recorded. It appears in the list in a few seconds."); }
+      if (left <= 0) { clearInterval(timer); b.textContent = label; b.classList.remove("counting"); toast("Recorded. It appears in the list in a few seconds."); }
       else b.textContent = "Throw now: " + left.toFixed(1) + " s";
     }, 100);
   } catch (e) { toast(String(e.message || e)); }
 }
-$("mark").addEventListener("click", () => mark(0));
-$("next").addEventListener("click", () => mark(Math.max(1, windowS - 0.2)));
+$("mark").addEventListener("click", () => keep(0));
+$("next").addEventListener("click", () => keep(Math.max(1, windowS - 0.2)));
 
 // ---------------------------------------------------------------- one throw
-const MARKS = [
-  ["first_seen", "ball first in a picture", "var(--ball)"], ["tracked", "tracked as a ball", "var(--accent)"],
-  ["decision", "decided to dodge", "var(--bad)"], ["command", "command sent", "var(--warn)"],
-  ["body", "body starts moving", "var(--info)"], ["contact", "ball due", "var(--ink)"],
-];
 async function select(id, at) {
   selected = id; renderList();
+  const row = $("list").querySelector(".row.sel"); if (row) row.scrollIntoView({block: "nearest"});
   if (at == null) history.replaceState(null, "", "#" + id);
   let j;
   try { j = await getJSON("/api/throw/" + encodeURIComponent(id)); } catch (e) { toast(String(e.message || e)); return; }
@@ -235,27 +378,32 @@ async function select(id, at) {
   stop();
   cur = {id: id, t: j.throw, frames: j.frames, label: j.label, images: new Map(), shown: {}, T: 0};
   const t = j.throw;
-  $("detail").hidden = false;
-  $("d-title").textContent = day(id) + " " + when(id);
-  $("d-kind").innerHTML = '<span class="tag k-' + t.kind + '">' + esc(t.kind_text) + "</span>" + (t.rebuilt ? ' <span class="muted" title="This recording has no live trace, so detections and timings were worked out again from the pictures">(re-analysed)</span>' : "");
-  $("d-late").innerHTML = t.timing === "late" ? '<span class="late">decided too late</span>' : t.timing === "tight" ? '<span class="tight">decided at the last moment</span>' : "";
-  $("story").innerHTML = t.story.map((s) => "<li>" + esc(s) + "</li>").join("");
-  $("result-buttons").innerHTML = results.filter((r) => r).map((r) => '<button data-r="' + esc(r) + '"' + (j.label.result === r ? ' class="on"' : "") + ">" + esc(r) + "</button>").join(" ");
+  $("nothing").hidden = true; $("throw").hidden = false;
+  $("d-when").textContent = day(id) + ", " + when(id);
+  $("d-kind").textContent = KIND[t.kind] + (t.timing === "late" ? ", decided too late" : t.timing === "tight" ? ", decided at the last moment" : "");
+  $("d-kind").className = "kind" + (t.timing !== "ok" ? " " + t.timing : "");
+  $("d-note").textContent = t.rebuilt ? "Worked out again from the pictures: this recording has no live trace." : "";
+  const own = headline(t);
+  $("headline").textContent = own || t.story[0] || "";
+  $("story").innerHTML = t.story.slice(own && (t.kind === "dodge" || t.kind === "dry") ? 1 : 0).map((s) => "<li>" + esc(s) + "</li>").join("");
+  $("result-buttons").innerHTML = results.filter((r) => r).map((r) => '<button data-r="' + esc(r) + '" aria-pressed="' + (j.label.result === r) + '">' + esc(r.charAt(0).toUpperCase() + r.slice(1)) + "</button>").join(" ");
   $("note").value = j.label.note || "";
-  renderNumbers(t); renderCamTable(t); renderTop(t); buildCams();
-  renderFiles(j);
-  const first = t.times.first_seen != null ? t.times.first_seen : t.window[0];
-  cur.T0 = Math.max(t.window[0], first - 0.25); cur.T1 = t.window[1];
-  renderTimeline();
+  const tm = t.times, dur = (t.plan && t.plan.duration) || 0, first = tm.first_seen != null ? tm.first_seen : t.window[0];
+  const end = Math.max(tm.contact || 0, tm.command != null ? tm.command + dur : 0, tm.decision != null && t.kind === "dry" ? dur : 0, 0.15);
+  cur.T0 = Math.max(t.window[0], first - 0.3); cur.T1 = Math.min(t.window[1], end + 0.3);
+  if (cur.T1 - cur.T0 < 0.4) { cur.T0 = t.window[0]; cur.T1 = t.window[1]; }
+  renderNumbers(t); renderCamTable(t); renderTop(t); buildCams(); renderFiles(j); renderStrip();
   seekTo(at == null ? cur.T0 : at);
+  const list = shown().filter((x) => x.ready), i = list.findIndex((x) => x.id === id);
+  $("newer").disabled = i <= 0; $("older").disabled = i < 0 || i >= list.length - 1;
 }
 function renderFiles(j) {
-  const id = cur.id;
-  cur.videos = j.videos.length; cur.making = j.making;
-  $("files").innerHTML = (j.videos.length ? j.videos.map((v) => '<a href="/video/' + encodeURIComponent(id) + "/" + encodeURIComponent(v) + '" target="_blank">' + esc(v) + "</a>").join(" ") + " "
-      : j.making ? '<span class="muted">making the video files… (about half a minute) </span>'
-      : '<button id="mkvideo" title="Writes an .mp4 per camera, plain and with the detections drawn on, into this throw\'s folder. Takes processor time: do it between throws, not during them.">Make video files</button> ') +
-    '<a href="/zip/' + encodeURIComponent(id) + '">numbers' + (j.videos.length ? " and videos" : "") + ' as a .zip</a><br><span class="muted">Folder: <code>' + esc(j.folder) + "</code></span>";
+  const id = cur.id, enc = encodeURIComponent;
+  cur.making = j.making;
+  const videos = j.videos.length ? j.videos.map((v) => '<a href="/video/' + enc(id) + "/" + enc(v) + '" target="_blank">' + esc(v) + "</a>").join(" ")
+    : j.making ? '<span class="quiet">Making the video files. About half a minute.</span> '
+    : '<button id="mkvideo" title="Writes an .mp4 per camera, plain and with the detections drawn on. It takes processor time, so do it between throws.">Make video files</button> ';
+  $("files").innerHTML = videos + ' <a href="/zip/' + enc(id) + '">Download ' + (j.videos.length ? "numbers and videos" : "the numbers") + " as a .zip</a><br><code>" + esc(j.folder) + "</code>";
 }
 $("files").addEventListener("click", async (e) => {
   if (e.target.id !== "mkvideo" || !cur) return;
@@ -271,90 +419,149 @@ async function saveLabel(result) {
   try {
     const j = await getJSON("/api/label/" + encodeURIComponent(cur.id), {method: "POST", body: JSON.stringify({result: result, note: $("note").value})});
     cur.label = j.label;
-    for (const b of $("result-buttons").children) b.classList.toggle("on", b.dataset.r === j.label.result);
+    for (const b of $("result-buttons").children) b.setAttribute("aria-pressed", b.dataset.r === j.label.result);
     const row = throws.find((x) => x.id === cur.id); if (row) row.label = j.label;
-    renderCards(); renderList();
+    renderSummary(); renderList();
   } catch (e) { toast(String(e.message || e)); }
 }
 $("result-buttons").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) saveLabel(cur.label.result === b.dataset.r ? "" : b.dataset.r); });
 $("note").addEventListener("change", () => saveLabel(cur.label.result));
 
 function renderNumbers(t) {
-  const n = t.numbers;
-  const rows = [
-    ["Ball first in a picture → decision", n.seen_to_decision_ms, "how long Pupper took to make up its mind"],
-    ["· that first picture reaching the tracker", n.first_picture_delay_ms, "camera and processing delay"],
-    ["· then until it counted as a ball", n.tracking_ms, "it waits for three pictures that agree"],
-    ["Decision → command sent", n.decision_to_command_ms, ""],
-    ["Command → passed on by the mux", n.command_to_mux_ms, ""],
-    ["Command → body starts moving", n.command_to_body_ms, "the robot's own latency"],
-    ["Decision → body starts moving", n.decision_to_body_ms, "recognised → moving"],
-    ["Ball first seen → body starts moving", n.seen_to_body_ms, "the whole reaction"],
-    ["Time left at the decision", n.time_left_at_decision_ms, "until the ball was due"],
-    ["Time the move needs", n.needed_ms, "reaction plus getting clear"],
-    ["Time left once the body was moving", n.time_left_when_moving_ms, ""],
-  ];
-  $("numbers").innerHTML = rows.map((r) => "<tr><td>" + esc(r[0]) + (r[2] ? '<br><span class="muted">' + esc(r[2]) + "</span>" : "") + '</td><td class="num"><b>' + ms(r[1]) + "</b></td></tr>").join("") +
-    (t.plan && t.plan.reason ? '<tr><td colspan="2">Planned move: <b>' + esc(t.plan.reason) + "</b>, vx " + t.plan.vx + ", vy " + t.plan.vy + " m/s for " + t.plan.duration + " s" +
-      (t.threat && t.threat.miss_m != null ? '<br><span class="muted">ball predicted to pass ' + Math.round(t.threat.miss_m * 100) + " cm from the body, from " + Math.round(t.threat.bearing_deg) + "°</span>" : "") + "</td></tr>" : "");
+  const n = t.numbers, row = (name, v, why) => "<tr><td>" + name + (why ? "<small>" + why + "</small>" : "") + '</td><td class="v">' + ms(v) + "</td></tr>";
+  const group = (name) => '<tr class="group"><td colspan="2">' + name + "</td></tr>";
+  const decided = t.kind === "dodge" || t.kind === "dry";
+  let h = group(decided ? "Seeing and deciding" : "Seeing") +
+    (decided ? row("Ball first in a picture, to the decision", n.seen_to_decision_ms, "How long Pupper took to make up its mind") : "") +
+    row("That first picture reaching the tracker", n.first_picture_delay_ms, "Camera and processing delay") +
+    row("Then until it counted as a ball", n.tracking_ms, "It waits for three pictures that agree");
+  if (t.kind === "dodge") h += group("Pupper") +
+    row("Decision, to the command being sent", n.decision_to_command_ms) +
+    row("Command, to the mux passing it on", n.command_to_mux_ms) +
+    row("Command, to the body starting to move", n.command_to_body_ms, "The robot's own latency") +
+    row("Decision, to the body starting to move", n.decision_to_body_ms, "From recognising the ball to moving") +
+    row("Ball first seen, to the body moving", n.seen_to_body_ms, "The whole reaction");
+  if (t.kind === "dodge" || t.kind === "dry") h += group("Margin") +
+    row("Time left at the decision", n.time_left_at_decision_ms, "Until the ball was due") +
+    row("Time the move needs", n.needed_ms, "Reaction plus getting clear, as planned") +
+    (t.kind === "dodge" ? row("Time left once the body was moving", n.time_left_when_moving_ms) : "");
+  $("numbers").innerHTML = h;
 }
 function renderCamTable(t) {
-  $("camtable").innerHTML = "<tr><th>Camera</th><th class='num'>Pictures / s</th><th class='num' title='how old a picture was when it had been processed'>Picture age</th><th class='num'>Processing</th><th class='num'>Pictures with the ball</th><th class='num'>First saw it</th></tr>" +
-    Object.entries(t.cameras).map(([name, c]) => "<tr><td>" + esc(name) + '</td><td class="num">' + c.fps + '</td><td class="num">' + c.age_ms + ' ms</td><td class="num">' + c.process_ms +
-      ' ms</td><td class="num">' + c.frames_with_ball + " of " + c.frames + '</td><td class="num">' + (c.first_ball == null ? "never" : Math.round(c.first_ball * 1000) + " ms") + "</td></tr>").join("");
+  $("camtable").innerHTML = '<tr><th>Camera</th><th class="v">Pictures a second</th><th class="v" title="How old a picture was once it had been processed">Picture age</th><th class="v">Processing</th><th class="v">Pictures with the ball</th><th class="v">First saw it</th></tr>' +
+    Object.entries(t.cameras).map(([name, c]) => "<tr><td>" + esc(name) + '</td><td class="v">' + c.fps + '</td><td class="v' + (c.age_ms > 100 ? " late" : "") + '">' + c.age_ms + ' ms</td><td class="v">' + c.process_ms +
+      ' ms</td><td class="v">' + c.frames_with_ball + " of " + c.frames + '</td><td class="v">' + (c.first_ball == null ? "never" : signed(c.first_ball) + " ms") + "</td></tr>").join("");
 }
 function renderTop(t) {
-  // The robot's own frame: x forward is up on the page, y left is left.
-  const S = 50, cx = 150, cy = 120, P = (x, y) => [cx - y * S, cy - x * S];
+  // The robot's own frame: forward is up the page, left is left.
+  const S = 52, cx = 150, cy = 125, P = (x, y) => [cx - y * S, cy - x * S];
   const box = t.box || {x_min: -0.15, x_max: 0.17, y_min: -0.12, y_max: 0.12};
   const [bx, by] = P(box.x_max, box.y_max), [bx2, by2] = P(box.x_min, box.y_min);
-  let s = '<circle cx="' + cx + '" cy="' + cy + '" r="' + S + '" fill="none" stroke="var(--line)"/><circle cx="' + cx + '" cy="' + cy + '" r="' + 2 * S + '" fill="none" stroke="var(--line)"/>' +
-    '<text x="' + (cx + S + 3) + '" y="' + (cy + 4) + '" style="fill:var(--soft)">1 m</text><text x="' + (cx + 2 * S - 22) + '" y="' + (cy - 8) + '" style="fill:var(--soft)">2 m</text>' +
-    '<rect x="' + bx + '" y="' + by + '" width="' + (bx2 - bx) + '" height="' + (by2 - by) + '" rx="4" fill="var(--soft)"/><text x="' + cx + '" y="' + (cy - 2 * S - 5) + '" text-anchor="middle" style="fill:var(--soft)">front of the robot</text><text x="' + cx + '" y="' + (cy + 2 * S + 14) + '" text-anchor="middle" style="fill:var(--soft)">behind</text>';
-  for (const p of t.path) { const [x, y] = P(p[1], p[2]); if (x > -20 && x < 320 && y > -20 && y < 260) s += '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="2.4" fill="var(--ball)" opacity="' + (p[0] <= 0 ? 1 : 0.45) + '"/>'; }
+  let s = '<circle cx="' + cx + '" cy="' + cy + '" r="' + S + '" fill="none" stroke="var(--rule)"/><circle cx="' + cx + '" cy="' + cy + '" r="' + 2 * S + '" fill="none" stroke="var(--rule)"/>' +
+    '<text x="' + (cx + S + 4) + '" y="' + (cy + 4) + '">1 m</text><text x="' + (cx + 2 * S - 24) + '" y="' + (cy - 8) + '">2 m</text>' +
+    '<text x="' + cx + '" y="' + (cy - 2 * S - 6) + '" text-anchor="middle">front</text><text x="' + cx + '" y="' + (cy + 2 * S + 15) + '" text-anchor="middle">behind</text>' +
+    '<rect x="' + bx + '" y="' + by + '" width="' + (bx2 - bx) + '" height="' + (by2 - by) + '" rx="3" fill="var(--ink)"/>';
+  for (const p of t.path) { const [x, y] = P(p[1], p[2]); if (x > -10 && x < 310 && y > -10 && y < 260) s += '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="2.6" fill="var(--ball)" stroke="var(--ball-ink)" stroke-width=".6" opacity="' + (p[0] <= 0 ? 1 : 0.45) + '"/>'; }
   if (t.plan && t.plan.direction) {
-    const d = t.plan.direction, len = 0.55, [x1, y1] = P(0, 0), [x2, y2] = P(d[0] * len, d[1] * len);
-    s += '<defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--bad)"/></marker></defs>' +
-      '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '" stroke="var(--bad)" stroke-width="3" marker-end="url(#ah)"/>';
+    const d = t.plan.direction, len = 0.6, [x1, y1] = P(0, 0), [x2, y2] = P(d[0] * len, d[1] * len);
+    s += '<defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--robot)"/></marker></defs>' +
+      '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '" stroke="var(--robot)" stroke-width="3.5" marker-end="url(#ah)"/>';
   }
   $("top").innerHTML = s;
+  $("move-text").textContent = t.plan && t.plan.reason
+    ? t.plan.reason.charAt(0).toUpperCase() + t.plan.reason.slice(1) + ": vx " + t.plan.vx + ", vy " + t.plan.vy + " m/s for " + t.plan.duration + " s." +
+      (t.threat && t.threat.miss_m != null ? " The ball was predicted to pass " + Math.round(t.threat.miss_m * 100) + " cm from the body." : "")
+    : "Green dots: where the ball was tracked. No move was planned.";
 }
-function tlX(v) { const a = cur.tl; return 30 + (v - a[0]) / (a[1] - a[0]) * 840; }
-function renderTimeline() {
-  const t = cur.t, times = t.times;
-  const vals = Object.values(times).concat([0]);
-  let lo = Math.min(...vals) - 0.08, hi = Math.max(...vals) + 0.12;
-  if (hi - lo < 0.5) { hi = lo + 0.5; }
-  cur.tl = [lo, hi];
-  let s = '<line x1="30" y1="70" x2="870" y2="70" stroke="var(--line)" stroke-width="2"/>';
-  const stepTick = (hi - lo) > 1.6 ? 0.2 : 0.1;
-  for (let v = Math.ceil(lo / stepTick) * stepTick; v <= hi; v += stepTick) s += '<line x1="' + tlX(v) + '" y1="66" x2="' + tlX(v) + '" y2="74" stroke="var(--soft)"/><text x="' + tlX(v) + '" y="88" text-anchor="middle" style="fill:var(--soft)">' + Math.round(v * 1000) + "</text>";
-  for (const g of t.gaps) if (g.duration >= 0.08) s += '<rect x="' + tlX(g.start) + '" y="60" width="' + Math.max(2, tlX(g.end) - tlX(g.start)) + '" height="20" fill="var(--warn)" opacity=".28"><title>ball out of sight for ' + Math.round(g.duration * 1000) + " ms</title></rect>";
-  const lanes = [[20, -999], [128, -999], [8, -999], [141, -999]];     // label rows: y, x of the last label put there
-  for (const [key, label, colour] of MARKS) {
-    if (times[key] == null) continue;
-    const x = tlX(times[key]), text = label + " " + Math.round(times[key] * 1000);
-    const need = text.length * 6.2 + 14;
-    const lane = lanes.find((l) => x - l[1] >= need) || lanes[0];
-    lane[1] = x;
-    const y = lane[0], above = y < 70, right = x > 740;
-    s += '<line x1="' + x + '" y1="' + (above ? y + 4 : 70) + '" x2="' + x + '" y2="' + (above ? 70 : y - 11) + '" stroke="' + colour + '" stroke-width="1.5"/><circle cx="' + x + '" cy="70" r="5" fill="' + colour + '"/>' +
-      '<text x="' + (right ? x - 4 : x + 4) + '" y="' + y + '" text-anchor="' + (right ? "end" : "start") + '" style="fill:' + colour + ';font-weight:600">' + text + "</text>";
-  }
-  s += '<line id="cursor" x1="0" y1="52" x2="0" y2="92" stroke="var(--ink)" stroke-width="1.5" opacity=".7"/>';
-  if (t.gaps.some((g) => g.duration >= 0.08)) s += '<text x="870" y="106" text-anchor="end" style="fill:var(--warn)">shaded: ball out of sight</text>';
-  $("timeline").innerHTML = s;
-  $("tl-note").textContent = "— milliseconds; 0 = " + ({dodge: "the decision", dry: "the decision", seen: "the last time the ball was tracked", mark: "when it was saved by hand"}[t.kind]) + ". Click to jump there.";
-  moveCursor();
-}
-function moveCursor() { const c = $("cursor"); if (c && cur) { const x = Math.max(30, Math.min(870, tlX(cur.T))); c.setAttribute("x1", x); c.setAttribute("x2", x); } }
-$("timeline").addEventListener("click", (e) => {
-  if (!cur) return;
-  const r = $("timeline").getBoundingClientRect(), x = (e.clientX - r.left) / r.width * 900;
-  seekTo(cur.tl[0] + (x - 30) / 840 * (cur.tl[1] - cur.tl[0]));
-});
 
-// ---------------------------------------------------------------- the player
+// ---------------------------------------------------------------- the strip: the throw in time, and the scrubber for the video
+const GL = 62, GR = 14;
+let W = 1000;      // drawing width of the strip: narrower on a phone, so its lettering stays readable
+function X(v) { return GL + (v - cur.T0) / (cur.T1 - cur.T0) * (W - GL - GR); }
+function renderStrip() {
+  W = Math.max(470, Math.min(1000, Math.round(($("strip").clientWidth || 1000) * 1.12)));
+  $("strip").setAttribute("viewBox", "0 0 " + W + " 158");
+  const t = cur.t, tm = t.times, span = cur.T1 - cur.T0, BALL = 36, ROBOT = 66, H = 20;
+  const bar = (x0, x1, y, fill, extra) => '<rect x="' + x0.toFixed(1) + '" y="' + y + '" width="' + Math.max(1.5, x1 - x0).toFixed(1) + '" height="' + H + '" fill="' + fill + '"' + (extra || "") + "/>";
+  const inside = (x0, x1, y, text, fill) => (x1 - x0 > text.length * 6.4 + 12) ? '<text x="' + ((x0 + x1) / 2).toFixed(1) + '" y="' + (y + 14) + '" text-anchor="middle" style="fill:' + fill + ';font-weight:600">' + text + "</text>" : "";
+  let s = "";
+  const stepT = [0.1, 0.2, 0.5, 1].find((c) => (W - GL - GR) * c / span >= 46) || 2;
+  for (let v = Math.ceil(cur.T0 / stepT - 1e-6) * stepT; v <= cur.T1 + 1e-6; v += stepT) {
+    const x = X(v), zero = Math.abs(v) < 1e-6;
+    s += '<line x1="' + x.toFixed(1) + '" y1="24" x2="' + x.toFixed(1) + '" y2="' + (ROBOT + H + 6) + '" stroke="' + (zero ? "var(--graphite)" : "var(--floor)") + '" stroke-width="1"/>' +
+      (x > GL + 12 ? '<text class="t" x="' + x.toFixed(1) + '" y="16" text-anchor="middle"' + (zero ? ' style="fill:var(--ink);font-weight:600"' : "") + ">" + Math.round(v * 1000) + "</text>" : "");
+  }
+  s += '<text class="t" x="12" y="16">ms</text>' +
+    '<text x="12" y="' + (BALL + 14) + '" style="font-weight:600">Ball</text><text x="12" y="' + (ROBOT + 14) + '" style="font-weight:600">Pupper</text>';
+
+  // The ball: tracked from first sight to when it was due (or last seen); every picture it was found in is a mark.
+  const sight = [];
+  for (const f of Object.values(cur.frames)) f.ball.forEach((b, i) => { if (b >= 0) sight.push(f.t[i]); });
+  sight.sort((a, b) => a - b);
+  if (tm.first_seen != null) {
+    const end = tm.contact != null ? tm.contact : (sight.length ? sight[sight.length - 1] : tm.first_seen);
+    s += bar(X(tm.first_seen), X(Math.min(end, cur.T1)), BALL, "var(--ball-wash)");
+    for (const g of t.gaps) if (g.duration >= 0.08) {
+      const x0 = X(g.start), x1 = X(Math.min(g.end, cur.T1));
+      s += bar(x0, x1, BALL, "var(--unseen)", ' opacity=".85"') + inside(x0, x1, BALL, "out of sight " + Math.round(g.duration * 1000) + " ms", "#3B2A00");
+    }
+    for (const v of sight) if (v >= cur.T0 && v <= cur.T1) s += '<line x1="' + X(v).toFixed(1) + '" y1="' + (BALL + H - 6) + '" x2="' + X(v).toFixed(1) + '" y2="' + (BALL + H) + '" stroke="var(--ball-ink)" stroke-width="2"/>';
+  } else s += '<text x="' + (GL + 8) + '" y="' + (BALL + 14) + '" style="fill:var(--graphite)">No ball was tracked in this recording</text>';
+
+  // Pupper: making up its mind, then the command on its way, then moving.
+  const marks = [];
+  if (tm.first_seen != null) marks.push([tm.first_seen, "first seen", "var(--ball-ink)"]);
+  if (tm.decision != null) {
+    const d0 = tm.first_seen != null ? tm.first_seen : tm.decision, dur = (t.plan && t.plan.duration) || 0;
+    s += bar(X(d0), X(tm.decision), ROBOT, "var(--sheet)", ' stroke="var(--ink)" stroke-width="1.5"') + inside(X(d0), X(tm.decision), ROBOT, Math.round((tm.decision - d0) * 1000) + " ms to decide", "var(--ink)");
+    if (t.kind === "dodge" && tm.command != null) {
+      const moving = tm.body != null ? tm.body : tm.command, stopAt = Math.min(tm.command + dur, cur.T1);
+      if (tm.body != null) s += bar(X(tm.decision), X(tm.body), ROBOT, "var(--robot-wash)") + inside(X(tm.decision), X(tm.body), ROBOT, Math.round((tm.body - tm.decision) * 1000) + " ms", "var(--robot)");
+      s += bar(X(moving), X(stopAt), ROBOT, "var(--robot)") + inside(X(moving), X(stopAt), ROBOT, "moving", "#fff");
+      if (tm.body != null) marks.push([tm.body, "body moves", "var(--robot)"]);
+    } else if (t.kind === "dry") {
+      const stopAt = Math.min(tm.decision + dur, cur.T1);
+      s += bar(X(tm.decision), X(stopAt), ROBOT, "none", ' stroke="var(--robot)" stroke-width="1.5" stroke-dasharray="5 4"') + inside(X(tm.decision), X(stopAt), ROBOT, "would move (dry run)", "var(--robot)");
+    }
+    s += '<line x1="' + X(tm.decision).toFixed(1) + '" y1="26" x2="' + X(tm.decision).toFixed(1) + '" y2="' + (ROBOT + H + 4) + '" stroke="var(--decide)" stroke-width="2.5"/>';
+    marks.push([tm.decision, "decided", "var(--decide)"]);
+  } else s += '<text x="' + (GL + 8) + '" y="' + (ROBOT + 14) + '" style="fill:var(--graphite)">' + (t.kind === "seen" ? "No dodge" : "No decision in this recording") + "</text>";
+  if (tm.contact != null && tm.contact <= cur.T1) {
+    const x = X(tm.contact).toFixed(1);
+    s += '<line x1="' + x + '" y1="26" x2="' + x + '" y2="' + (ROBOT + H + 4) + '" stroke="var(--ink)" stroke-width="1.5" stroke-dasharray="3 3"/>';
+    marks.push([tm.contact, "ball due", "var(--ink)"]);
+  }
+  // Labels under the lanes, on as many rows as it takes for them not to collide.
+  marks.sort((a, b) => a[0] - b[0]);
+  const rows = [[110, []], [126, []], [142, []]];
+  let labels = "";
+  marks.forEach(([v, name, colour], i) => {
+    const x = X(v), text = name + " " + signed(v), need = text.length * 6.6 + 12;
+    const nextX = i + 1 < marks.length ? X(marks[i + 1][0]) : W + 999;
+    const left = (nextX - x < need || x + need > W - GR) && x - need > GL;       // write to the left of its line when the next one is close
+    const a = left ? x - need : x, b = left ? x : x + need;
+    const lane = rows.find((r) => r[1].every(([p, q]) => b < p || a > q)) || rows[rows.length - 1];
+    lane[1].push([a, b]);
+    s += '<line x1="' + x.toFixed(1) + '" y1="' + (ROBOT + H + 4) + '" x2="' + x.toFixed(1) + '" y2="' + (lane[0] + 3) + '" stroke="' + colour + '" stroke-width="1"/>';
+    labels += '<text class="m" x="' + (left ? x - 5 : x + 5).toFixed(1) + '" y="' + lane[0] + '" text-anchor="' + (left ? "end" : "start") + '" style="fill:' + colour + '">' + text + "</text>";
+  });
+  s += labels;
+  s += '<g id="head"><line x1="0" y1="20" x2="0" y2="150" stroke="var(--ink)" stroke-width="1.5"/><path d="M-6 20 h12 l-6 8 z" fill="var(--ink)"/></g>';
+  $("strip").innerHTML = s;
+  moveHead();
+}
+function moveHead() { const h = $("head"); if (h && cur) h.setAttribute("transform", "translate(" + X(cur.T).toFixed(1) + " 0)"); }
+function stripTime(e) {
+  const r = $("strip").getBoundingClientRect(), x = (e.clientX - r.left) / r.width * W;
+  return cur.T0 + (x - GL) / (W - GL - GR) * (cur.T1 - cur.T0);
+}
+let dragging = false;
+$("strip").addEventListener("pointerdown", (e) => { if (!cur) return; dragging = true; $("strip").setPointerCapture(e.pointerId); stop(); seekTo(stripTime(e)); });
+$("strip").addEventListener("pointermove", (e) => { if (dragging && cur) seekTo(stripTime(e)); });
+$("strip").addEventListener("pointerup", () => { dragging = false; });
+$("strip").addEventListener("pointercancel", () => { dragging = false; });
+
+// ---------------------------------------------------------------- the pictures
 let playing = false, lastTick = 0;
 function camOrder() {
   const c = cur.t.cameras;
@@ -362,7 +569,7 @@ function camOrder() {
 }
 function buildCams() {
   $("cams").innerHTML = camOrder().map((name) => {
-    const f = cur.frames[name], size = f.size || [1280, 720], w = 640, h = Math.round(640 * size[1] / size[0]);
+    const size = cur.frames[name].size || [1280, 720], w = 640, h = Math.round(640 * size[1] / size[0]);
     return '<div class="cam"><canvas id="cv-' + name + '" width="' + w + '" height="' + h + '"></canvas><span class="cap" id="cap-' + name + '"></span></div>';
   }).join("");
 }
@@ -378,22 +585,23 @@ function image(name, i) {
   }
   return img;
 }
+const STATE = {SEARCH: "looking", TRACK: "tracking", THREAT: "hit predicted", DODGE: "dodging", RECOVER: "settling"};
 function draw(name, i) {
   const me = cur, f = me.frames[name], cv = $("cv-" + name);
   if (!cv) return;
   const img = image(name, i);
   const paint = () => {
     if (cur !== me || me.shown[name] !== i) return;
-    const g = cv.getContext("2d");
+    const g = cv.getContext("2d"), on = $("overlay").checked;
     g.drawImage(img, 0, 0, cv.width, cv.height);
-    if ($("overlay").checked) {
+    if (on) {
       const k = cv.width / ((f.size || [img.naturalWidth])[0] || img.naturalWidth);
       f.blobs[i].forEach((b, j) => {
-        if (j === f.ball[i]) { g.strokeStyle = "#5fff3a"; g.lineWidth = 2.5; g.beginPath(); g.arc(b[0] * k, b[1] * k, Math.max(b[2], b[3]) * k / 2 + 6, 0, 7); g.stroke(); }
-        else { g.strokeStyle = "#ffd500"; g.lineWidth = 1.5; g.strokeRect((b[0] - b[2] / 2) * k - 3, (b[1] - b[3] / 2) * k - 3, b[2] * k + 6, b[3] * k + 6); }
+        if (j === f.ball[i]) { g.strokeStyle = "#7CF02A"; g.lineWidth = 2.5; g.beginPath(); g.arc(b[0] * k, b[1] * k, Math.max(b[2], b[3]) * k / 2 + 6, 0, 7); g.stroke(); }
+        else { g.strokeStyle = "#FFC21A"; g.lineWidth = 1.5; g.strokeRect((b[0] - b[2] / 2) * k - 3, (b[1] - b[3] / 2) * k - 3, b[2] * k + 6, b[3] * k + 6); }
       });
     }
-    $("cap-" + name).textContent = name + "  " + (f.t[i] >= 0 ? "+" : "") + Math.round(f.t[i] * 1000) + " ms" + ($("overlay").checked && f.state[i] ? "  " + f.state[i] : "");
+    $("cap-" + name).textContent = name + ", " + signed(f.t[i]) + " ms" + (on && f.state[i] ? ", " + (STATE[f.state[i]] || f.state[i]) : "");
   };
   if (img.complete && img.naturalWidth) paint(); else img.addEventListener("load", paint, {once: true});
   for (let n = 1; n <= 3; n++) if (i + n < f.t.length) image(name, i + n);
@@ -405,12 +613,10 @@ function show() {
     const i = frameAt(f, cur.T);
     if (cur.shown[name] !== i) { cur.shown[name] = i; draw(name, i); }
   }
-  $("seek").value = Math.round((cur.T - cur.T0) / (cur.T1 - cur.T0) * 1000);
-  $("clock").textContent = (cur.T >= 0 ? "+" : "") + Math.round(cur.T * 1000) + " ms";
-  moveCursor();
+  $("clock").textContent = signed(cur.T) + " ms";
+  moveHead();
 }
 function seekTo(T) { cur.T = Math.max(cur.T0, Math.min(cur.T1, T)); show(); }
-function redraw() { cur.shown = {}; show(); }
 function tick(now) {
   if (!playing || !cur) return;
   const dt = Math.min(0.1, (now - lastTick) / 1000); lastTick = now;
@@ -427,19 +633,25 @@ $("play").addEventListener("click", () => {
 });
 function stepFrame(dir) {
   if (!cur) return; stop();
-  const name = camOrder()[0], f = cur.frames[name], i = Math.max(0, Math.min(f.t.length - 1, frameAt(f, cur.T) + dir));
+  const f = cur.frames[camOrder()[0]], i = Math.max(0, Math.min(f.t.length - 1, frameAt(f, cur.T) + dir));
   seekTo(f.t[i] + 1e-4);
 }
 $("back").addEventListener("click", () => stepFrame(-1));
 $("fwd").addEventListener("click", () => stepFrame(1));
-$("seek").addEventListener("input", () => { if (cur) { stop(); seekTo(cur.T0 + $("seek").value / 1000 * (cur.T1 - cur.T0)); } });
-$("overlay").addEventListener("change", () => cur && redraw());
+$("overlay").addEventListener("change", () => { if (cur) { cur.shown = {}; show(); } });
 document.addEventListener("keydown", (e) => {
-  if (!cur || e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
-  if (e.key === " ") { e.preventDefault(); $("play").click(); }
-  if (e.key === "ArrowLeft") stepFrame(-1);
-  if (e.key === "ArrowRight") stepFrame(1);
+  const tag = e.target.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); step(-1); }
+  else if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); step(1); }
+  else if (!cur) return;
+  else if (e.key === " " && tag !== "BUTTON") { e.preventDefault(); $("play").click(); }
+  else if (e.key === "ArrowLeft") stepFrame(-1);
+  else if (e.key === "ArrowRight") stepFrame(1);
 });
+
+let resizing = 0;
+window.addEventListener("resize", () => { clearTimeout(resizing); resizing = setTimeout(() => { if (cur) renderStrip(); }, 150); });
 
 refresh();
 setInterval(refresh, 3000);
