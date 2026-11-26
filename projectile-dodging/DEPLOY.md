@@ -73,7 +73,7 @@ SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 ## 2. Check the code runs (no robot needed)
 
 ```bash
-python3 -m unittest discover -s tests     # expect: Ran 52 tests ... OK
+python3 -m unittest discover -s tests     # expect: Ran 56 tests ... OK
 python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7    # simulated 2 m throws; takes about a minute on the Pi
 ```
 
@@ -352,24 +352,51 @@ Now the first step that **moves the robot**. Stand it up:
 bash robot/walk.sh                  # stands up in gemini_walk (or press X on the joystick: slower controller)
 ```
 
-and measure how it really accelerates, gently first:
+and check how it takes the kind of burst a dodge sends, gently first:
 
 ```bash
 python3 tools/step_response.py --vy 0.5
 python3 tools/step_response.py --vx 0.6
 python3 tools/step_response.py --vx 1.0
-python3 tools/step_response.py --vx 1.0 --vy 0.5 --write     # the kind of move a dodge makes; saves the lag
+python3 tools/step_response.py --vx 1.0 --vy 0.5      # the kind of move a dodge makes
 python3 tools/step_response.py --vx -0.8
 ```
 
-Each run prints the delay before the robot moves, the time to cover
-0.15–0.30 m, and the peak body tilt. Stop raising the speed if the tilt passes
-about 35° or the robot stumbles. Then put what you measured into the simulation
-to see what to expect:
+Each run asks you to type `go`, moves the robot for half a second, and prints
+two measurements:
+
+- **delay before the body reacts**, read from the IMU's turn-rate sensor. The
+  config assumes 0.12 s (`escape.react_s`); the tool says so if yours is later.
+- **peak body tilt.** Stop raising the speed if it passes about 35° or the
+  robot stumbles.
+
+It does **not** measure how far the robot got. Pupper's IMU sends orientation
+and turn rate but no acceleration, so distance cannot be read from it, and the
+tool says "not measured" rather than guess. The config's lag of 0.20 s
+(`escape.accel_lag_s`, how quickly the robot gets up to speed) stays in use,
+and stage 8 is the real test of it.
+
+**Optional: measure the lag with a phone.** Put two tape marks on the floor,
+0.15 m and 0.30 m ahead of the leading foot in the direction of the burst. Film
+a `--vx 1.0 --vy 0.5` burst from the side in slow motion. In the video, count
+the time from the robot's first movement until that foot reaches each mark
+(frames divided by the frame rate, e.g. 74 frames at 240 fps = 0.31 s). Then:
 
 ```bash
-python3 tools/sim_report.py --dist 1.8 2.0 --rise 0.4 0.7 --lag <fitted lag> --delay <measured delay>
+python3 tools/step_response.py --vx 1.0 --vy 0.5 --timed 0.15:0.31 0.30:0.47 --write
+python3 tools/sim_report.py --dist 1.8 2.0 --rise 0.4 0.7 --lag <fitted lag>
 ```
+
+The first line moves nothing: it fits the lag to your two timings and saves it.
+The second shows the dodge rates to expect with that lag (the table at the top
+of this guide assumed 0.20 s).
+
+| Message | Meaning | What to do |
+|---|---|---|
+| `delay before the body reacts: could not tell` | The body never turned noticeably | If the robot visibly moved, ignore it. If it stood still, it is not in a walking controller: `bash robot/walk.sh`, then `check_setup.py` |
+| `The body reacts later than the config assumes` | Reaction slower than 0.12 s | Put the suggested value under `escape:` as `react_s` in a `config/calib/` file |
+| `These timings do not fit` | The video timings are impossible for that speed | Recount; time from the first movement, not from pressing Enter |
+| `note: the response lag of 0.79 s ... is being ignored` | A file saved by an earlier version of this tool | `rm config/calib/step_response.yaml` |
 
 If the robot was steady at 1.0 m/s and you want more margin, try
 `--vx 1.5` / `--vx -1.5`, and if those are steady too, raise `vx_forward` and
@@ -423,7 +450,7 @@ Each dodge is announced on `/dodge/event` (JSON) so a planner can re-plan.
 | Dodges balls that would miss by a lot | Prediction too generous | Lower `threat.k_sigma` or `threat.sigma_cap_m` |
 | Reacts too late from the front | Too little time in the air, or the fisheye is slow | Lob a little higher; `bash robot/start.sh --fisheye-fps 60` |
 | Misses throws from straight behind | The ball climbs out of the top of the rear cameras' view | Lower arc: peak at chest height. Do not throw from closer than 2 m |
-| Reacts in time but does not get clear | Robot slower than the config assumes | Stage 7 numbers into `escape.accel_lag_s` / `react_s`; raise `vx_*` if steady |
+| Reacts in time but does not get clear | Robot slower than the config assumes | Raise `escape.accel_lag_s` in steps of 0.05 (or measure it with the stage 7 video), set `react_s` from stage 7; raise `vx_*` if steady |
 | Moves the wrong way | Left/right swapped or a camera is rotated | Stage 4 and the bearing table in stage 5 |
 | Robot stumbles or trips the tilt e-stop when dodging | Command too aggressive | Lower `escape.vx_forward` / `vx_backward`, shorten `max_duration_s` |
 | Robot twitches twice per throw | Ball bounces back into view | Raise `fsm.refractory_s` |

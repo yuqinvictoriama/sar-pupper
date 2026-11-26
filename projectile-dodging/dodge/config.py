@@ -9,6 +9,7 @@ import sys
 import yaml
 
 COLOUR_FIT = 2      # how colour limits are fitted; a calibration file made for an earlier way no longer applies
+MAX_SAVED_LAG_S = 0.6   # a saved response lag this long is not a measurement (see load_config)
 _told = set()
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -46,6 +47,15 @@ def load_config(path: str | None = None, calib_dir: str | None = None, use_calib
                         _told.add(name)
                         print("note: the colour calibration in %s is from an earlier version and is being ignored. "
                               "Redo it:  python3 tools/calibrate_color.py %s" % (name, cam), file=sys.stderr)
+            lag = (data.get("escape") or {}).get("accel_lag_s")
+            if isinstance(lag, (int, float)) and lag >= MAX_SAVED_LAG_S:
+                # Saved by a step-response run that measured nothing: it stored the end of its
+                # search range. Planning with it would make every dodge burst far too long.
+                del data["escape"]["accel_lag_s"]
+                if (name, "lag") not in _told:
+                    _told.add((name, "lag"))
+                    print("note: the response lag of %.2f s in %s is not a real measurement and is being ignored. "
+                          "Delete that file:  rm %s" % (lag, name, name), file=sys.stderr)
             cfg = deep_merge(cfg, data)
     cfg["_path"] = os.path.abspath(path)
     return cfg

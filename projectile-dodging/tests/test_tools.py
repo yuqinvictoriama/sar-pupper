@@ -149,6 +149,50 @@ class ExtrinsicsTests(unittest.TestCase):
         self.assertLess(after, before)
 
 
+
+class StepResponseTests(unittest.TestCase):
+    """step_response: Pupper's IMU sends no acceleration, so the tool must not invent a distance or a lag."""
+
+    def test_an_imu_that_sends_zeros_for_acceleration_is_recognised(self):
+        import step_response as sr
+        self.assertFalse(sr.has_acceleration(np.zeros((400, 3))))
+        self.assertTrue(sr.has_acceleration(np.array([[0.0, 0.0, 9.8], [0.1, 0.0, 9.7]])))
+
+    def test_the_reaction_delay_is_read_from_the_turn_rate(self):
+        import step_response as sr
+        rng = np.random.default_rng(3)
+        t = np.arange(0.0, 4.0, 0.004)
+        t_cmd, reacts = 2.0, 0.09
+        gyro = rng.normal(0, 0.03, (len(t), 3))                       # standing: small wobble
+        gyro[t >= t_cmd + reacts, 1] += 1.2                           # the body pitches as the legs push off
+        delay, _ = sr.reaction_delay(t, gyro, t_cmd)
+        self.assertAlmostEqual(delay, reacts, delta=0.012)
+        still, _ = sr.reaction_delay(t, rng.normal(0, 0.03, (len(t), 3)), t_cmd)
+        self.assertTrue(math.isnan(still))                            # a robot that never moved gives no delay
+
+    def test_the_lag_is_fitted_to_timings_from_a_video(self):
+        import step_response as sr
+        from dodge.escape import lag_time
+        speed = math.hypot(1.0, 0.5)
+        points = [(d, lag_time(d, speed, 0.25)) for d in (0.15, 0.30)]
+        lag, err, problem = sr.fit_lag(points, speed)
+        self.assertIsNone(problem)
+        self.assertAlmostEqual(lag, 0.25, delta=0.011)
+        self.assertLess(err, 0.01)
+        self.assertIsNotNone(sr.fit_lag([(0.30, 0.10)], speed)[2])    # 3 m/s: faster than commanded
+        self.assertIsNotNone(sr.fit_lag([(0.15, 1.5)], speed)[2])     # slower than any sensible lag
+        self.assertEqual(sr.parse_timed(["0.15:0.31", "0.30:0.47"]), [(0.15, 0.31), (0.30, 0.47)])
+        with self.assertRaises(SystemExit):
+            sr.parse_timed(["0.15"])
+
+    def test_a_saved_lag_that_is_not_a_measurement_is_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            save_calib("step_response", {"escape": {"accel_lag_s": 0.79}}, calib_dir=d)
+            self.assertAlmostEqual(load_config(calib_dir=d)["escape"]["accel_lag_s"], 0.20)
+            save_calib("step_response", {"escape": {"accel_lag_s": 0.24}}, calib_dir=d)
+            self.assertAlmostEqual(load_config(calib_dir=d)["escape"]["accel_lag_s"], 0.24)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
