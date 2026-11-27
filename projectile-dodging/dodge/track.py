@@ -387,6 +387,8 @@ class Tracker:
         """Two looks by the rear cameras that show a ball climbing like a lob: clearly up, hardly sideways,
         the same size. Straight behind the robot those cameras see only 30 degrees above the horizontal,
         and a lob is above that a tenth of a second after it is thrown: two looks is often all there is."""
+        if len(tr.history) < 2:
+            return False        # the first look was long ago and has been let go (a gap in the pictures): no pair to judge
         a, b = tr.history[-2], tr.history[-1]
         if not (a[2] in self.climber_cams and b[2] in self.climber_cams and a[3] and b[3]) or b[0] - a[0] < 0.02:
             return False

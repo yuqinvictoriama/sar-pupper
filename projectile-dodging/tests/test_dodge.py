@@ -737,6 +737,17 @@ class BearingTests(unittest.TestCase):
                 core.process_measurements("elp_right", now, [], now)
             self.assertEqual([e for e in core.pop_events() if e["event"] == "dodge"], [])
 
+    def test_a_second_sighting_after_a_gap_in_the_pictures_does_not_crash_the_tracker(self):
+        # Found by replaying the Pupper's recordings (21 of 339 stopped here): when the pictures stall for
+        # more than the 0.35 s a track remembers, its first look is gone by the time the second arrives.
+        from dodge.measure import Measurement
+        from dodge.track import Tracker
+        tracker = Tracker(CFG["tracker"], CFG["ball"])
+        ray = np.array([-0.8, 0.5, 0.2]) / np.linalg.norm([-0.8, 0.5, 0.2])
+        for t in (10.0, 10.5):
+            tracker.update(t, [Measurement("elp_left", np.zeros(3), ray, 0.03, 2.4, 0.01, 0.1, False)])
+        self.assertEqual([(tr.hits, tr.climber) for tr in tracker.tracks], [(2, False)])
+
     def test_a_ball_on_its_way_is_followed_until_it_is_due_and_dodged_without_a_surer_look(self):
         # Three looks shared between the two rear cameras, then out of sight: the sideways estimate is
         # still vague, but no better look is coming, so it must not wait for one.
