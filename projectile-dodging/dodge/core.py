@@ -89,6 +89,7 @@ class DodgeCore:
         self.still_gyro = float(fc.get("still_gyro_rad_s", 0.6))
         self.abort_tilt = float(fc.get("abort_tilt_deg", 40.0))
         self.ramp_out = max(1e-3, float(cfg["escape"].get("ramp_out_s", 0.2)))
+        self.unseen_fire = float(cfg["threat"].get("unseen_fire_s", 0.12))   # out of sight this long: waiting will not sharpen the estimate
 
         self.lock = threading.RLock()
         self.armed = bool(armed)
@@ -214,7 +215,7 @@ class DodgeCore:
                             closest_m=round(f["closest_m"], 2), verdicts=f["verdicts"], threat=f["last"])
 
     def _evaluate(self, t_now: float) -> bool:
-        tracks = self.tracker.confirmed()
+        tracks = self.tracker.confirmed() + [tr for tr in self.tracker.tracks if tr.climber and not tr.confirmed]
         if self.state in (State.DODGE, State.RECOVER):
             if self._flight is not None:
                 self._flight["dodged"] = True
@@ -261,9 +262,9 @@ class DodgeCore:
             if self.threat_counts[th.track_id] < self.confirm_cycles:
                 self.hold = "hit predicted, waiting for a second picture to agree"
                 return False                              # want the verdict repeated first
-            if not th.confident:
+            if not th.confident and th.unseen_s < self.unseen_fire:
                 self.hold = "hit predicted, but where it passes is still uncertain"
-                return False                              # sideways prediction still vague
+                return False                              # sideways prediction still vague, and more looks are coming
         if not self.can_dodge:
             self.hold = "cannot dodge: " + self.cannot_reason
             self._event(t_now, "cannot_dodge", reason=self.cannot_reason, threat=th.summary())

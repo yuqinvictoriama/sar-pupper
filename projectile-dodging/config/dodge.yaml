@@ -150,6 +150,12 @@ tracker:
                            # are taken a new blob replaces the weakest track; a ball seen in flight is never replaced
   max_range_m: 8.0
   use_drag: true
+  # Straight behind the robot the rear cameras see only 30 degrees above the horizontal, and a lob is above
+  # that a tenth of a second after it is thrown. A ball they saw twice, climbing clearly (two_look_min_climb_deg)
+  # and hardly turning, is kept this long and judged on those two looks if no third comes. [] = off
+  two_look_cameras: [elp_left, elp_right]
+  two_look_min_climb_deg: 3.0
+  two_look_coast_s: 0.35
 
 threat:
   horizon_s: 1.6
@@ -170,6 +176,11 @@ threat:
   bearing_max_closing_speed: 7.0   # m/s. A ball coming faster than this from 2.5 m arrives in under 0.36 s, less than
                            # the robot needs to get clear; and the slower the limit, the less a still thing's
                            # flicker can pass for a climb
+  bearing_pool: [[elp_left, elp_right]]   # cameras whose looks are put together for the direction fit. Straight behind
+                           # the robot both rear cameras see the ball, for a tenth of a second after it is thrown
+  two_look_wait_s: 0.07    # a two-look ball (tracker.two_look_cameras) is judged once a third look is this long overdue
+  unseen_fire_s: 0.12      # a threatening ball out of sight this long is dodged without waiting for a surer estimate
+  min_span_s: 0.045        # the three looks must span at least this long
   min_climb: 0.02          # tan(elevation) must have risen at least this much over the looks (about 1.1 degrees)
   loom_min: 0.3            # where the ball should have come nearer by this share of its range between the looks ...
   loom_support: 0.3        # ... its size must show at least this share of that approach (a ball lifted by hand does not)

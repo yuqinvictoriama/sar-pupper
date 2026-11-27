@@ -40,6 +40,8 @@ class Track:
         self.hits = 1
         self.confirmed = False
         self.flying = False     # seen moving like a thrown ball (set by the tracker, and it stays set)
+        self.climber = False    # seen twice by the rear cameras, climbing like a lob: may be judged on two looks
+        self.keep_until = 0.0   # judged a threat: followed on its arc until this time, seen or not
         self.cams = {cam}
         self.last_cam = cam
         # recent raw measurements: (t, point in the world frame, camera, range trustworthy, ray from the lens, range, lens position)
@@ -99,7 +101,7 @@ class Track:
         self.history.append(self._look(t, z, cam, good, ray, origin, range_m))
         self.history = [h for h in self.history if h[0] >= t - window][-24:]
 
-    def hit_course(self, min_looks: int = 3, min_span: float = 0.06, drop: float = 0.0, arrive=None):
+    def hit_course(self, min_looks: int = 3, min_span: float = 0.06, drop: float = 0.0, arrive=None, pool=()):
         """How the ball's BEARING has moved in the one camera that has seen it most, or None if no camera
         has seen it min_looks times yet.
 
@@ -114,14 +116,21 @@ class Track:
         top of it), which bends the climb in the last quarter second. Given (speed toward the robot,
         time of arrival) from a first pass, the elevations are taken as seen from that point.
 
+        pool: groups of cameras whose looks are put together for the DIRECTION fit (their ranges are
+        not: each camera's range has its own error, so ranges come from the one camera of the group
+        with most trustworthy looks). The two rear cameras are such a group: straight behind the robot
+        both see the ball, at the edge of their pictures, where it climbs out of view within a tenth
+        of a second of being thrown. Together they get twice the looks in that time.
+
         Returns a dict: cam, n, span, t (time of the last look), az and q = tan(elevation) at t with
         their rates az_dot and q_dot, the scatter of each fit (sig_az_dot, sig_q_dot, rms_az, rms_q),
         the looks' times and horizontal ranges (ts, r_h; from looks whose range can be trusted when
         there are two or more), and the lens position.
         """
+        group = {name: tuple(g) for g in pool for name in g}
         by_cam = {}
         for h in self.history:
-            by_cam.setdefault(h[2], []).append(h)
+            by_cam.setdefault(group.get(h[2], h[2]), []).append(h)
         best = None
         for looks in by_cam.values():
             span = looks[-1][0] - looks[0][0]
@@ -147,8 +156,15 @@ class Track:
         rms_az = float(np.sqrt(np.mean((az - az.mean() - az_dot * tc) ** 2)))
         rms_q = float(np.sqrt(np.mean((q - q.mean() - q_dot * tc) ** 2)))
         good = [i for i, h in enumerate(looks) if h[3]]
-        use = good if len(good) >= 2 else list(range(len(looks)))
-        return {"cam": looks[0][2], "n": len(looks), "span": float(ts[-1] - ts[0]), "t": float(ts[-1]),
+        cams = {h[2] for h in looks}
+        if len(cams) > 1:                              # pooled: ranges from one camera only
+            main = max(cams, key=lambda c: (sum(1 for i in good if looks[i][2] == c), sum(1 for h in looks if h[2] == c)))
+            good = [i for i in good if looks[i][2] == main]
+            rest = [i for i, h in enumerate(looks) if h[2] == main]
+        else:
+            rest = list(range(len(looks)))
+        use = good if len(good) >= 2 else rest
+        return {"cam": "+".join(sorted(cams)), "n": len(looks), "span": float(ts[-1] - ts[0]), "t": float(ts[-1]),
                 "az": float(az.mean() + az_dot * tc[-1]), "q": float(q.mean() + q_dot * tc[-1]),
                 "t_mid": float(ts.mean()), "az_mid": float(az.mean()), "q_mid": float(q.mean()),
                 "az_dot": az_dot, "q_dot": q_dot, "rms_az": rms_az, "rms_q": rms_q,
@@ -247,6 +263,9 @@ class Tracker:
         self.flight_travel = float(cfg.get("flight_travel_m", 0.15))
         self.tent_coast = float(cfg.get("tentative_coast_s", 0.12))
         self.max_tracks = int(cfg.get("max_tracks", 24))
+        self.climber_cams = set(cfg.get("two_look_cameras", ["elp_left", "elp_right"]))
+        self.climber_coast = float(cfg.get("two_look_coast_s", 0.35))
+        self.climber_min = math.tan(math.radians(float(cfg.get("two_look_min_climb_deg", 3.0))))
         self.max_range = float(cfg.get("max_range_m", 8.0))
         self.drag_k = drag_coefficient(ball) if cfg.get("use_drag", True) else 0.0
         self.tracks: list = []
@@ -344,6 +363,8 @@ class Tracker:
             tr.last_cam = m.cam
             tr.remember(t, z, m.cam, not (getattr(m, "truncated", False) or getattr(m, "vague", False)),
                         ray=items[mi][3], origin=items[mi][4], range_m=m.range_m)
+            if tr.hits == 2 and self.climber_cams:
+                tr.climber = self._climbs(tr)
             if tr.hits >= self.confirm_hits:
                 tr.confirmed = True
                 if not tr.flying and tr.travel_m >= self.flight_travel:
@@ -361,6 +382,22 @@ class Tracker:
             self.tracks.append(Track(t, z, Rm, self.speed_sigma, m.cam,
                                      not (getattr(m, "truncated", False) or getattr(m, "vague", False)),
                                      ray=_ray, origin=_origin, range_m=m.range_m))
+
+    def _climbs(self, tr: Track) -> bool:
+        """Two looks by the rear cameras that show a ball climbing like a lob: clearly up, hardly sideways,
+        the same size. Straight behind the robot those cameras see only 30 degrees above the horizontal,
+        and a lob is above that a tenth of a second after it is thrown: two looks is often all there is."""
+        a, b = tr.history[-2], tr.history[-1]
+        if not (a[2] in self.climber_cams and b[2] in self.climber_cams and a[3] and b[3]) or b[0] - a[0] < 0.02:
+            return False
+        fa, fb = float(np.hypot(a[4][0], a[4][1])), float(np.hypot(b[4][0], b[4][1]))
+        if min(fa, fb) < 0.1:
+            return False
+        climb = b[4][2] / fb - a[4][2] / fa
+        turn = abs(math.atan2(a[4][0] * b[4][1] - a[4][1] * b[4][0], a[4][0] * b[4][0] + a[4][1] * b[4][1]))
+        same_cam = a[2] == b[2]
+        return bool(climb >= self.climber_min and turn <= 0.5 * climb + 0.01
+                    and (not same_cam or 0.75 <= b[5] / max(a[5], 1e-6) <= 1.2))
 
     def _make_room(self, t: float) -> bool:
         """With every slot taken, drop the track least likely to be a ball in flight. False if none may go.
@@ -394,7 +431,10 @@ class Tracker:
             # A ball in flight is followed on its arc for longer while unseen: a lob leaves the top of a
             # rear camera's picture in mid-flight and comes down on the robot from above.
             limit = (self.flight_coast if tr.flying else self.max_coast) if tr.confirmed else self.tent_coast
-            if t_now - tr.t_last <= limit and np.isfinite(tr.x).all():
+            if not tr.confirmed and tr.climber:
+                limit = self.climber_coast
+            # ... and a ball judged to be on its way to the robot is kept until it is due, seen or not.
+            if (t_now - tr.t_last <= limit or t_now <= tr.keep_until) and np.isfinite(tr.x).all():
                 keep.append(tr)
         self.tracks = keep
 

@@ -32,6 +32,7 @@ class Threat:
     closing_speed: float = 0.0
     range_m: float = 0.0
     speed: float = 0.0
+    unseen_s: float = 0.0              # how long since a camera last saw it
 
     def summary(self) -> dict:
         return {"track": self.track_id, "threat": self.is_threat, "confident": self.confident, "reason": self.reason,
@@ -66,6 +67,9 @@ class ThreatAssessor:
         self.camera_support = float(cfg.get("camera_support", 0.4))
         self.use_bearing = bool(cfg.get("use_bearing", True))
         self.min_climb = float(cfg.get("min_climb", 0.02))
+        self.min_span = float(cfg.get("min_span_s", 0.045))
+        self.two_look_wait = float(cfg.get("two_look_wait_s", 0.07))
+        self.pool = tuple(tuple(g) for g in cfg.get("bearing_pool", [["elp_left", "elp_right"]]))
         self.bearing_max_closing = float(cfg.get("bearing_max_closing_speed", 7.0))
         self.aim_z = 0.0          # height the ball is taken to be aimed at: the middle of the body (base_link origin)
         self.loom_min = float(cfg.get("loom_min", 0.3))
@@ -94,13 +98,19 @@ class ThreatAssessor:
         th = Threat(track.id)
         if R_wb is None:
             R_wb = np.eye(3)
-        if not track.confirmed or track.hits < self.min_hits:
+        th.unseen_s = t_now - track.t_last
+        # A ball the rear cameras saw twice, climbing, and then not again went up out of their sight
+        # (see Tracker._climbs): it is judged on those two looks once a third is overdue.
+        two = bool(getattr(track, "climber", False)) and track.hits == 2 and th.unseen_s >= self.two_look_wait
+        if not two and (not track.confirmed or track.hits < self.min_hits):
             th.reason = "too few detections"
             return th
-        if track.age < self.min_age:
+        if track.age < (0.02 if two else self.min_age):
             th.reason = "too new"
             return th
-        hc = track.hit_course()
+        looks = 2 if two else 3
+        span = 0.02 if two else self.min_span
+        hc = track.hit_course(min_looks=looks, min_span=span, pool=self.pool)
         if hc is None:
             th.reason = "not yet seen three times by one camera"
             return th
@@ -108,7 +118,7 @@ class ThreatAssessor:
         if drop > 0.0 and hc["q_dot"] >= G / (4.0 * self.bearing_max_closing) and hc["q_dot"] * hc["span"] >= 0.5 * self.min_climb:
             # second pass: the same looks, as seen from the point on the body the ball is taken to be aimed at
             v0 = G / (2.0 * hc["q_dot"])
-            hc = track.hit_course(drop=drop, arrive=(v0, float(np.median(hc["ts"] + hc["r_h"] / v0))))
+            hc = track.hit_course(min_looks=looks, min_span=span, pool=self.pool, drop=drop, arrive=(v0, float(np.median(hc["ts"] + hc["r_h"] / v0))))
         q_dot, az_dot = hc["q_dot"], hc["az_dot"]
         r_mid = float(np.median(hc["r_h"]))
         th.range_m = r_mid * math.sqrt(1.0 + hc["q"] ** 2)
@@ -187,7 +197,10 @@ class ThreatAssessor:
         # How sure: the sideways miss is az_dot x v_c x s^2, so its scatter follows the azimuth fit's.
         th.sigma_lat = float(hc["sig_az_dot"] * v_c * s_mid * s_mid + max(hc["rms_az"], 0.004) * D)
         th.sigma_miss = th.sigma_lat
-        return self._verdict(th)
+        th = self._verdict(th)
+        if th.is_threat:
+            track.keep_until = max(getattr(track, "keep_until", 0.0), t_now + th.tau + 0.1)
+        return th
 
     def _assess_by_size(self, track, t_now: float, tracker, R_wb: np.ndarray | None = None,
                robot_vel_w: np.ndarray | None = None) -> Threat:

@@ -691,6 +691,69 @@ class BearingTests(unittest.TestCase):
         self.assertFalse(th.is_threat, th.reason)
         self.assertIn("not getting bigger", th.reason)
 
+    def feed(self, core, p0, v0, cams, n, dt=0.045, t0=30.0):
+        """Give the core n looks of a ball in free flight, by the named cameras in turn. Returns the time of the last."""
+        from dodge.measure import Measurement
+        for i in range(n):
+            t = t0 + i * dt
+            p = np.asarray(p0, float) + np.asarray(v0, float) * (i * dt) + np.array([0.0, 0.0, -0.5 * 9.81 * (i * dt) ** 2])
+            d = p - self.LENS
+            r = float(np.linalg.norm(d))
+            cam = cams[i % len(cams)]
+            core.process_measurements(cam, t, [Measurement(cam, self.LENS.copy(), d / r, 0.074 / r, r, 0.01, 0.04 * r, False)], t)
+        return t0 + (n - 1) * dt
+
+    def test_a_lob_from_straight_behind_seen_only_twice_is_still_dodged(self):
+        # Straight behind, the rear cameras see only 30 degrees up: a lob is out of their sight a tenth of a
+        # second after it is thrown. Two looks, then nothing, must be enough.
+        from dodge.core import DodgeCore
+        p0, v0 = self.lob(2.3, 180.0, 1.05)
+        core = DodgeCore(CFG, armed=True)
+        core.set_can_dodge(True)
+        t = self.feed(core, p0, v0, ["elp_left"], 2)
+        fired_at = None
+        for k in range(1, 30):                                   # the other cameras' pictures keep coming, without the ball
+            now = t + 0.016 * k
+            if core.process_measurements("fisheye", now, [], now) and fired_at is None:
+                fired_at = now - t
+        self.assertIsNotNone(fired_at, "no dodge")
+        self.assertLess(fired_at, 0.25)
+        self.assertGreaterEqual(fired_at, 0.06, "it must first give a third look the chance to come")
+        dodge = [e for e in core.pop_events() if e["event"] == "dodge"][0]
+        self.assertAlmostEqual(abs(dodge["threat"]["bearing_deg"]), 180.0, delta=15.0)
+        self.assertEqual(dodge["plan"]["vx"], 0.0)               # from behind it can only sidestep
+
+    def test_two_looks_that_do_not_climb_like_a_lob_are_not_judged(self):
+        from dodge.core import DodgeCore
+        for p0, v0, cams in (((-2.3, 0.0, 0.6), (0.0, 0.0, 0.0), ["elp_left"]),                 # a still thing
+                             ((-2.3, 0.0, 0.6), (0.0, 2.5, 0.3), ["elp_left"]),                 # going sideways
+                             ((2.3, 0.0, 0.6), (-2.2, 0.0, 4.6), ["fisheye"])):                 # in front: the fisheye sees all of a lob
+            core = DodgeCore(CFG, armed=True)
+            core.set_can_dodge(True)
+            t = self.feed(core, p0, v0, cams, 2)
+            self.assertFalse(any(tr.climber for tr in core.tracker.tracks))
+            for k in range(1, 30):
+                now = t + 0.016 * k
+                core.process_measurements("elp_right", now, [], now)
+            self.assertEqual([e for e in core.pop_events() if e["event"] == "dodge"], [])
+
+    def test_a_ball_on_its_way_is_followed_until_it_is_due_and_dodged_without_a_surer_look(self):
+        # Three looks shared between the two rear cameras, then out of sight: the sideways estimate is
+        # still vague, but no better look is coming, so it must not wait for one.
+        from dodge.core import DodgeCore
+        p0, v0 = self.lob(2.6, 178.0, 1.1)
+        core = DodgeCore(CFG, armed=True)
+        core.set_can_dodge(True)
+        t = self.feed(core, p0, v0, ["elp_left", "elp_right"], 3, dt=0.024)
+        fired = False
+        for k in range(1, 40):
+            now = t + 0.016 * k
+            fired = core.process_measurements("fisheye", now, [], now) or fired
+            if fired:
+                break
+        self.assertTrue(fired)
+        self.assertLess(now - t, 0.35)
+
     def test_the_time_it_gives_does_not_depend_on_reading_the_size_right(self):
         # The same lob with every range read 15 % too far (a blob that comes out small): 15 % later, no more.
         p0, v0 = self.lob(2.5, 150.0, 0.9)
