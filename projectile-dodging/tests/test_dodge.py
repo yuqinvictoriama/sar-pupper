@@ -162,7 +162,7 @@ class DetectAndMeasureTests(unittest.TestCase):
                     self.assertAlmostEqual(c.u, d.u, places=9)
                     self.assertAlmostEqual(c.v, d.v, places=9)
 
-    def test_colour_all_over_the_picture_falls_back_to_a_direct_search(self):
+    def test_hundreds_of_specks_do_not_hide_the_ball_or_swamp_the_search(self):
         cam = self.cams["elp_left"]
         img, _ = render_ball(cam, [-1.5, 1.2, 0.6])
         rng = np.random.default_rng(4)
@@ -170,10 +170,21 @@ class DetectAndMeasureTests(unittest.TestCase):
             x, y = int(rng.integers(0, cam.model.width - 6)), int(rng.integers(0, cam.model.height // 2))
             img[y:y + 5, x:x + 5] = BALL_BGR
         det = BallDetector.for_camera(cam.cfg, CFG["detector"])
+        places = det._coarse_windows(img, 0, 0, cam.model.width, cam.model.height)
+        self.assertIsNotNone(places)                                      # it does not give up ...
+        self.assertLessEqual(len(places), det.max_places)                 # ... and looks only at the largest places
+        direct = BallDetector.for_camera(cam.cfg, dict(CFG["detector"], coarse_step=1))
+        ball, found = direct.detect(img)[0], det.detect(img)[0]           # the ball is the largest thing there
+        self.assertEqual((found.x, found.y, found.area), (ball.x, ball.y, ball.area))
+
+    def test_a_picture_mostly_ball_coloured_falls_back_to_a_direct_search(self):
+        cam = self.cams["elp_left"]
+        img = np.full((cam.model.height, cam.model.width, 3), 110, dtype=np.uint8)
+        img[:, :900] = BALL_BGR
+        det = BallDetector.for_camera(cam.cfg, CFG["detector"])
         self.assertIsNone(det._coarse_windows(img, 0, 0, cam.model.width, cam.model.height))
         direct = BallDetector.for_camera(cam.cfg, dict(CFG["detector"], coarse_step=1))
         self.assertEqual([(b.x, b.y, b.area) for b in det.detect(img)], [(b.x, b.y, b.area) for b in direct.detect(img)])
-        self.assertGreater(det._coarse_off, 0)                            # and it does not try again straight away
 
     def test_green_clothing_is_not_a_ball(self):
         cam = self.cams["elp_left"]

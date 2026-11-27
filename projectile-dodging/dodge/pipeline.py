@@ -212,27 +212,38 @@ class FramePipeline:
             if bgr is None:
                 raise ValueError("%s: a picture that will not decode" % self.name)
             return self.process(t_capture, bgr, (time.time() - t0) * 1000.0)
-        t1 = time.time()
-        self._look(small)
-        candidates = det.coarse_candidates(small, full_w, full_h)
-        if candidates is None:                      # colour all over: the plain way
+        decode = [time.time() - t0]
+
+        def full():
             t2 = time.time()
             bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
-            return self.process(t_capture, bgr, (t1 - t0 + time.time() - t2) * 1000.0)
-        t = t_capture + self.time_offset
+            decode[0] += time.time() - t2
+            return bgr
         self.frame_no += 1
-        moving, n_still = self.still.filter(t, candidates)
-        decode_s = t1 - t0
-        blobs = []
-        if moving:
-            self._hot = self.hot_frames
-            t2 = time.time()
-            bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
-            decode_s += time.time() - t2
-            blobs = det.measure_candidates(bgr, moving)
+        self._look(small)
+        t = t_capture + self.time_offset
+        blobs, n_still = self._search(t, small, full)
         done = time.time()
         return FrameResult(self.name, t, t_capture, (full_w, full_h), blobs, False, n_still,
-                           (done - t0 - decode_s) * 1000.0, decode_s * 1000.0, t0, done)
+                           (done - t0 - decode[0]) * 1000.0, decode[0] * 1000.0, t0, done)
+
+    def _search(self, t: float, small, full):
+        """The whole-picture search: (blobs to pass on, number left out as still).
+
+        small is the picture at 1/coarse_step size; full() returns the full picture, and is only called if
+        the small one shows something worth measuring.
+        """
+        det = self.detector
+        full_w, full_h = self.camera.model.width, self.camera.model.height
+        candidates = det.coarse_candidates(small, full_w, full_h)
+        if candidates is None:                      # colour all over the picture: search all of it directly
+            blobs, n_still = self.still.filter(t, det.detect(full()))
+        else:
+            moving, n_still = self.still.filter(t, candidates)
+            blobs = det.measure_candidates(full(), moving) if moving else []
+        if blobs:
+            self._hot = self.hot_frames
+        return blobs, n_still
 
     def _look(self, picture) -> None:
         """Remember how bright the pictures are (a camera that is too dark finds nothing)."""
@@ -240,25 +251,30 @@ class FramePipeline:
             self.brightness = float(picture[::8, ::8].mean())
 
     def process(self, t_capture: float, bgr, decode_ms: float = 0.0) -> FrameResult:
+        """One picture, already decoded."""
         t0 = time.time()
         t = t_capture + self.time_offset
         size = (bgr.shape[1], bgr.shape[0])
+        det = self.detector
         self._look(bgr)
         self.frame_no += 1
-        blobs, roi = None, False
+        blobs, roi, n_still = None, False, 0
         hint = self.hint
         if self.roi_tracking and hint is not None and self.frame_no % self.full_every != 0:
             pred = predict_pixel(self.camera_for(size), hint, t, self.det_cfg)
             if pred is not None:
                 u, v, half = pred
-                blobs = self.detector.detect(bgr, roi=(u - half, v - half, u + half, v + half))
+                blobs = det.detect(bgr, roi=(u - half, v - half, u + half, v + half))
                 roi = True
                 if not blobs:
                     blobs, roi = None, False      # not where expected: look everywhere
         if blobs is None:
-            blobs = self.detector.detect(bgr)
-        blobs, n_still = self.still.filter(t, blobs)
-        if blobs:
-            self._hot = self.hot_frames
+            step = det.coarse_step
+            if step > 1 and size == (self.camera.model.width, self.camera.model.height):
+                small = cv2.resize(bgr, ((size[0] + step - 1) // step, (size[1] + step - 1) // step),
+                                   interpolation=cv2.INTER_NEAREST)
+                blobs, n_still = self._search(t, small, lambda: bgr)
+            else:                                 # a picture of another size than the camera is set up for
+                blobs, n_still = self.still.filter(t, det.detect(bgr))
         done = time.time()
         return FrameResult(self.name, t, t_capture, size, blobs, roi, n_still, (done - t0) * 1000.0, decode_ms, t0, done)

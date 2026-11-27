@@ -230,6 +230,7 @@ class BallDetector:
         # measure, at full resolution, only the places that showed ball colour.
         self.coarse_step = max(1, int(det.get("coarse_step", 2)))
         self.coarse_min_px = int(det.get("coarse_min_px", 60000))    # search areas smaller than this are done directly
+        self.max_places = int(det.get("max_places", 60))             # places a coarse search hands on, most colour first
         self._coarse_off = 0       # whole-frame searches still to do directly, after one found colour all over
         self.ignore_mask = ignore_mask  # 0/255, same size as the frame; 255 = never a ball
         self._kernel = (cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.open_px, self.open_px))
@@ -324,8 +325,7 @@ class BallDetector:
         """Where in the search area anything ball-coloured is: a list of (x0, y0, x1, y1), most colour first.
 
         Looks at every coarse_step-th pixel only. Returns None when so much of
-        the picture is ball-coloured, or in so many places, that searching all
-        of it directly is cheaper.
+        the picture is ball-coloured that searching all of it directly is cheaper.
         """
         step = self.coarse_step
         size = ((x1 - x0 + step - 1) // step, (y1 - y0 + step - 1) // step)
@@ -335,8 +335,9 @@ class BallDetector:
 
     def coarse_candidates(self, small: np.ndarray, full_w: int, full_h: int):
         """The first half of a search, on a picture already 1/coarse_step the size (a JPEG decoded small):
-        the places that show ball colour, as Candidate objects, most colour first. None when there are too
-        many for this to pay (search the full picture with detect). Follow with measure_candidates.
+        the places that show ball colour, as Candidate objects, most colour first. None when so much of the
+        picture is ball-coloured that this does not pay (search the full picture with detect). Follow with
+        measure_candidates.
         """
         step = self.coarse_step
         x0, y0, x1, y1 = self.search_box(full_w, full_h)
@@ -370,9 +371,11 @@ class BallDetector:
         # the pixels looked at. Fewer than 0.4 of that is a speck of noise.
         need = max(1, int(0.4 * self._min_area(full_w) / (step * step)))
         keep = np.nonzero(counts >= need)[0]
-        if len(keep) > self.max_candidates:
-            return None                               # colour all over the picture: one direct search costs less
-        keep = keep[np.argsort(-counts[keep])] + 1
+        # Most colour first, and no more than max_places of them. A noisy picture with loose colour limits
+        # shows specks by the hundred; measuring each one took 30-40 ms a picture on the Pupper, and giving
+        # up and searching the whole picture directly (as this did before 2026-11-26) took as long. The
+        # largest places are the ones a ball near enough to matter is among.
+        keep = keep[np.argsort(-counts[keep])][: self.max_places] + 1
         pad = 2
         found, covered = [], 0
         for i in keep:
