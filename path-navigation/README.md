@@ -228,6 +228,8 @@ any active state ⇄ PAUSED (joystick, e-stop, fall, operator)        any active
 
 ## Wiring in the sound module
 
+The separate DJI receiver experiments live in [`sound-localization/`](sound-localization/README.md): first verify the two- or four-channel TX mapping with `test_channels.py`, then try the stereo or four-mic angle script. These are hardware experiments only; they do not publish ROS messages or move Pupper.
+
 Navigation needs one thing from it: **a bearing to the cry, each time it hears one.** It does not need a range, and it does not rely on it to hear the phrase (`robot/keyword_node.py` does that; see `keyphrase/README.md`).
 
 Everything about how the module talks is in `config/demo.yaml`, section `topics`, and `robot/sound_adapter.py` is the only code that reads it:
