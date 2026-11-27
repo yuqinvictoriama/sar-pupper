@@ -12,9 +12,10 @@ from std_msgs.msg import String
 
 def line(s: dict) -> str:
     # lag: how old a picture is by the time the node has acted on it. cpu: decoding + searching + tracking.
-    cams = "  ".join("%s %s %2.0ffps %3.0fms lag %2.0fms cpu%s" % (
+    cams = "  ".join("%s %s %2.0ffps %3.0fms lag %2.0fms cpu%s%s" % (
         name, "ok " if c["alive"] else "---", c["fps"], c["latency_ms"], c["proc_ms"],
-        " (%.0f decode %.0f search)" % (c["decode_ms"], c["detect_ms"]) if "decode_ms" in c else "")
+        " (%.0f decode %.0f search)" % (c["decode_ms"], c["detect_ms"]) if "decode_ms" in c else "",
+        " COLOUR CAST x%.1f" % c["cast"] if c.get("cast", 1.0) >= 1.8 else "")
         for name, c in s.get("cameras", {}).items())
     tracks = [t for t in s.get("tracks", []) if t["confirmed"]]
     ball = ""

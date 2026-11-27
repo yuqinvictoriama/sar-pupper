@@ -126,7 +126,8 @@ tracker:
   flight_travel_m: 0.15    # ... that has also moved this far ACROSS the line of sight counts as a ball in flight.
                            # (Along the line of sight proves nothing: range comes from the blob's size and jitters.)
   tentative_coast_s: 0.12
-  max_tracks: 8
+  max_tracks: 24           # things followed at once, clutter included (balls lying about, patches of noise). When all
+                           # are taken a new blob replaces the weakest track; a ball seen in flight is never replaced
   max_range_m: 8.0
   use_drag: true
 
@@ -184,12 +185,14 @@ fsm:
 
 node:
   cmd_topic: /dodge_cmd_vel
-  cmd_rate_hz: 100.0
+  cmd_rate_hz: 50.0        # the walking policy reads commands 50 times a second; the first command of a dodge goes out at once
   camera_processes: true   # each camera is captured, decoded and searched in a process of its own (one core each),
                            # so no camera waits for another or for the node. false = threads of the node, as before
                            # 2026-11-26 (then the cameras queue behind each other: far slower on the Pupper)
   opencv_threads: 1        # OpenCV worker threads per camera; the cameras already run one process each
   imu_rate_hz: 100.0       # IMU samples used per second; the rest are let go on arrival (0 = use every one)
+  cast_limit: 1.8          # a rear camera whose picture keeps one colour channel this many times another is not
+                           # applying its white balance: its settings are sent again (0 = never)
   imu_topic: /imu_sensor_broadcaster/imu
   estop_topic: /emergency_stop
   free_space_topic: /free_space      # std_msgs/Float32MultiArray: clearance (m) per equal sector, starting at straight ahead, counter-clockwise

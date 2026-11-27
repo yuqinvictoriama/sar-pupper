@@ -284,5 +284,71 @@ class NodeTests(unittest.TestCase):
             sys.modules.update({k: v for k, v in saved.items() if v is not None})
 
 
+class ClutterTests(unittest.TestCase):
+    """A room full of still green things must not keep a thrown ball from being tracked."""
+
+    def test_a_thrown_ball_is_tracked_although_clutter_fills_every_slot(self):
+        from dodge.sim import aimed_throw
+        cfg = copy.deepcopy(CFG)
+        cfg["tracker"]["max_tracks"] = 6
+        core = DodgeCore(cfg)
+        camera = build_cameras(cfg)["elp_left"]
+        from dodge.measure import measure_blobs
+        from dodge.detect import BallDetector
+        det = BallDetector.for_camera(cfg["cameras"]["elp_left"], cfg["detector"])
+        clutter = [np.array([-2.0 - 0.1 * i, 1.0 + 0.35 * i, -0.05 + 0.1 * (i % 3)]) for i in range(8)]   # 8 balls lying about
+        throw = aimed_throw(cfg, bearing_deg=140.0, distance=2.8, rise=0.6)
+        dodged = False
+        for i in range(-30, int(throw.t_land * 30.0)):
+            t = 200.0 + i / 30.0
+            img, _ok = render_ball(camera, clutter[0])
+            for p in clutter[1:]:
+                more, ok = render_ball(camera, p)
+                if ok:
+                    img = np.where(more != 110, more, img)
+            ball = throw.position(i / 30.0) if i >= 0 else None
+            if ball is not None:
+                more, ok = render_ball(camera, ball)
+                if ok:
+                    img = np.where(more != 110, more, img)
+            blobs = det.detect(img)
+            if i == -1:
+                self.assertGreaterEqual(len(core.tracker.tracks), 6)        # every slot is taken before the throw
+            dodged = core.process_blobs("elp_left", t, blobs, t) or dodged
+        self.assertTrue(dodged, "the throw was not dodged; events: %s" % list(core.events))
+
+    def test_a_new_blob_gets_a_track_when_every_slot_is_taken(self):
+        from dodge.measure import Measurement
+        from dodge.track import Tracker
+        cfg = dict(CFG["tracker"], max_tracks=5)
+        tracker = Tracker(cfg, CFG["ball"])
+
+        def meas(point):
+            point = np.asarray(point, dtype=float)
+            rng = float(np.linalg.norm(point))
+            return Measurement("elp_left", np.zeros(3), point / rng, 0.074 / rng, rng, 0.01, 0.15, False)
+
+        still = [[-2.0, 0.5 * i - 1.0, 0.0] for i in range(5)]
+        for k in range(6):                                   # five still things, seen again and again: all slots confirmed
+            tracker.update(10.0 + k / 30.0, [meas(p) for p in still])
+        self.assertEqual(len(tracker.confirmed()), 5)
+        ball = [-1.0, 2.5, 1.2]                              # something new, nowhere near any of them
+        tracker.update(10.0 + 6 / 30.0, [meas(p) for p in still] + [meas(ball)])
+        nearest = min(float(np.linalg.norm(tr.x[:3] - np.array(ball))) for tr in tracker.tracks)
+        self.assertLess(nearest, 0.05, "the new blob was ignored because the tracker was full")
+        self.assertLessEqual(len(tracker.tracks), 5)
+
+    def test_a_colour_calibration_that_is_not_green_is_ignored(self):
+        from dodge.config import save_calib
+        with tempfile.TemporaryDirectory() as d:
+            save_calib("fisheye_color", {"cameras": {"fisheye": {"color": {"h_min": 9, "h_max": 28, "fit": 2},
+                                                                 "size_scale": 1.05}}}, calib_dir=d)
+            save_calib("elp_left_color", {"cameras": {"elp_left": {"color": {"h_min": 33, "h_max": 64, "fit": 2}}}}, calib_dir=d)
+            cfg = load_config(calib_dir=d)
+            self.assertEqual(cfg["cameras"]["fisheye"]["color"], CFG["cameras"]["fisheye"]["color"])
+            self.assertEqual(cfg["cameras"]["fisheye"]["size_scale"], 1.05)
+            self.assertEqual(cfg["cameras"]["elp_left"]["color"]["h_min"], 33)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,8 +25,12 @@ reports the dodge it would have made. Arm it only with someone at the e-stop.
 """
 from __future__ import annotations
 
-import json
 import os
+
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")    # before numpy loads: its maths library otherwise keeps a
+os.environ.setdefault("OMP_NUM_THREADS", "1")         # thread per core spinning, for 3x3 matrices (40 % of a core each)
+
+import json  # noqa: E402
 import shutil
 import sys
 import threading
@@ -63,6 +67,7 @@ class DodgeNode(Node):
         self.declare_parameter("armed", False)
         self.declare_parameter("record_events", True)
         self.declare_parameter("cameras", "")        # comma-separated subset, empty = all enabled in the config
+        self.declare_parameter("imu_topic", "")      # empty = the config's (the launch file gives a thinned-out copy)
 
         self.cfg = load_config(self.get_parameter("config").value or None)
         ncfg = self.cfg["node"]
@@ -98,7 +103,8 @@ class DodgeNode(Node):
         self.create_service(SetBool, "/dodge/arm", self.on_arm)
 
         # ---- inputs
-        self.create_subscription(Imu, ncfg.get("imu_topic", "/imu_sensor_broadcaster/imu"), self.on_imu, 50)
+        imu_topic = str(self.get_parameter("imu_topic").value or "") or ncfg.get("imu_topic", "/imu_sensor_broadcaster/imu")
+        self.create_subscription(Imu, imu_topic, self.on_imu, 10)
         self.create_subscription(Empty, ncfg.get("estop_topic", "/emergency_stop"), self.on_estop, 10)
         self.create_subscription(Twist, "/cmd_vel", self.on_cmd_vel, 10)
         self.create_subscription(String, "/dodge/mark", self.on_mark, 5)
@@ -335,6 +341,8 @@ class DodgeNode(Node):
                 extra = self.farm.status(name)
                 if "brightness" in extra:
                     cams[name]["brightness"] = extra["brightness"]
+                if "cast" in extra:
+                    cams[name]["cast"] = extra["cast"]
                 if extra.get("fps_in"):
                     cams[name]["fps_in"] = extra["fps_in"]
                 if extra.get("problem"):

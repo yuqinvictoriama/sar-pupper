@@ -22,7 +22,7 @@ import numpy as np
 from .camera_models import build_cameras
 from .escape import EscapePlanner, FreeSpace
 from .measure import measure_blobs
-from .threat import ThreatAssessor
+from .threat import Threat, ThreatAssessor
 from .track import Tracker, accel
 
 
@@ -81,6 +81,7 @@ class DodgeCore:
         self.confirm_cycles = int(tc.get("confirm_cycles", 2))
         self.trigger_margin = float(tc.get("trigger_margin_s", 0.3))
         self.min_tau = float(tc.get("min_tau_s", 0.05))
+        self.idle_closing = 0.5 * float(tc.get("min_closing_speed", 1.0))
         self.refractory = float(fc.get("refractory_s", 1.0))
         self.recover_min = float(fc.get("recover_min_s", 0.3))
         self.recover_max = float(fc.get("recover_max_s", 1.5))
@@ -226,7 +227,14 @@ class DodgeCore:
         R = self.orientation(None)
         tv, vx, vy = self.robot_vel
         own = R @ np.array([vx, vy, 0.0]) if (t_now - tv) < 0.6 else None
-        threats = [self.assessor.assess(tr, t_now, self.tracker, R, own) for tr in tracks]
+        threats = []
+        for tr in tracks:
+            if not tr.flying and tr.closing_speed < self.idle_closing:
+                # A still thing (a ball lying on the floor, a green cushion): the assessor would say the
+                # same, after flying its arc forward. A cluttered room has many of these in every picture.
+                threats.append(Threat(tr.id, reason="not approaching"))
+            else:
+                threats.append(self.assessor.assess(tr, t_now, self.tracker, R, own))
         self.last_threats = threats
         self._watch_flight(t_now, tracks, threats)
         live = {th.track_id for th in threats if th.is_threat}

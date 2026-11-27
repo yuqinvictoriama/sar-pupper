@@ -4,10 +4,10 @@ cameras:
       auto_exposure: false
       exposure_100us: 30
       gain: 95
-      wb_temperature: 3858
+      wb_temperature: 3857
   elp_right:
     capture:
       auto_exposure: false
       exposure_100us: 30
-      gain: 111
+      gain: 79
       wb_temperature: 3858

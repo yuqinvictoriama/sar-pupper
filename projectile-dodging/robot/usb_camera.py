@@ -180,8 +180,14 @@ EXPOSURE_TIME = ("exposure_time_absolute", "exposure_absolute")
 WB_AUTO = ("white_balance_automatic", "white_balance_temperature_auto")
 
 
-def apply_controls(device: str, cap_cfg: dict, cap=None, log=print) -> None:
-    """Fix exposure, gain and white balance. Uses v4l2-ctl when present, OpenCV properties otherwise."""
+def apply_controls(device: str, cap_cfg: dict, cap=None, log=print, nudge_wb: bool = False) -> None:
+    """Fix exposure, gain and white balance. Uses v4l2-ctl when present, OpenCV properties otherwise.
+
+    nudge_wb: set the white balance to a neighbouring value first, then to the wanted one. The ELP
+    cameras report a fixed white balance as set but go on showing another (seen on the Pupper,
+    2026-11-26: "fixed at 3858 K" with red three times blue) until the value is changed while they
+    stream; only a change makes them act on it.
+    """
     auto = bool(cap_cfg.get("auto_exposure", False))
     exposure = cap_cfg.get("exposure_100us")
     gain = cap_cfg.get("gain")
@@ -203,6 +209,10 @@ def apply_controls(device: str, cap_cfg: dict, cap=None, log=print) -> None:
         if n and wb is not None:
             sets.append((n, 1 if wb == "auto" else 0))
         if wb is not None and wb != "auto" and "white_balance_temperature" in names:
+            if nudge_wb:
+                info = names["white_balance_temperature"]
+                other = int(wb) + 150 if int(wb) + 150 <= info.get("max", 6500) else int(wb) - 150
+                sets.append(("white_balance_temperature", other))
             sets.append(("white_balance_temperature", wb))
         for name, value in (cap_cfg.get("controls") or {}).items():   # anything else, by its v4l2-ctl name
             if name in names:
@@ -288,7 +298,7 @@ def open_capture(device: str, cap_cfg: dict, log=print):
     # are streaming, and fall back to their defaults when a stream starts. So start
     # the stream, then set everything again, then check what the camera reports.
     cap.grab()
-    apply_controls(device, cap_cfg, cap, log)
+    apply_controls(device, cap_cfg, cap, log, nudge_wb=True)
     state = describe_controls(device, cap_cfg)
     if state:
         log("camera settings: %s" % state)
@@ -355,6 +365,11 @@ class UsbCamera(threading.Thread):
 
     def stop(self) -> None:
         self.running = False
+
+    def reapply_controls(self) -> None:
+        """Send exposure, gain and white balance to the camera again while it streams (see apply_controls)."""
+        if self.connected:
+            apply_controls(self.device, self.cap_cfg, None, self.log, nudge_wb=True)
 
     def close(self, timeout: float = 3.0) -> bool:
         """Stop and wait for the thread, so the camera is released before the program exits.

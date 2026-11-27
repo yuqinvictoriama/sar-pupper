@@ -27,8 +27,12 @@ Camera sources (cameras.<name>.source in the config):
 """
 from __future__ import annotations
 
-import multiprocessing
 import os
+
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")    # before numpy loads: its maths library otherwise keeps a
+os.environ.setdefault("OMP_NUM_THREADS", "1")         # thread per core spinning, for 3x3 matrices
+
+import multiprocessing  # noqa: E402
 import signal
 import sys
 import threading
@@ -68,6 +72,11 @@ class CameraRunner:
         self._threads: list = []
         self.problem = ""
         self.fps_in = 0.0
+        # A strong colour cast means the camera is not showing the white balance it was given.
+        self.cast_limit = float(cfg.get("node", {}).get("cast_limit", 1.8))
+        self._cast_since = 0.0
+        self._cast_tries = 0
+        self._cast_next = 0.0
 
     # ------------------------------------------------------------------ control
     def start(self) -> None:
@@ -111,10 +120,11 @@ class CameraRunner:
         self.pipeline.set_hint(hint)
 
     def status(self) -> dict:
+        cast = round(self.pipeline.detector.balance.strength(), 2)
         if self.usb is not None:
-            return {"brightness": round(self.usb.brightness, 0), "problem": self.usb.problem,
-                    "fps_in": round(self.usb.fps_in, 1)}
-        return {"problem": self.problem, "fps_in": round(self.fps_in, 1)}
+            return {"brightness": round(self.usb.brightness, 0), "problem": self.usb.problem or self.problem,
+                    "fps_in": round(self.usb.fps_in, 1), "cast": cast}
+        return {"problem": self.problem, "fps_in": round(self.fps_in, 1), "cast": cast}
 
     def _thread(self, target, label: str) -> None:
         th = threading.Thread(target=target, daemon=True, name="%s-%s" % (self.name, label))
@@ -125,6 +135,39 @@ class CameraRunner:
     def _on_usb(self, _name: str, t_capture: float, jpeg, bgr) -> None:
         result = self.pipeline.process(t_capture, bgr, self.usb.decode_ms)
         self.emit(result, jpeg if self.keep_jpeg else None)
+        self._watch_cast()
+
+    def _watch_cast(self) -> None:
+        """If the picture keeps a strong colour cast, the camera is not applying its white balance: send it again.
+
+        With the cast in, walls and floor pass for ball colour (ten false "balls" in every picture on
+        the Pupper) and the real ball's colour sits at the edge of its limits.
+        """
+        wb = self.cam.get("capture", {}).get("wb_temperature")
+        if self.cast_limit <= 0 or wb in (None, "auto"):
+            return
+        now = time.monotonic()
+        if self.pipeline.detector.balance.strength() < self.cast_limit:
+            self._cast_since = 0.0
+            if self.problem.startswith("strong colour cast"):
+                self.problem = ""
+            return
+        if not self._cast_since:
+            self._cast_since = now
+        if now - self._cast_since < 3.0 or now < self._cast_next:
+            return
+        self._cast_next = now + 10.0
+        if self._cast_tries >= 3:
+            if not self.problem:
+                self.problem = ("strong colour cast: the room's light does not suit the white balance set for this "
+                                "camera; run  python3 tools/tune_exposure.py %s" % self.name)
+                self.log("%s: %s" % (self.name, self.problem))
+            return
+        self._cast_tries += 1
+        self.log("%s: the picture has a strong colour cast (one colour channel is %.1f times another): the camera is "
+                 "not showing the white balance it was given. Sending its settings again (try %d of 3)."
+                 % (self.name, self.pipeline.detector.balance.strength(), self._cast_tries))
+        threading.Thread(target=self.usb.reapply_controls, daemon=True, name=self.name + "-controls").start()
 
     # ------------------------------------------------------------------ ROS compressed-image topic
     def _start_ros(self) -> None:

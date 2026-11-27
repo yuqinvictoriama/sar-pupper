@@ -10,6 +10,7 @@ import yaml
 
 COLOUR_FIT = 2      # how colour limits are fitted; a calibration file made for an earlier way no longer applies
 MAX_SAVED_LAG_S = 0.6   # a saved response lag this long is not a measurement (see load_config)
+BALL_HUE = (34, 50)     # OpenCV hue of the neon-green ball once the colour cast is out; a fitted range must reach into this
 _told = set()
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +48,18 @@ def load_config(path: str | None = None, calib_dir: str | None = None, use_calib
                         _told.add(name)
                         print("note: the colour calibration in %s is from an earlier version and is being ignored. "
                               "Redo it:  python3 tools/calibrate_color.py %s" % (name, cam), file=sys.stderr)
+            for cam, entry in (data.get("cameras") or {}).items():
+                color = (entry or {}).get("color")
+                if isinstance(color, dict) and "h_min" in color and "h_max" in color and (
+                        color["h_max"] < BALL_HUE[0] or color["h_min"] > BALL_HUE[1]):
+                    # The fit sampled something that was not the ball (a hand, the floor, a wall): with these
+                    # limits the camera would follow that and never see the ball. Use the starting values.
+                    if (name, "hue") not in _told:
+                        _told.add((name, "hue"))
+                        print("note: the colour calibration in %s is for hue %s-%s, which is not the ball's green, and "
+                              "is being ignored. Redo it with the ball filling the box:  python3 tools/calibrate_color.py %s"
+                              % (name, color["h_min"], color["h_max"], cam), file=sys.stderr)
+                    del entry["color"]
             lag = (data.get("escape") or {}).get("accel_lag_s")
             if isinstance(lag, (int, float)) and lag >= MAX_SAVED_LAG_S:
                 # Saved by a step-response run that measured nothing: it stored the end of its

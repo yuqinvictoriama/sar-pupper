@@ -31,7 +31,8 @@ from pathlib import Path
 import yaml
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, LogInfo, OpaqueFunction
+from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, LogInfo, OpaqueFunction,
+                            SetEnvironmentVariable)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -81,8 +82,16 @@ def fisheye_settings(context):
     return [ExecuteProcess(cmd=["bash", "-c", "; ".join(cmds)], output="both")]
 
 
+IMU_TOPIC = "/imu_sensor_broadcaster/imu"
+DODGE_IMU_TOPIC = "/dodge/imu"       # the same, 100 a second: the dodge node is Python, and several hundred
+                                     # messages a second kept one of the Pi's four cores busy just receiving them
+
+
 def setup(context):
-    actions = []
+    # One thread each for the maths libraries of everything started here: on a four-core Pi their
+    # thread pools (one thread per core, per program) cost more than they give.
+    actions = [SetEnvironmentVariable("OPENBLAS_NUM_THREADS", "1"), SetEnvironmentVariable("OMP_NUM_THREADS", "1"),
+               SetEnvironmentVariable("OPENCV_FOR_THREADS_NUM", "1")]
     gemini_dir = Path(os.path.expanduser(LaunchConfiguration("gemini_dir").perform(context)))
     gemini = load_gemini_launch(gemini_dir)
 
@@ -120,7 +129,11 @@ def setup(context):
         return actions
     config = LaunchConfiguration("config").perform(context)
     armed = "true" if truthy(LaunchConfiguration("armed").perform(context)) else "false"
-    cmd = ["python3", "-u", str(HERE / "dodge_node.py"), "--ros-args", "-p", "armed:=" + armed]
+    actions.append(Node(package="topic_tools", executable="throttle", name="dodge_imu_throttler", arguments=["messages"],
+                        parameters=[{"input_topic": IMU_TOPIC, "output_topic": DODGE_IMU_TOPIC, "msgs_per_sec": 100.0}],
+                        output="both"))
+    cmd = ["python3", "-u", str(HERE / "dodge_node.py"), "--ros-args", "-p", "armed:=" + armed,
+           "-p", "imu_topic:=" + DODGE_IMU_TOPIC]
     if config:
         cmd += ["-p", "config:=" + config]
     actions.append(ExecuteProcess(cmd=cmd, cwd=str(ROOT), output="both", respawn=True, respawn_delay=3.0))

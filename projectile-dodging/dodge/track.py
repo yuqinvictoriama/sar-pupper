@@ -140,7 +140,7 @@ class Tracker:
         self.flight_speed = float(cfg.get("flight_speed", 1.5))
         self.flight_travel = float(cfg.get("flight_travel_m", 0.15))
         self.tent_coast = float(cfg.get("tentative_coast_s", 0.12))
-        self.max_tracks = int(cfg.get("max_tracks", 8))
+        self.max_tracks = int(cfg.get("max_tracks", 24))
         self.max_range = float(cfg.get("max_range_m", 8.0))
         self.drag_k = drag_coefficient(ball) if cfg.get("use_drag", True) else 0.0
         self.tracks: list = []
@@ -182,19 +182,30 @@ class Tracker:
                 continue
             items.append((m, z, self.meas_cov(ray, m.sigma_t, m.sigma_r)))
 
-        # Score every (track, measurement) pair, then assign best-first.
+        # Score every (track, measurement) pair, then assign best-first. All pairs are scored in one
+        # go: a cluttered room gives tens of tracks and blobs, and one small solve per pair in Python
+        # was a large share of the node's time on the Pupper.
         pred = [self.predict_state(tr.x, tr.P, t - tr.t) for tr in self.tracks]
         pairs = []
-        for ti, (xp, Pp) in enumerate(pred):
-            for mi, (_m, z, Rm) in enumerate(items):
-                y = z - xp[:3]
-                S = Pp[:3, :3] + Rm
-                try:
-                    d2 = float(y @ np.linalg.solve(S, y))
-                except np.linalg.LinAlgError:
-                    continue
-                if d2 < self.gate:
-                    pairs.append((d2, ti, mi))
+        if pred and items:
+            xs = np.stack([xp[:3] for xp, _ in pred])                      # (T, 3)
+            Ps = np.stack([Pp[:3, :3] for _, Pp in pred])                  # (T, 3, 3)
+            zs = np.stack([z for _m, z, _R in items])                      # (M, 3)
+            Rs = np.stack([Rm for _m, _z, Rm in items])                    # (M, 3, 3)
+            y = zs[None, :, :] - xs[:, None, :]                            # (T, M, 3)
+            S = Ps[:, None, :, :] + Rs[None, :, :, :]                      # (T, M, 3, 3)
+            try:
+                d2 = np.einsum("tmi,tmi->tm", y, np.linalg.solve(S, y[..., None])[..., 0])
+            except np.linalg.LinAlgError:
+                d2 = np.full(y.shape[:2], np.inf)
+                for ti in range(y.shape[0]):
+                    for mi in range(y.shape[1]):
+                        try:
+                            d2[ti, mi] = float(y[ti, mi] @ np.linalg.solve(S[ti, mi], y[ti, mi]))
+                        except np.linalg.LinAlgError:
+                            pass
+            for ti, mi in zip(*np.nonzero(d2 < self.gate)):
+                pairs.append((float(d2[ti, mi]), int(ti), int(mi)))
         pairs.sort()
         used_t, used_m = set(), set()
         for d2, ti, mi in pairs:
@@ -225,12 +236,39 @@ class Tracker:
                     v_fit = tr.fitted_velocity()
                     tr.flying = v_fit is not None and float(np.linalg.norm(v_fit)) >= self.flight_speed
 
+        self.prune(t)       # first: tracks that have gone unseen too long make room
         for mi, (m, z, Rm) in enumerate(items):
-            if mi in used_m or len(self.tracks) >= self.max_tracks:
+            if mi in used_m:
                 continue
+            if len(self.tracks) >= self.max_tracks and not self._make_room(t):
+                break
             self.tracks.append(Track(t, z, Rm, self.speed_sigma, m.cam))
 
-        self.prune(t)
+    def _make_room(self, t: float) -> bool:
+        """With every slot taken, drop the track least likely to be a ball in flight. False if none may go.
+
+        Before 2026-11-26 a new blob was simply ignored while all slots were full. In a room with
+        balls lying about and patches of colour noise the slots were always full, so a thrown ball
+        often got no track at all and the robot never reacted to it.
+        """
+        victim, worst = None, None
+        for i, tr in enumerate(self.tracks):
+            if tr.flying or tr.t0 >= t:
+                continue                              # never a ball seen in flight, nor a track begun in this very picture
+            if not tr.confirmed:
+                if tr.t_last >= t:
+                    continue                          # seen again just now: it may be a ball on its way to being confirmed
+                key = (0, tr.hits, tr.t_last)         # a tentative track that was not seen this time goes first
+            elif tr.closing_speed > 1.0:
+                continue                              # coming this way: keep
+            else:
+                key = (1, -tr.range_m, 0.0)           # then a still thing, the farthest first: it matters least
+            if worst is None or key < worst:
+                victim, worst = i, key
+        if victim is None:
+            return False
+        del self.tracks[victim]
+        return True
 
     def prune(self, t_now: float) -> None:
         keep = []
