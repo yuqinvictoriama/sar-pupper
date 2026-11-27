@@ -58,6 +58,7 @@ class SimConfig:
     box_width: float = 0.50
     box_mass: float | None = 0.6          # kg; None = fixed to the floor
     box_friction: float = 0.6
+    more_boxes: tuple = ()                # further obstacles on the course: (height, depth, width, near face x in the world, mass or None)
     scale_across: bool = False            # a slab deep enough to walk on: plan with plan_scale_across
     floor_friction: float = 0.8
     stand_off: float = 0.02               # front feet start this far before the take-off line (m)
@@ -173,6 +174,15 @@ def build_model(xml: str, cfg: SimConfig, near_face_x: float):
             bb = spec.worldbody.add_body(name="box", pos=[cx, 0, h / 2], quat=quat)
             bb.add_freejoint()
             bb.add_geom(mass=cfg.box_mass, **gkw)
+    for k, (h, d, w, x_near, mass) in enumerate(cfg.more_boxes):
+        gkw = dict(name=f"box{k + 2}_geom", type=mujoco.mjtGeom.mjGEOM_BOX, size=[d / 2, w / 2, h / 2], contype=1,
+                   conaffinity=1, friction=[cfg.box_friction, 0.02, 0.01], rgba=[0.9, 0.9, 0.9, 1.0])
+        if mass is None:
+            spec.worldbody.add_geom(pos=[x_near + d / 2, 0, h / 2], **gkw)
+        else:
+            bb = spec.worldbody.add_body(name=f"box{k + 2}", pos=[x_near + d / 2, 0, h / 2])
+            bb.add_freejoint()
+            bb.add_geom(mass=mass, **gkw)
     return spec.compile()
 
 

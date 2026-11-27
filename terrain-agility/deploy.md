@@ -45,18 +45,30 @@ looks like, measures whatever is in its way, and decides from the shape.
   too tall, too narrow, a depth between a bar and a slab (102 to 200 mm), not square, no clear
   floor beyond, or **its height could not be read** (see 1b).
 
-### 1a. The three course obstacles
+### 1a. The course obstacles
 
 | Obstacle | What Pupper does with it | Why |
 |---|---|---|
+| **Flat bar**, about 19 mm tall × 89 mm deep × 600 mm long (a length of "1×4" timber), flat side down, with an edge that shows (1b) | **Steps over**, when the 600 mm length is across the path | Low and shallow: each foot crosses in one stride, touching the top once |
 | **Slab**, 15 mm tall × 565 mm wide × 380 mm deep, white top, raw board edge | **Scales across**, when the 565 mm side is across the path | Height read from the edge, depth from the top |
 | The same slab **turned** so the 380 mm side is across the path | Walks around | 380 mm is under the 400 mm it needs to keep all four feet clear of the sides |
-| **Round bar**, 50 mm diameter × 700 mm | **Walks around** | See 1c |
+| **Round bar**, 50 mm diameter × 700 mm (not on the course any more: the flat bar took its place) | **Walks around** | See 1c |
 | **Carton**, 455 × 348 × 130 mm, white | **Walks around**, from about a metre away, on any side | Plainly too tall from a distance; standing on edge it is taller than the camera |
 
-Place the slab square to Pupper's path (within about 20°: Pupper squares itself up to 5°),
-centred on it, lying flat on the floor without rocking, with at least 350 mm of bare floor
-beyond it. If it slides when pushed with a finger, put two strips of tape under it.
+Place the bar and the slab square to Pupper's path (within about 20°: Pupper squares itself up
+to 5°), centred on it, lying flat on the floor without rocking, each with at least 350 mm of
+bare floor beyond it. If one slides when pushed with a finger, put two strips of tape under it.
+
+**The bar.** Any flat-topped, rigid bar 15 to 25 mm tall, 76 to 102 mm deep and at least
+400 mm long will do; 19 × 89 mm is the middle of that range and the size everything was
+tested with. Like the slab it needs an edge that shows (1b): a white top with the raw wood
+left on the sides, or a strip of tape in another colour along the side facing Pupper. Measure
+its real thickness and depth with a ruler: `check` (step 4.2) should agree within 3 mm and
+12 mm.
+
+**Bar first, then slab.** With the bar's near edge 0.70 m before the slab's, Pupper measures
+the bar with the slab in view behind it, steps over, walks on, and measures the slab from
+its own stopping distance. Leave at least 0.5 m between the bar's far edge and the slab.
 
 ### 1b. The one thing Pupper needs from a low obstacle: a visible edge
 
@@ -90,9 +102,9 @@ A 50 mm bar is too big, by a wide margin, and being round makes it worse.
   rolls.
 - Pupper measures it, reports why, and walks around it. It never tries.
 
-What does work as a step-over obstacle: **a flat-topped bar 15 to 25 mm tall and 76 to 102 mm
-deep**, at least 400 mm long, with an edge that shows (1b). A length of "1×4" timber, which is
-really 19 × 89 mm, is in the middle of that range.
+What does work as a step-over obstacle, and is what the course now uses (1a): **a flat-topped
+bar 15 to 25 mm tall and 76 to 102 mm deep**, at least 400 mm long, with an edge that shows
+(1b). A length of "1×4" timber, which is really 19 × 89 mm, is in the middle of that range.
 
 ---
 
@@ -175,8 +187,9 @@ prints what it found.
    `would do: scale_across`.
    - **"height not read"**: the edge does not show against this floor or against the top (1b).
      Put a strip of tape in another colour along the edge and run it again.
-   - Repeat with the **round bar** (expect `would do: go_around`, with a reason) and the
-     **carton** at 1 m (expect a `scan` line ending "certainly tall").
+   - Repeat with the **flat bar** (after step 3 expect `height` and `depth` within 3 mm and
+     12 mm of what your ruler says, and `would do: step_over`) and the **carton** at 1 m
+     (expect a `scan` line ending "certainly tall").
    - Copy `look.jpg` to your Mac
      (`scp <user>@<pupper>:~/sar-pupper/terrain-agility/look.jpg .`). Top half: the camera's
      view, unrolled. Bottom half: the same view by class. Floor must be **grey**, obstacles
@@ -249,7 +262,8 @@ Launch as in part 3 (`avoid:=false`), Pupper standing. All commands in terminal 
 | **6 MOVES** | Slab square to Pupper, near face **27 cm ahead of the front of the front feet**, 1 m clear beyond. Mark the floor at the front of a front foot. `python3 tools/step_over.py cross --height 0.015 --depth 0.38 --near 0.36` | About two minutes at this speed. Slow steps up to the slab; front feet onto it, then rear feet; along the top; front feet down beyond the far edge, then rear feet; stands; walking-ready again. The last report prints `advance` (about 0.87): that foot should be that far from its mark, within 1.5 cm | a foot lands on an edge, or Pupper tips. Note which foot and when |
 | **7 MOVES** | Ctrl-C the launch, start it again **without** `avoid:=false`. Carton 1.5 m straight ahead. `python3 tools/walk_forward.py` | Pupper curves round it without stopping, about 20 cm clear, then straightens onto its old direction | it walks into it, or stops and stays |
 | **8 MOVES** | Slab 1.5 m ahead, square, 1 m clear beyond. `python3 tools/walk_forward.py --seconds 20` | Walks up, stops about 36 cm away, squares up, measures (`/terrain/event` prints height, depth and "scale across"), then crosses as in rung 6 | it walks around instead (see below) |
-| **9 MOVES** | Round bar 1.5 m ahead. `python3 tools/walk_forward.py --seconds 20` | Walks up, stops, measures, says why it will not cross, walks around it | it tries to cross |
+| **9 MOVES** | Launch with `avoid:=false` again. Flat bar square to Pupper, near face **27 cm ahead of the front of the front feet**, 1 m clear beyond. `python3 tools/step_over.py cross --height 0.019 --depth 0.089 --near 0.36` (your bar's measured thickness and depth) | About 30 slow steps, under a minute at normal speed: each front foot onto the bar's top and off beyond it, then each rear foot; stands; walking-ready again. `advance` about 0.58 | a foot lands on an edge, the bar slides, or Pupper tips |
+| **10 MOVES** | Launch without `avoid:=false`. Bar 1.2 m ahead, slab's near edge 0.70 m beyond the bar's, 1 m clear beyond the slab. `python3 tools/walk_forward.py --seconds 30`, and run it again once Pupper is past the bar if it has stopped | Walks up to the bar, measures it ("step over"), crosses; walks on, measures the slab ("scale across"), crosses | it walks around either one (the event says why) |
 
 - **Rung 6 sets one number.** Over a slab, Pupper covers a little less ground than its steps
   add up to: 2 % less in simulation (on bare floor, rung 5, nothing is lost), which is what
@@ -286,10 +300,11 @@ Launch as in part 3 (`avoid:=false`), Pupper standing. All commands in terminal 
 - **What Pupper says.** The demo's navigation has one call-out for a low obstacle ("Low
   obstacle. Stepping over. Still coming."), and says it for the slab as well as for a bar. To
   know which crossing it is, read `kind` or the state, not the call-out.
-- **On the demo course** (`path-navigation/README.md`, "Demo instructions"): slab with its near
-  edge 0.50 m from the start mark, 565 mm side across the line; carton with its near face at
-  1.60 m. Pupper stops 0.36 m short of the slab, crosses, and is walking again with its body
-  centre about 1.0 m from the start, 0.6 m short of the carton.
+- **On the demo course** the first stretch is the flat bar, then the slab. Where each goes
+  is set in `path-navigation/config/demo.yaml` (`course.obstacles`) and described in
+  `path-navigation/README.md`, "Demo instructions"; that file is the one to trust for the
+  distances. In simulation Pupper stops 0.36 m short of each, the bar takes about 52 s and
+  moves the body 0.58 m, the slab about 80 s and 0.87 m.
 - **Modes** (`/terrain/mode`, a `std_msgs/String`): `full` crosses what can be crossed,
   `avoid` walks around everything, `report` only looks, `off` switches it off.
 - **Before a demo:** do one crossing as a warm-up. Planning the same slab again is quicker.
@@ -345,6 +360,11 @@ mics as extra mass, the node's own hand-over):
   a low bar is stepped over.
 - **Through the real nodes** with a stand-in for ROS: camera frames of the slab → approach →
   measure → request → plan → hand-over → crossing in physics → hand-back.
+- **Bar, then slab, one after the other:** in physics, through the same crossing node with
+  nothing restarted: the bar stepped over (52 s, 0.58 m, tilt at most 3.8°), then the slab
+  0.36 m beyond where that left Pupper scaled across (80 s, 0.87 m, tilt at most 2.0°);
+  neither was pushed. And from camera frames with both in view at once: the bar is measured
+  and crossed first, then the slab. One run of each, not a spread of cases.
 
 Seen on the robot so far (26 November, evening; nothing moved):
 

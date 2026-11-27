@@ -33,7 +33,7 @@ REQUEST = "/terrain/step_over"
 class Rig:
     """Simulated robot + controller manager + the step-over node under test."""
 
-    def __init__(self, box=None, near=0.36, switch_time=0.03, width=0.50, mass=0.6):
+    def __init__(self, box=None, near=0.36, switch_time=0.03, width=0.50, mass=0.6, more_boxes=()):
         self.bus = fake_ros.install()
         for name in [m for m in sys.modules if m in ("stepover_node", "estop_guard", "terrain_node")]:
             del sys.modules[name]
@@ -42,7 +42,8 @@ class Rig:
         from terrain.config import TerrainConfig
 
         h, d = box or (0.0, 0.0)
-        self.sim_cfg = CS.SimConfig(box_height=h, box_depth=d, near=near, box_width=width, box_mass=mass)
+        self.sim_cfg = CS.SimConfig(box_height=h, box_depth=d, near=near, box_width=width, box_mass=mass,
+                                    more_boxes=tuple(more_boxes))
         self.model = CS.build_model(MODEL_XML, self.sim_cfg, near if h > 0 else 10.0)
         self.data = mujoco.MjData(self.model)
         self.robot = CS.Robot(self.model, self.data)
@@ -249,3 +250,34 @@ def test_full_scale_across_through_the_node():
     st = rig.request(cmd="cross", height=0.015, depth=0.38, near_x=0.36, method="board", dry_run=True, id="b")
     assert rig.states(st) == ["planning", "no_plan"]
 
+
+def test_low_bar_then_slab_two_crossings_in_a_row():
+    """The demo's first stretch: the low bar is stepped over, then the slab beyond it is
+    scaled across, by the same node without a restart. The second crossing is planned from
+    where the first one really left the robot, as the gauge would measure it."""
+    from terrain.crawl_planner import load_templates
+    if not load_templates():
+        pytest.skip("config/crawl_templates.json not built")
+    slab_near = 0.93                        # about 0.36 m ahead once the bar is behind (that crossing advances about 0.57 m)
+    rig = Rig(box=(0.019, 0.089), near=0.36, width=0.60, mass=0.6, more_boxes=[(0.015, 0.38, 0.565, slab_near, 2.0)])
+    body = lambda name: mujoco.mj_name2id(rig.model, mujoco.mjtObj.mjOBJ_BODY, name)      # noqa: E731
+    bar0, slab0 = rig.data.xpos[body("box")].copy(), rig.data.xpos[body("box2")].copy()
+    x0 = float(rig.robot.position()[0])
+    st = rig.request(cmd="cross", height=0.019, depth=0.089, near_x=0.36, id="bar")
+    assert rig.states(st) == ["planning", "started", "done"], st[-1]
+    assert "onto the box top" in next(x for x in st if x["state"] == "started")["plan"]
+    x1 = float(rig.robot.position()[0])
+    assert abs((x1 - x0) - st[-1]["advance"]) < 0.03, (x1 - x0, st[-1]["advance"])
+    assert rig.cm.active(rig.cm.walking)
+    rig.advance(1.0)                         # standing under the walking controller between the two
+    near = slab_near - float(rig.robot.position()[0])
+    assert 0.29 < near < 0.43, near
+    st = rig.request(cmd="cross", height=0.015, depth=0.38, near_x=near, id="slab")
+    assert rig.states(st) == ["planning", "started", "done"], st[-1]
+    rear_x = min(rig.data.site_xpos[mujoco.mj_name2id(rig.model, mujoco.mjtObj.mjOBJ_SITE, f"leg_{leg}_3_foot_site")][0]
+                 for leg in ("back_r", "back_l"))
+    assert rear_x > slab_near + 0.38 + 0.02, "rear feet are beyond the slab"
+    assert st[-1]["max_tilt_deg"] < 8.0
+    assert float(np.linalg.norm((rig.data.xpos[body("box")] - bar0)[:2])) < 0.004, "the bar was not pushed"
+    assert float(np.linalg.norm((rig.data.xpos[body("box2")] - slab0)[:2])) < 0.004, "the slab was not pushed"
+    assert rig.robot.position()[2] > 0.14 and rig.cm.active(rig.cm.walking)

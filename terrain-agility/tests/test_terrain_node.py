@@ -199,6 +199,48 @@ def test_slab_is_approached_gauged_and_scaled_across(tmp_path):
     assert rig.state() == "CRUISE"
 
 
+def test_low_bar_then_slab_are_crossed_one_after_the_other(tmp_path):
+    """The demo's first stretch: a low bar with the slab 0.7 m beyond it, both in view from
+    the start. The bar is measured and stepped over; then, with nothing restarted, the slab
+    is measured and scaled across."""
+    rig = Rig(tmp_path)
+    rig.run(0.5, jpeg(Scene(seed=1)))
+    both = lambda dist: jpeg(Scene(boxes=[Cuboid(dist, 0.0, 0.089, 0.6, 0.019, side=BEIGE, top=WHITE),       # noqa: E731
+                                          Cuboid(dist + 0.70, 0.0, 0.38, 0.565, 0.015, side=BEIGE, top=WHITE)], seed=3))
+    status = rig.node.cfg.stepover["status_topic"]
+    rig.run(0.6, both(0.70))
+    assert rig.state() == "APPROACH", [m.data for m in rig.sent("/terrain/event")]
+    rig.run(4.0, both(0.37))
+    reqs = [json.loads(m.data) for m in rig.sent("/terrain/step_over")]
+    assert len(reqs) == 1, [m.data for m in rig.sent("/terrain/event")]
+    bar = reqs[0]
+    assert bar["method"] == "board" and abs(bar["height"] - 0.019) < 0.004 and abs(bar["depth"] - 0.089) < 0.012
+    assert abs(bar["near_x"] - 0.37) < 0.012
+    rig.bus.publish(status, fake_ros.String(data=json.dumps({"state": "started", "request": bar["id"], "plan": "..."})))
+    rig.run(1.0, None)
+    st = json.loads(rig.sent("/terrain/state")[-1].data)
+    assert st["state"] == "STEP_OVER" and st["kind"] == "step_over"
+    rig.bus.publish(status, fake_ros.String(data=json.dumps({"state": "done", "request": bar["id"], "advance": 0.58})))
+    rig.run(0.2, None)
+    assert rig.state() == "CRUISE"
+    # the bar is behind; the slab is now 0.49 m ahead (0.37 + 0.70 - 0.58): approached, measured, crossed
+    rig.run(0.6, slab(0.49))
+    assert rig.state() == "APPROACH", [m.data for m in rig.sent("/terrain/event")]
+    rig.run(4.0, slab(0.37))
+    reqs = [json.loads(m.data) for m in rig.sent("/terrain/step_over")]
+    assert len(reqs) == 2, [m.data for m in rig.sent("/terrain/event")]
+    second = reqs[1]
+    assert second["id"] != bar["id"] and second["method"] == "slab"
+    assert abs(second["height"] - 0.015) < 0.004 and abs(second["depth"] - 0.38) < 0.015 and abs(second["near_x"] - 0.37) < 0.012
+    rig.bus.publish(status, fake_ros.String(data=json.dumps({"state": "started", "request": second["id"], "plan": "..."})))
+    rig.run(1.0, None)
+    st = json.loads(rig.sent("/terrain/state")[-1].data)
+    assert st["state"] == "SCALE_ACROSS" and st["kind"] == "scale_across"
+    rig.bus.publish(status, fake_ros.String(data=json.dumps({"state": "done", "request": second["id"], "advance": 0.87})))
+    rig.run(0.2, None)
+    assert rig.state() == "CRUISE"
+
+
 def test_round_bar_is_measured_and_walked_around(tmp_path):
     """A 5 cm round bar: low enough to be worth a closer look, but round (no foothold) and too
     big to carry a foot over. It is walked around, and the event says why."""
