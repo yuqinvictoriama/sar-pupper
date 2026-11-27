@@ -645,6 +645,42 @@ class BallColourAndShapeTests(unittest.TestCase):
         self.assertLess(math.hypot(got[0].u - 1000, got[0].v - 200), 2)
 
 
+class ColourStepTests(unittest.TestCase):
+    """What the colour step takes for the ball. On the Pupper the fisheye's step learnt the hand holding it."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+        import calibrate_color
+        self.cc = calibrate_color
+
+    def patches(self, bgr):
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        cand = cv2.inRange(hsv, self.cc.PRIOR_LO, self.cc.PRIOR_HI)
+        return cv2.connectedComponentsWithStats(cand, connectivity=8)
+
+    def test_a_hand_is_not_taken_for_the_ball(self):
+        img = np.full((400, 600, 3), 90, np.uint8)
+        skin = cv2.cvtColor(np.uint8([[[17, 95, 200]]]), cv2.COLOR_HSV2BGR)[0, 0].tolist()     # as measured, cast removed
+        ball = cv2.cvtColor(np.uint8([[[40, 140, 190]]]), cv2.COLOR_HSV2BGR)[0, 0].tolist()
+        cv2.circle(img, (200, 200), 60, skin, -1)                # a fist: round, and bigger than the ball
+        cv2.circle(img, (420, 200), 25, ball, -1)
+        n, labels, stats, _ = self.patches(img)
+        i = self.cc.ball_component(stats)
+        self.assertTrue(i)
+        x, y, w, h, _a = stats[i]
+        self.assertLess(abs(x + w / 2 - 420), 3, "the ball, not the hand")
+
+    def test_the_ball_is_found_beside_a_bigger_patch_that_is_not_round(self):
+        img = np.full((400, 600, 3), 90, np.uint8)
+        ball = cv2.cvtColor(np.uint8([[[40, 140, 190]]]), cv2.COLOR_HSV2BGR)[0, 0].tolist()
+        cv2.rectangle(img, (20, 300), (560, 340), ball, -1)      # a green sleeve or a strip of reflection
+        cv2.circle(img, (300, 120), 25, ball, -1)
+        n, labels, stats, _ = self.patches(img)
+        x, y, w, h, _a = stats[self.cc.ball_component(stats)]
+        self.assertLess(abs(y + h / 2 - 120), 3)
+        self.assertEqual(self.cc.ball_component(stats[:1]), 0)   # nothing there at all
+
+
 class ColourCastTests(unittest.TestCase):
     """The same room and ball under different white balances must look the same to the detector."""
 

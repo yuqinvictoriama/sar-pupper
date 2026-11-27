@@ -37,11 +37,27 @@ from _common import ROOT, cv2, load_config, np, open_feed, run_tool, wait_first
 
 from dodge.camera_models import Camera
 from dodge.colorfit import fit_color
-from dodge.config import COLOUR_FIT, save_calib
+from dodge.config import BALL_HUE, COLOUR_FIT, save_calib
 from dodge.detect import BallDetector
 
-PRIOR_LO = np.array([15, 60, 50], dtype=np.uint8)     # anything from yellow to green, reasonably saturated
+# What may be the ball, in a picture with the colour cast taken out: yellow-green to green, reasonably
+# saturated. The lower hue limit keeps skin and wood out. Measured on the Pupper (2026-11-26, lamp light,
+# all three cameras): the ball's hue is 35-56, a hand's and a wooden floor's 11-25. With the limit at 15
+# the fisheye's colour step learnt the hand holding the ball, twice (hue 9-28 and 8-27).
+PRIOR_LO = np.array([28, 60, 50], dtype=np.uint8)
 PRIOR_HI = np.array([90, 255, 255], dtype=np.uint8)
+
+
+def ball_component(stats) -> int:
+    """Which changed, ball-coloured patch is the ball: the biggest one that is round and big enough (0: none).
+    (Taking only the biggest threw away every picture in which a sleeve or a reflection was bigger.)"""
+    for i in 1 + np.argsort(-stats[1:, cv2.CC_STAT_AREA]):
+        x, y, w, h, area = (int(v) for v in stats[i])
+        if area < 150:
+            break
+        if max(w, h) <= 2.2 * min(w, h) and area >= 0.55 * math.pi / 4 * w * h:
+            return int(i)
+    return 0
 
 
 def grab(feed, n: int, gap: float = 0.0) -> list:
@@ -113,10 +129,10 @@ def calibrate_color(feed, cfg: dict, name: str, seconds: float) -> None:
         n, labels, stats, _ = cv2.connectedComponentsWithStats(cand, connectivity=8)
         if n <= 1:
             continue
-        i = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        i = ball_component(stats)
+        if not i:
+            continue                                   # nothing round and big enough: the ball is not in this picture
         x, y, w, h, area = (int(v) for v in stats[i])
-        if area < 150 or max(w, h) > 2.2 * min(w, h) or area < 0.55 * math.pi / 4 * w * h:
-            continue                                   # too small, or not round: probably not the ball
         core = cv2.erode((labels == i).astype(np.uint8), kernel)   # stay off the blurry rim
         px = hsv[core > 0]
         if len(px) < 30:
@@ -168,6 +184,10 @@ def calibrate_color(feed, cfg: dict, name: str, seconds: float) -> None:
         print("  note: that is not much margin. The underside of a ball in flight is darker than a ball held in the\n"
               "  light, so some throws will be picked up late or not at all. More light in the room gives more margin\n"
               "  (then tune_exposure.py and this step again).")
+    if color["h_max"] < BALL_HUE[0] or color["h_min"] > BALL_HUE[1]:
+        raise SystemExit("\nThat is not the ball's green (hue %d-%d of it at least), so it sampled something else that moved: a\n"
+                         "hand, a sleeve. Nothing was written. Run the step again holding the ball by your fingertips, from\n"
+                         "below, so that the camera sees more ball than hand." % BALL_HUE)
     color["fit"] = COLOUR_FIT
     path = save_calib(name + "_color", {"cameras": {name: {"color": color}}})
     print("  written to %s" % path)
