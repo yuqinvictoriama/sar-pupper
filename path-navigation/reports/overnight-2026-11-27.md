@@ -157,7 +157,7 @@ No other exceptions in 15,500 runs (all batches together). There were no illegal
 
 ## Proposed fixes to nav/mission.py (not applied: another session owns the file)
 
-These are fixes A–D above, in `reports/overnight-2026-11-27-mission.diff`. It applies cleanly to `nav/mission.py` at 27292b6 (`git apply path-navigation/reports/overnight-2026-11-27-mission.diff`), and `tests/test_mission.py` passes with it (34 tests).
+These are fixes A–D above, in `reports/overnight-2026-11-27-mission.diff`, now rebased onto edad014 (see "Re-check on the one-bearing simulator" below). The diff also adds 5 tests to `tests/test_mission.py`. Apply it with `git apply path-navigation/reports/overnight-2026-11-27-mission.diff`.
 
 Paired soak, current mission vs fixes A–D:
 
@@ -172,6 +172,41 @@ Paired soak, current mission vs fixes A–D:
 All 45 runs lost under faults were ones the current mission "reached" only through an operator goto from HOLD or PAUSED. With D, that goto is refused, so these are not real losses. One run was won.
 
 The fixes were sent to the "Demo path navigation" session with these repro seeds, followed by the retraction of fix 5.
+
+## Re-check on the one-bearing simulator (edad014, the partner's sound integration)
+
+The diff was rebased onto edad014. `nav/mission.py` and `tests/test_mission.py` were not changed by that commit, so only the context moved. It passes `git apply --check` at edad014 (and at a6ffc73, which does not touch path-navigation).
+
+It now also adds 5 tests to `tests/test_mission.py`:
+
+- a crossing with no `done` HOLDs;
+- a slow crossing that keeps reporting is not given up;
+- a crossing whose `started` was missed is still counted;
+- the back-off never reverses into a tall obstacle just passed;
+- no goto from PAUSED, HOLD or RESCUE.
+
+Four of these fail without the fixes; the slow-crossing one passes on both, as a guard.
+
+**Tests**, `pytest tests` on a copy of edad014 (not the shared tree):
+
+| | Result |
+|---|---|
+| Without the fixes | 65 passed, 2 skipped |
+| With the diff applied | 70 passed, 2 skipped |
+
+**Paired soak on the new simulator**: one bearing per cry, `drop_p` 0.4, `window_s` 20, `min_confidence` 0.5. Same seeds and the same code for both columns.
+
+| | Current mission | Fixes A–D |
+|---|---|---|
+| Clean, seeds 0–399, reached | 265 | 264 |
+| Faulted, seeds 30000–30599, reached | 194 | 177 |
+| Faulted, deadlocks (all `crossing_drop_done`) | 15 | 0 (16 HOLD "the crossing has not reported its end" instead) |
+| Faulted, goto accepted mid-run | 27 | 0 |
+| Exceptions, illegal transitions, wrong resumes, velocity while stopped, reflexes in the wrong state | 0 | 0 |
+
+- **The 17 faulted runs lost** are all runs the current mission "reached" only through an operator goto from HOLD or PAUSED, which fix D refuses.
+- **The one clean run lost (seed 12)** is a trade-off in fix C: low bar 0.459, carton 1.245, slab 2.201. Stuck at the slab 0.39 m past the carton's far edge, the current mission reversed 0.45 m blind. It got away with it because it was off to the carton's side. Fix C does not reverse there, and ends in HOLD. Fix C does not know the lateral offset, so it errs towards not reversing.
+- **The sim change, apart from the fixes:** with no faults, the current mission reached 265 of seeds 0–399 on the new simulator and 268 of the same seeds on the old two-bearing one.
 
 ## What remains unverified
 
