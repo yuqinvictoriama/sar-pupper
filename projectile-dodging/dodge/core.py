@@ -262,7 +262,7 @@ class DodgeCore:
             if self.threat_counts[th.track_id] < self.confirm_cycles:
                 self.hold = "hit predicted, waiting for a second picture to agree"
                 return False                              # want the verdict repeated first
-            if not th.confident and th.unseen_s < self.unseen_fire:
+            if not th.confident and not (th.left_view and th.unseen_s >= self.unseen_fire):
                 self.hold = "hit predicted, but where it passes is still uncertain"
                 return False                              # sideways prediction still vague, and more looks are coming
         if not self.can_dodge:
@@ -334,10 +334,23 @@ class DodgeCore:
         picture: (state, time of the state, body-to-world rotation, drag constant), or None when nothing
         that is closing in is tracked. See predict_pixel."""
         with self.lock:
-            tracks = [tr for tr in self.tracker.confirmed() if tr.closing_speed > 0.5]
-            if not tracks:
-                return None
-            tr = max(tracks, key=lambda k: k.closing_speed)
+            if self.assessor.use_bearing:
+                # Only a ball the bearing check takes to be in flight toward the robot (a hit, or one that
+                # will pass beside it). With a hint a camera searches a small window in most pictures and the
+                # whole picture only now and then, so a hint for the wrong thing hides the real ball. Before
+                # 2026-11-27 any track whose blob was growing gave one, and a flickering still patch does
+                # that: in a recording of the Pupper's it hid a lob in two pictures of every three.
+                urgent = {th.track_id: th.tau for th in self.last_threats
+                          if th.is_threat or th.reason == "will miss"}
+                tracks = [tr for tr in self.tracker.tracks if tr.id in urgent]
+                if not tracks:
+                    return None
+                tr = min(tracks, key=lambda k: urgent[k.id])
+            else:
+                tracks = [tr for tr in self.tracker.confirmed() if tr.closing_speed > 0.5]
+                if not tracks:
+                    return None
+                tr = max(tracks, key=lambda k: k.closing_speed)
             return tr.x.copy(), float(tr.t), self.orientation(None).copy(), float(self.tracker.drag_k)
 
     def predicted_pixel(self, cam: str, t: float, size=None):

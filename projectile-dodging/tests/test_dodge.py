@@ -691,8 +691,9 @@ class BearingTests(unittest.TestCase):
         self.assertFalse(th.is_threat, th.reason)
         self.assertIn("not getting bigger", th.reason)
 
-    def feed(self, core, p0, v0, cams, n, dt=0.045, t0=30.0):
-        """Give the core n looks of a ball in free flight, by the named cameras in turn. Returns the time of the last."""
+    def feed(self, core, p0, v0, cams, n, dt=0.045, t0=30.0, top=()):
+        """Give the core n looks of a ball in free flight, by the named cameras in turn. Returns the time of the last.
+        top: which looks (by number) are in the top strip of the picture, from where a climbing ball leaves the view."""
         from dodge.measure import Measurement
         for i in range(n):
             t = t0 + i * dt
@@ -700,7 +701,8 @@ class BearingTests(unittest.TestCase):
             d = p - self.LENS
             r = float(np.linalg.norm(d))
             cam = cams[i % len(cams)]
-            core.process_measurements(cam, t, [Measurement(cam, self.LENS.copy(), d / r, 0.074 / r, r, 0.01, 0.04 * r, False)], t)
+            core.process_measurements(cam, t, [Measurement(cam, self.LENS.copy(), d / r, 0.074 / r, r, 0.01, 0.04 * r, False,
+                                                           near_top=i in top)], t)
         return t0 + (n - 1) * dt
 
     def test_a_lob_from_straight_behind_seen_only_twice_is_still_dodged(self):
@@ -710,7 +712,7 @@ class BearingTests(unittest.TestCase):
         p0, v0 = self.lob(2.3, 180.0, 1.05)
         core = DodgeCore(CFG, armed=True)
         core.set_can_dodge(True)
-        t = self.feed(core, p0, v0, ["elp_left"], 2)
+        t = self.feed(core, p0, v0, ["elp_left"], 2, top=(1,))
         fired_at = None
         for k in range(1, 30):                                   # the other cameras' pictures keep coming, without the ball
             now = t + 0.016 * k
@@ -725,12 +727,16 @@ class BearingTests(unittest.TestCase):
 
     def test_two_looks_that_do_not_climb_like_a_lob_are_not_judged(self):
         from dodge.core import DodgeCore
-        for p0, v0, cams in (((-2.3, 0.0, 0.6), (0.0, 0.0, 0.0), ["elp_left"]),                 # a still thing
-                             ((-2.3, 0.0, 0.6), (0.0, 2.5, 0.3), ["elp_left"]),                 # going sideways
-                             ((2.3, 0.0, 0.6), (-2.2, 0.0, 4.6), ["fisheye"])):                 # in front: the fisheye sees all of a lob
+        side = self.lob(2.3, 95.0, 1.05)
+        behind = self.lob(2.3, 180.0, 1.05)
+        for p0, v0, cams, top in (((-2.3, 0.0, 0.6), (0.0, 0.0, 0.0), ["elp_left"], (1,)),      # a still thing
+                                  ((-2.3, 0.0, 0.6), (0.0, 2.5, 0.3), ["elp_left"], (1,)),      # going sideways
+                                  ((2.3, 0.0, 0.6), (-2.2, 0.0, 4.6), ["fisheye"], (1,)),       # in front: the fisheye sees all of a lob
+                                  (side[0], side[1], ["elp_left"], (1,)),                       # a lob, but from the side: three looks will come
+                                  (behind[0], behind[1], ["elp_left"], ())):                    # behind, but mid-picture: it was hidden, not gone
             core = DodgeCore(CFG, armed=True)
             core.set_can_dodge(True)
-            t = self.feed(core, p0, v0, cams, 2)
+            t = self.feed(core, p0, v0, cams, 2, top=top)
             self.assertFalse(any(tr.climber for tr in core.tracker.tracks))
             for k in range(1, 30):
                 now = t + 0.016 * k
@@ -748,22 +754,49 @@ class BearingTests(unittest.TestCase):
             tracker.update(t, [Measurement("elp_left", np.zeros(3), ray, 0.03, 2.4, 0.01, 0.1, False)])
         self.assertEqual([(tr.hits, tr.climber) for tr in tracker.tracks], [(2, False)])
 
-    def test_a_ball_on_its_way_is_followed_until_it_is_due_and_dodged_without_a_surer_look(self):
-        # Three looks shared between the two rear cameras, then out of sight: the sideways estimate is
-        # still vague, but no better look is coming, so it must not wait for one.
+    def three_quick_looks_then_gone(self, top):
+        """Three looks 24 ms apart (the sideways estimate is still vague after those), then out of sight.
+        Returns how long after the last look a dodge started, or None."""
         from dodge.core import DodgeCore
         p0, v0 = self.lob(2.6, 178.0, 1.1)
         core = DodgeCore(CFG, armed=True)
         core.set_can_dodge(True)
-        t = self.feed(core, p0, v0, ["elp_left", "elp_right"], 3, dt=0.024)
-        fired = False
-        for k in range(1, 40):
+        t = self.feed(core, p0, v0, ["elp_left"], 3, dt=0.024, top=top)
+        for k in range(1, 22):
             now = t + 0.016 * k
-            fired = core.process_measurements("fisheye", now, [], now) or fired
-            if fired:
-                break
-        self.assertTrue(fired)
-        self.assertLess(now - t, 0.35)
+            if core.process_measurements("fisheye", now, [], now):
+                return now - t
+        return None
+
+    def test_a_ball_that_climbed_out_of_the_picture_is_dodged_without_a_surer_look(self):
+        # No better look is coming, so it must not wait for one.
+        fired = self.three_quick_looks_then_gone(top=(2,))
+        self.assertIsNotNone(fired)
+        self.assertLess(fired, 0.35)
+
+    def test_a_ball_that_just_stops_being_seen_mid_picture_is_waited_for(self):
+        # Hidden by a hand or a basket, not gone: four false dodges in the overnight replay came from not
+        # telling the two apart. It is still dodged once there is no time left to wait.
+        late = self.three_quick_looks_then_gone(top=())
+        gone = self.three_quick_looks_then_gone(top=(2,))
+        self.assertTrue(late is None or late > gone + 0.1)
+
+    def test_a_still_patch_whose_blob_grows_does_not_narrow_the_cameras_search(self):
+        # With a hint the cameras search a small window in most pictures. A flickering still patch used to
+        # give one (its blob "grows"), which hid a real lob in two pictures of every three in a recording.
+        from dodge.core import DodgeCore
+        from dodge.measure import Measurement
+        core = DodgeCore(CFG, armed=False)
+        ray = np.array([-0.6, 0.7, 0.35]) / np.linalg.norm([-0.6, 0.7, 0.35])
+        for i, r in enumerate((2.6, 2.3, 2.0, 1.7, 1.5, 1.4)):
+            t = 40.0 + 0.045 * i
+            core.process_measurements("elp_left", t, [Measurement("elp_left", self.LENS.copy(), ray, 0.074 / r, r, 0.01, 0.04 * r, False)], t)
+        self.assertTrue(any(tr.confirmed and tr.closing_speed > 0.5 for tr in core.tracker.tracks), "by its size it is rushing in")
+        self.assertIsNone(core.track_hint())
+        p0, v0 = self.lob(2.5, 150.0, 0.9)                       # a real lob does give one
+        core2 = DodgeCore(CFG, armed=False)
+        self.feed(core2, p0, v0, ["elp_left"], 4)
+        self.assertIsNotNone(core2.track_hint())
 
     def test_the_time_it_gives_does_not_depend_on_reading_the_size_right(self):
         # The same lob with every range read 15 % too far (a blob that comes out small): 15 % later, no more.
@@ -771,7 +804,7 @@ class BearingTests(unittest.TestCase):
         tr, t = self.looks(p0, v0, n=4)
         good = self.assess(tr, t)
         for i, h in enumerate(tr.history):
-            tr.history[i] = (h[0], h[1], h[2], h[3], h[4], h[5] * 1.15, h[6])
+            tr.history[i] = h[:5] + (h[5] * 1.15,) + h[6:]
         off = self.assess(tr, t)
         self.assertTrue(off.is_threat, off.reason)
         self.assertAlmostEqual(off.closing_speed, good.closing_speed, delta=0.05 * good.closing_speed)

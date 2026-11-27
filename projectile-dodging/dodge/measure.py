@@ -29,6 +29,7 @@ class Measurement:
     v: float = 0.0
     area: float = 0.0
     vague: bool = False     # range not to be relied on: cut by the frame edge, or not round (part of the ball hidden or in shadow)
+    near_top: bool = False  # in the top strip of a flat-lens picture: a ball climbing from here is about to leave the camera's view
 
     @property
     def point(self) -> np.ndarray:
@@ -114,7 +115,8 @@ def measure_blob(camera: Camera, blob, ball_diameter: float) -> Measurement | No
     sigma_t = rng * math.radians(float(cfg.get("bearing_sigma_deg", 0.3)))
     sigma_t = max(sigma_t, rng * math.tan(math.sqrt(camera.model.solid_angle_per_px(blob.u, blob.v)) * 0.4))
     return Measurement(camera.name, camera.t.copy(), ray_b, theta, rng, sigma_t, sigma_r, truncated,
-                       blob.u, blob.v, blob.area, truncated or lopsided)
+                       blob.u, blob.v, blob.area, truncated or lopsided,
+                       not circle and (blob.v - 0.5 * blob.h) <= float(cfg.get("top_strip", 0.22)) * camera.model.height)
 
 
 def measure_blobs(camera: Camera, blobs, ball_diameter: float) -> list:

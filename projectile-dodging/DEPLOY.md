@@ -44,7 +44,7 @@ cd ~/sar-pupper && git pull && cd projectile-dodging
 python3 -m unittest discover -s tests
 ```
 
-- [ ] It ends with `OK` after 100 tests or more. If not, stop and send me the output.
+- [ ] It ends with `OK` after about 110 tests. If not, stop and send me the output.
 
 The line `note: the colour calibration in ... fisheye_color.yaml is for hue 9-28 ... is being ignored`
 is expected until step C.
@@ -331,16 +331,17 @@ Every calibration distance below fits in 2 m.
   The rear cameras overlap there, but only up to 30° above the horizontal
   (38° at 15° to one side, 46° at the rear diagonals), and a lob from 2.5 m is
   above that 0.1 s after release. So the node makes the most of that tenth of
-  a second: both rear cameras' looks are put together, a ball they saw only
-  twice climbing like a lob is judged on those two looks, and a ball judged to
-  be on its way is dodged without waiting for a better look that cannot come.
+  a second: a ball seen only twice, climbing out of the top of a rear picture
+  within 30° of straight behind, is judged on those two looks, and a ball that
+  left the picture that way is dodged without waiting for a better look that
+  cannot come.
   Simulated, straight behind (within 15°), 40 throws each, at the measured
   rates:
 
   | From behind | 2–2.5 m | 2.5–3.5 m |
   |---|---|---|
-  | High lob (peaks 0.8–1.2 m above the hand) | 85 % | 92 % |
-  | Shoulder-height lob | 72 % | 72 % |
+  | High lob (peaks 0.8–1.2 m above the hand) | 82 % | 92 % |
+  | Shoulder-height lob | 70 % | 70 % |
   | Flat, chest-high | – | 0 % |
 
   **From behind, throw high.** A flat throw from behind arrives in about 0.55 s
@@ -418,7 +419,7 @@ SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 ## 2. Check the code runs (no robot needed)
 
 ```bash
-python3 -m unittest discover -s tests     # expect: Ran 100 tests ... OK (more once other tools' tests are added)
+python3 -m unittest discover -s tests     # expect: about 110 tests ... OK
 python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7 --elp-fps 30    # simulated 2 m throws, rear cameras at their 30 a second; about a minute on the Pi
 ```
 

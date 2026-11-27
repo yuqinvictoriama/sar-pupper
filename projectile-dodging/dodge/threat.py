@@ -33,6 +33,7 @@ class Threat:
     range_m: float = 0.0
     speed: float = 0.0
     unseen_s: float = 0.0              # how long since a camera last saw it
+    left_view: bool = False            # ... and it was last seen at the top of a rear picture, climbing: it left the cameras' view
 
     def summary(self) -> dict:
         return {"track": self.track_id, "threat": self.is_threat, "confident": self.confident, "reason": self.reason,
@@ -69,7 +70,7 @@ class ThreatAssessor:
         self.min_climb = float(cfg.get("min_climb", 0.02))
         self.min_span = float(cfg.get("min_span_s", 0.045))
         self.two_look_wait = float(cfg.get("two_look_wait_s", 0.07))
-        self.pool = tuple(tuple(g) for g in cfg.get("bearing_pool", [["elp_left", "elp_right"]]))
+        self.pool = tuple(tuple(g) for g in cfg.get("bearing_pool", []))
         self.bearing_max_closing = float(cfg.get("bearing_max_closing_speed", 7.0))
         self.aim_z = 0.0          # height the ball is taken to be aimed at: the middle of the body (base_link origin)
         self.loom_min = float(cfg.get("loom_min", 0.3))
@@ -99,6 +100,7 @@ class ThreatAssessor:
         if R_wb is None:
             R_wb = np.eye(3)
         th.unseen_s = t_now - track.t_last
+        th.left_view = bool(getattr(track, "left_through_top", False))
         # A ball the rear cameras saw twice, climbing, and then not again went up out of their sight
         # (see Tracker._climbs): it is judged on those two looks once a third is overdue.
         two = bool(getattr(track, "climber", False)) and track.hits == 2 and th.unseen_s >= self.two_look_wait

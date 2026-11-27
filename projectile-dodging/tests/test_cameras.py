@@ -178,10 +178,14 @@ class HintTests(unittest.TestCase):
         camera = build_cameras(CFG)["elp_left"]
         pipe = FramePipeline("elp_left", CFG)
         self.assertIsNone(core.track_hint())
-        # a ball coming in from the rear left, seen by the pipeline frame by frame
-        p0, v = np.array([-2.2, 1.8, 0.9]), np.array([3.0, -2.5, 0.5])
+        # a lob coming in from the rear left that will reach the robot, seen by the pipeline frame by frame.
+        # (Only a ball judged to be on its way gives a hint: a hint for anything else would have the
+        # cameras search a small window around the wrong thing.)
+        flight = 0.75
+        p0 = np.array([-2.2, 1.8, 0.9])
+        v = np.array([-p0[0] / flight, -p0[1] / flight, (-p0[2] + 4.905 * flight * flight) / flight])
         used_roi = 0
-        for i in range(14):
+        for i in range(12):
             t = 50.0 + i / 30.0
             p = p0 + v * (i / 30.0) + np.array([0.0, 0.0, -4.905]) * (i / 30.0) ** 2
             img, ok = render_ball(camera, p)

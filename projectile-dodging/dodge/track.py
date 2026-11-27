@@ -26,7 +26,8 @@ class Track:
     _next_id = 1
 
     def __init__(self, t: float, p: np.ndarray, P_pos: np.ndarray, speed_sigma: float, cam: str, good: bool = True,
-                 ray: np.ndarray | None = None, origin: np.ndarray | None = None, range_m: float | None = None):
+                 ray: np.ndarray | None = None, origin: np.ndarray | None = None, range_m: float | None = None,
+                 near_top: bool = False):
         self.id = Track._next_id
         Track._next_id += 1
         self.x = np.zeros(6)
@@ -45,7 +46,7 @@ class Track:
         self.cams = {cam}
         self.last_cam = cam
         # recent raw measurements: (t, point in the world frame, camera, range trustworthy, ray from the lens, range, lens position)
-        self.history = [self._look(t, p, cam, good, ray, origin, range_m)]
+        self.history = [self._look(t, p, cam, good, ray, origin, range_m, near_top)]
         self.p_first = np.array(p, dtype=float)          # where it was first seen
 
     # ---- convenience views of the state
@@ -84,7 +85,7 @@ class Track:
         return float(-np.dot(self.x[:3], self.x[3:]) / r) if r > 1e-6 else 0.0
 
     @staticmethod
-    def _look(t, z, cam, good, ray=None, origin=None, range_m=None):
+    def _look(t, z, cam, good, ray=None, origin=None, range_m=None, near_top=False):
         z = np.array(z, dtype=float)
         origin = np.zeros(3) if origin is None else np.array(origin, dtype=float)
         if ray is None:
@@ -93,12 +94,20 @@ class Track:
             ray = d / n if n > 1e-9 else np.array([1.0, 0.0, 0.0])
         if range_m is None:
             range_m = float(np.linalg.norm(z - origin))
-        return (t, z, cam, bool(good), np.array(ray, dtype=float), float(range_m), origin)
+        return (t, z, cam, bool(good), np.array(ray, dtype=float), float(range_m), origin, bool(near_top))
+
+    @property
+    def left_through_top(self) -> bool:
+        """Its last look was in the top strip of a rear camera's picture: if it is not seen again, it
+        climbed out of view. (A ball that stops being seen anywhere else was hidden, by a hand or a
+        basket, and that says nothing about where it is going.)"""
+        return bool(self.history and self.history[-1][7])
 
     def remember(self, t: float, z: np.ndarray, cam: str = "", good: bool = True, window: float = 0.35,
-                 ray: np.ndarray | None = None, origin: np.ndarray | None = None, range_m: float | None = None) -> None:
+                 ray: np.ndarray | None = None, origin: np.ndarray | None = None, range_m: float | None = None,
+                 near_top: bool = False) -> None:
         """good: the range of this measurement can be trusted (the blob was not cut off by the picture's edge)."""
-        self.history.append(self._look(t, z, cam, good, ray, origin, range_m))
+        self.history.append(self._look(t, z, cam, good, ray, origin, range_m, near_top))
         self.history = [h for h in self.history if h[0] >= t - window][-24:]
 
     def hit_course(self, min_looks: int = 3, min_span: float = 0.06, drop: float = 0.0, arrive=None, pool=()):
@@ -265,6 +274,7 @@ class Tracker:
         self.max_tracks = int(cfg.get("max_tracks", 24))
         self.climber_cams = set(cfg.get("two_look_cameras", ["elp_left", "elp_right"]))
         self.climber_coast = float(cfg.get("two_look_coast_s", 0.35))
+        self.climber_bearing = float(cfg.get("two_look_min_bearing_deg", 150.0))
         self.climber_min = math.tan(math.radians(float(cfg.get("two_look_min_climb_deg", 3.0))))
         self.max_range = float(cfg.get("max_range_m", 8.0))
         self.drag_k = drag_coefficient(ball) if cfg.get("use_drag", True) else 0.0
@@ -362,9 +372,10 @@ class Tracker:
             tr.cams.add(m.cam)
             tr.last_cam = m.cam
             tr.remember(t, z, m.cam, not (getattr(m, "truncated", False) or getattr(m, "vague", False)),
-                        ray=items[mi][3], origin=items[mi][4], range_m=m.range_m)
+                        ray=items[mi][3], origin=items[mi][4], range_m=m.range_m,
+                        near_top=getattr(m, "near_top", False))
             if tr.hits == 2 and self.climber_cams:
-                tr.climber = self._climbs(tr)
+                tr.climber = self._climbs(tr, R_wb)
             if tr.hits >= self.confirm_hits:
                 tr.confirmed = True
                 if not tr.flying and tr.travel_m >= self.flight_travel:
@@ -381,19 +392,28 @@ class Tracker:
                 break
             self.tracks.append(Track(t, z, Rm, self.speed_sigma, m.cam,
                                      not (getattr(m, "truncated", False) or getattr(m, "vague", False)),
-                                     ray=_ray, origin=_origin, range_m=m.range_m))
+                                     ray=_ray, origin=_origin, range_m=m.range_m,
+                                     near_top=getattr(m, "near_top", False)))
 
-    def _climbs(self, tr: Track) -> bool:
+    def _climbs(self, tr: Track, R_wb: np.ndarray | None = None) -> bool:
         """Two looks by the rear cameras that show a ball climbing like a lob: clearly up, hardly sideways,
         the same size. Straight behind the robot those cameras see only 30 degrees above the horizontal,
-        and a lob is above that a tenth of a second after it is thrown: two looks is often all there is."""
+        and a lob is above that a tenth of a second after it is thrown: two looks is often all there is.
+
+        Only for a ball straight behind (two_look_min_bearing_deg) whose second look is in the top strip
+        of the picture, that is, one about to leave the cameras' view. Without those two conditions the
+        rule fired on balls being handled beside the robot (four false dodges in the Pupper's
+        recordings of 2026-11-26, found by the overnight replay)."""
         if len(tr.history) < 2:
             return False        # the first look was long ago and has been let go (a gap in the pictures): no pair to judge
         a, b = tr.history[-2], tr.history[-1]
         if not (a[2] in self.climber_cams and b[2] in self.climber_cams and a[3] and b[3]) or b[0] - a[0] < 0.02:
             return False
         fa, fb = float(np.hypot(a[4][0], a[4][1])), float(np.hypot(b[4][0], b[4][1]))
-        if min(fa, fb) < 0.1:
+        if min(fa, fb) < 0.1 or not b[7]:
+            return False
+        ray_b = b[4] if R_wb is None else R_wb.T @ b[4]              # in the robot's own frame: where it is relative to the nose
+        if abs(math.degrees(math.atan2(ray_b[1], ray_b[0]))) < self.climber_bearing:
             return False
         climb = b[4][2] / fb - a[4][2] / fa
         turn = abs(math.atan2(a[4][0] * b[4][1] - a[4][1] * b[4][0], a[4][0] * b[4][0] + a[4][1] * b[4][1]))

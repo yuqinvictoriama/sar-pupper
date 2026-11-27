@@ -54,7 +54,9 @@ def replay(path: str, cfg: dict, out: str | None = None, cameras=None, latency: 
         if bgr is None:
             continue
         t_first = t if t_first is None else t_first
-        blobs = dets[cam].process(t_raw, bgr).blobs
+        # process_jpeg, not process: the camera processes search a half-size decode of the JPEG first, and
+        # that finds the ball in pictures where a search of the shrunk full picture does not (and the reverse).
+        blobs = dets[cam].process_jpeg(t_raw, jpeg).blobs
         core.process_blobs(cam, t, blobs, t_now, (bgr.shape[1], bgr.shape[0]))
         for pipe in dets.values():
             pipe.set_hint(core.track_hint())
