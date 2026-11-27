@@ -105,6 +105,7 @@ class Mission:
         self.crossing_progress = 0.0
         self.crossing_advance = self.cfg.reckon.crossing_advance
         self.crossing_counted = 0.0
+        self.crossing_deadline = None           # a crossing that has not reported its end by then is lost
         self.restart_until = -1e9
         self.passed = 0                         # obstacles of the course behind it: crossed or walked around
         self.landmark_due = False               # the step-over node has just said it is planning a crossing
@@ -223,8 +224,8 @@ class Mission:
 
     def _jump(self, state: str, inp: Inputs) -> None:
         """Start the run from a later stage: Pupper has been placed there, facing along the line."""
-        if state not in RUN_ORDER or self.state in ACTIVE:
-            return
+        if state not in RUN_ORDER or self.state not in (IDLE, DONE):
+            return                                  # only from idle, as Mission Control's stage buttons are
         c = self.cfg.course
         at = {SEEK: 0.0, ORIENT: 0.0, CONFIRM: 0.0, ZONE1: 0.0, REFIX: c.refix_at, ZONE2: c.refix_at,
               ARRIVE: c.length, RESCUE: c.length}[state]
@@ -305,6 +306,11 @@ class Mission:
                 self._pause("joystick")
             elif not inp.imu_ok:
                 self._hold("the IMU has gone quiet")
+            elif self.crossing_active and self.crossing_deadline is not None and inp.t > self.crossing_deadline:
+                # the step-over node's "done" never came: it has stopped, or the message was lost
+                self.crossing_active = self.crossing_planning = False
+                self.crossing_deadline = None
+                self._hold("the crossing has not reported its end")
             elif inp.tilt_deg > cfg.safety.tilt_deg and not self.crossing_active:
                 self._pause("not standing level (fallen or lifted)")
             elif (self.state in (ORIENT, ZONE1, ZONE2) and self.motion and legs_listening
@@ -480,12 +486,22 @@ class Mission:
             advance = st.get("advance")             # metres the plan moves the body; there are no velocity commands
             self.crossing_advance = float(advance) if isinstance(advance, (int, float)) else self.cfg.reckon.crossing_advance
             self.crossing_counted = 0.0
+            duration = st.get("duration")
+            duration = float(duration) if isinstance(duration, (int, float)) else 90.0
+            self.crossing_deadline = self.t + max(1.5 * duration, duration + 30.0)
         elif state == "progress" and self.crossing_active:
+            if self.crossing_deadline is not None:      # still reporting: a slow crossing, not a lost one
+                self.crossing_deadline = max(self.crossing_deadline, self.t + 30.0)
             self.crossing_progress = max(self.crossing_progress, min(1.0, float(st.get("progress", 0.0) or 0.0)))
             step = self.crossing_advance * self.crossing_progress - self.crossing_counted
             self.reck.advance(step)                 # count it as it happens, so the distance never jumps
             self.crossing_counted += step
         elif state == "done" and not st.get("dry_run"):
+            if self.crossing_planning and not self.crossing_active:
+                self.crossing_counted = 0.0         # its "started" was missed: count this crossing all the same
+                self.crossing_advance = self.cfg.reckon.crossing_advance
+                self.crossing_active = True
+            self.crossing_planning = False
             if self.crossing_active:
                 advance = st.get("advance")
                 total = float(advance) if isinstance(advance, (int, float)) else self.crossing_advance
@@ -516,14 +532,19 @@ class Mission:
                 self.terrain_holds = [h for h in self.terrain_holds if inp.t - h < 30.0] + [inp.t]
             stuck = inp.t - self.terrain_hold_since > 8.0 or len(self.terrain_holds) >= 2
             if stuck and self.back_offs < self.cfg.walk.back_off_tries and "crossing" not in str(inp.terrain.get("reason", "")):
+                room = self._room_behind()
                 # It stands for 2 s and tries again by itself. Twice without getting on usually means it
                 # has ended up too close to the obstacle's corner: step back and let it look again.
                 self.back_offs += 1
                 self.avoid_next = True              # and do not walk up to measure it again: go around from here
                 self.terrain_holds = []
                 self.terrain_hold_since = None
-                self.back_off_until = inp.t + 2.0 + self.cfg.walk.back_off_m / self.cfg.walk.back_off_speed
-                self._note("backing_off", s=round(self.reck.s, 2), tries=self.back_offs)
+                # Reversing is blind: never back into an obstacle of the course already behind it
+                self.back_off_len = max(0.0, min(self.cfg.walk.back_off_m, room))
+                if self.back_off_len < 0.10:
+                    self.back_off_len = 0.0             # no room: only ask terrain agility to go around from here
+                self.back_off_until = inp.t + 2.0 + self.back_off_len / self.cfg.walk.back_off_speed
+                self._note("backing_off", s=round(self.reck.s, 2), tries=self.back_offs, m=round(self.back_off_len, 2))
             elif stuck:
                 self.terrain_holds = []
                 self._hold("terrain agility cannot find a way: " + str(inp.terrain.get("reason", ""))[:60])
@@ -531,13 +552,23 @@ class Mission:
             self.terrain_hold_since = None
         return ts
 
+    def _room_behind(self) -> float:
+        """Metres Pupper may reverse before its tail (0.2 m behind the centre, plus 0.15 m margin, for the
+        estimate's error) reaches the far edge of an obstacle behind it that it walked around, or that is
+        too tall to cross. A low one it crossed is not counted: reversing over it is what it did before."""
+        s, around = self.reck.s, getattr(self, "went_around", [])
+        behind = [float(o["near"]) + float(o.get("depth", 0.1)) for k, o in enumerate(self.cfg.course.obstacles)
+                  if k in around or float(o.get("height", 0.0)) >= 0.08]
+        behind = [far for far in behind if far < s]
+        return 9.9 if not behind else s - max(behind) - 0.35
+
     def _back_off(self, inp: Inputs):
         """While backing off: the command (None = stand and let terrain agility let go). Else False."""
         if inp.t >= self.back_off_until:
             return False
         left = self.back_off_until - inp.t
         walk = self.cfg.walk
-        if left > walk.back_off_m / walk.back_off_speed:
+        if left > getattr(self, "back_off_len", walk.back_off_m) / walk.back_off_speed:
             return None                             # first 2 s: say nothing, so terrain agility stands down
         return (-walk.back_off_speed, 0.0, 0.0)
 

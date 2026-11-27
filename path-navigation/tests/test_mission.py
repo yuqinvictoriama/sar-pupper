@@ -496,3 +496,73 @@ def test_status_is_json_and_carries_a_cue():
     r.to_seek()
     st = json.loads(json.dumps(r.m.status()))
     assert st["state"] == "SEEK" and st["cue"]["who"] == "Survivor" and "Help" in st["cue"]["text"]
+
+
+# ------------------------------------------------------------------ lost reports and blind reversing (overnight soak, 2026-11-27)
+def test_a_crossing_whose_end_never_comes_holds_instead_of_waiting_for_ever():
+    r = Rig()
+    r.to_zone1()
+    r.terrain.update(state="STEP_OVER"); r.mux = "none"; r.sent = None
+    r.tick(0.1, crossing=[{"state": "planning"}])
+    r.tick(0.1, crossing=[{"state": "started", "advance": 0.58, "duration": 52.0}])
+    r.tick(60.0)
+    assert r.m.state == M.ZONE1 and r.m.crossing_active        # longer than planned is not yet lost
+    r.tick(30.0)                                                # past max(1.5 x 52, 52 + 30) s with no "done"
+    assert r.m.state == M.HOLD and "crossing" in r.m.reason and not r.m.crossing_active
+
+
+def test_a_slow_crossing_that_keeps_reporting_is_not_given_up():
+    r = Rig()
+    r.to_zone1()
+    r.terrain.update(state="STEP_OVER"); r.mux = "none"; r.sent = None
+    r.tick(0.1, crossing=[{"state": "started", "advance": 0.58, "duration": 52.0}])
+    for k in range(1, 13):                                      # two minutes, a progress report every 10 s
+        r.tick(10.0, crossing=[{"state": "progress", "progress": k / 13}])
+    assert r.m.state == M.ZONE1 and r.m.crossing_active
+
+
+def test_a_crossing_whose_start_was_missed_is_still_counted():
+    r = Rig()
+    r.to_zone1()
+    r.terrain.update(state="PLAN", box={"near_x": 0.35, "height": 0.019, "depth": 0.089})
+    r.tick(0.1, crossing=[{"state": "planning"}])
+    stop = r.m.reck.s
+    r.terrain.update(state="CRUISE"); r.mux = "none"; r.sent = None
+    r.tick(0.1, crossing=[{"state": "done", "advance": 0.58}])  # "started" never arrived
+    assert abs(r.m.reck.s - (stop + 0.58)) < 0.02 and r.m.passed == 1
+    assert not r.m.crossing_planning and not r.m.crossing_active and "crossed" in r.events
+
+
+def test_backing_off_never_reverses_into_a_tall_obstacle_just_passed():
+    carton = {"name": "carton", "shape": "flat", "near": 0.50, "depth": 0.348, "width": 0.455, "height": 0.13}
+    slab = {"name": "slab", "shape": "flat", "near": 1.60, "depth": 0.38, "width": 0.565, "height": 0.015}
+    r = Rig(cfg=apply(DemoConfig(), {"course": {"obstacles": [carton, slab]}}))
+    r.to_zone1()
+    r.m.reck.set_s(1.05)                                        # 0.2 m past the carton's far edge
+    for _ in range(2):
+        r.terrain.update(state="HOLD", reason="blocked on both sides"); r.tick(0.2)
+        r.terrain.update(state="CRUISE"); r.tick(0.2)
+    assert "backing_off" in r.events and r.m.back_off_len == 0.0 and r.m.avoid_next
+    for _ in range(50):
+        r.tick(0.1)
+        assert r.out.cmd is None or r.out.cmd[0] >= 0.0         # never backwards
+
+
+def test_a_stage_cannot_be_jumped_to_from_pause_hold_or_rescue():
+    r = Rig()
+    r.to_zone2()
+    r.tick(commands=["pause"])
+    r.tick(commands=["goto:ZONE1"])
+    assert r.m.state == M.PAUSED and abs(r.m.reck.s - r.m.cfg.course.refix_at) < 0.5
+    r.tick(commands=["resume"])
+    r.tick(0.2, imu_ok=False)
+    assert r.m.state == M.HOLD
+    r.tick(commands=["goto:ZONE1"])
+    assert r.m.state == M.HOLD
+    r.tick(commands=["end"])
+    r.tick(3.0)
+    r.tick(commands=["goto:ARRIVE"])                            # from idle it is allowed
+    r.tick(commands=["phrase"])
+    assert r.m.state == M.RESCUE
+    r.tick(commands=["goto:ZONE1"])
+    assert r.m.state == M.RESCUE
