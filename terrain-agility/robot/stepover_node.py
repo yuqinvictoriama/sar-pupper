@@ -5,7 +5,9 @@
 
 Requests arrive as JSON on /terrain/step_over (std_msgs/String):
 
-    {"cmd": "cross", "height": 0.025, "depth": 0.064, "near_x": 0.36, "skew": 0.0}
+    {"cmd": "cross", "height": 0.015, "depth": 0.38, "near_x": 0.36, "skew": 0.0}
+        "method": "slab" scales across (onto the top, along it, off: terrain/crawl_planner.plan_scale_across),
+        "board" steps over a low bar using its top once (the stored patterns). Left out, the depth decides.
     {"cmd": "stand", "hold": 3.0}          rise to the crossing height, stand, lower (no foot leaves the floor)
     {"cmd": "crawl", "distance": 0.10}     slow crawl straight ahead on clear floor
     {"cmd": "stop"}                        abort whatever is running (joints go soft)
@@ -54,7 +56,7 @@ from std_msgs.msg import Empty, Float64MultiArray, String  # noqa: E402
 from terrain import handover as H  # noqa: E402
 from terrain.camera_model import level_from_body, tilt_of  # noqa: E402
 from terrain.config import TerrainConfig  # noqa: E402
-from terrain.crawl_planner import BoxSpec, plan_crawl, plan_crossing, plan_stand_test  # noqa: E402
+from terrain.crawl_planner import BoxSpec, plan_crawl, plan_crossing, plan_scale_across, plan_stand_test  # noqa: E402
 from terrain.kinematics import DEFAULT_JOINT_POS, JOINT_NAMES, all_feet, default_stance  # noqa: E402
 from terrain.player import TrajectoryPlayer  # noqa: E402
 
@@ -227,7 +229,13 @@ class StepOverNode(Node):
             cap = self.cfg.decision.height_cap + self.cfg.decision.height_guard
             if box.height > cap + 1e-9:
                 return None, f"box height {box.height * 1000:.0f} mm is over the {cap * 1000:.0f} mm limit"
-            plan = plan_crossing(box, crawl, search=self.cfg.allow_search)
+            method = req.get("method") or ("slab" if box.depth >= self.cfg.decision.slab_min_depth - 0.003 else "board")
+            if method == "slab":
+                plan = plan_scale_across(box, crawl)
+            elif method == "board":
+                plan = plan_crossing(box, crawl, search=self.cfg.allow_search)
+            else:
+                return None, f"unknown crossing method {method!r}"
         elif cmd == "stand":
             plan = plan_stand_test(crawl, hold=float(req.get("hold", 3.0)))
         elif cmd == "crawl":
@@ -273,7 +281,10 @@ class StepOverNode(Node):
             return
         summary = plan.summary().splitlines()[0]
         self.get_logger().info(plan.summary())
-        advance = round(float(plan.body[-1, 0] - plan.body[0, 0]), 3) if plan.body is not None and len(plan.body) else None
+        # the body's advance as it will really be: a slab is planned in the crawl's own measure,
+        # which counts a little more ground than the robot covers (crawl.advance_scale)
+        scale = self.cfg.crawl.advance_scale if getattr(plan, "counted", False) else 1.0
+        advance = round(scale * float(plan.body[-1, 0] - plan.body[0, 0]), 3) if plan.body is not None and len(plan.body) else None
         if dry:
             self.status("done", request=rid, dry_run=True, plan=summary, duration=round(plan.duration, 1),
                         planning_s=round(self.now() - t0, 2), advance=advance)

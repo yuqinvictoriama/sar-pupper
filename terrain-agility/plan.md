@@ -1,8 +1,56 @@
-# Terrain agility – plan and as-built design (v2)
+# Terrain agility – plan and as-built design (v3)
 
-v1 written 2026-11-23 as the plan to code against. **v2, same day: the plan has been implemented in this folder and tested in simulation; it has not been on the robot yet.** This version describes what was built, says where it differs from v1 and why, and gives the simulation results. `README.md` is the how-to (install, calibrate, bring-up); this file is the why.
+v1 written 2026-11-23 as the plan to code against. v2, same day: implemented and tested in simulation. **v3, 2026-11-26: three behaviours instead of two (step over, scale across, walk around), and obstacles told apart by shape instead of by taught colours. Implemented and tested in simulation; nothing here has been on the robot yet.** `README.md` is the reference, `deploy.md` the step-by-step; this file is the why.
 
-**Where the numbers come from.** Leg geometry, joint limits and mass are from the public Pupper v3 model (`pupper_v3_description`); controller, mux and e-stop behaviour from the public course repos (`pupperv3-monorepo`, `pupper_gait_deploy`, `gemini_pupper`, `follow_me_pupper`), read at the source. The crossing results are from a MuJoCo simulation of that model. Your own `sar-pupper` code was not readable from this session (the GitHub repo is empty), so interfaces to the dodge and survivor nodes follow their plans, not their code.
+The sections from "What changed from v1" onward are v2 as written. They still describe the low-bar gait, the hand-over, the abort rules and the walk-around exactly. Where they speak of "the two-colour box", read "a low bar whose edge shows" (T6 below).
+
+## What changed in v3
+
+The course obstacles changed: a white slab 15 mm tall × 565 mm wide × 380 mm deep with a raw board edge, a white round bar 50 mm across and 700 mm long, and a white carton 455 × 348 × 130 mm. v2 could cross one thing, a board with blue sides and a white top, and walked around everything else low. None of the new obstacles is blue, and the slab is four times deeper than anything v2 would cross.
+
+| v2 | v3 | Why |
+|---|---|---|
+| The crossable obstacle is known by its colours (blue sides, white top), taught with `learn_colors.py box` | **Nothing is taught but the floor.** The side face is whatever band at the obstacle's foot does not look like its top; the foot is found again against the floor just in front of the robot | The obstacles are white. A colour rule also fails the first time someone puts down an obstacle it was not taught |
+| Low and not the box → walked around without a closer look | **Anything not certainly tall is walked up to and measured** | A low slab and a tall thin thing hide the same floor from one viewpoint (below) |
+| One crossing: onto a 60 to 102 mm deep top and off, from stored footstep patterns | **A second crossing, scale across**, for tops 200 to 620 mm deep: footsteps worked out on the measured slab | A stored pattern is written relative to one box; a slab's footsteps depend on its depth |
+| `STEP_OVER` | `STEP_OVER` (low bar) and `SCALE_ACROSS` (slab) | The mission layer and Gemini should say which |
+| Walk-around could stall beside the obstacle (13 of 420 simulated runs) | Fixed | One scan point read 1 to 2 cm inside the clearance, beside the robot, blocked every heading |
+
+### T6 – obstacles are told apart by shape
+
+**What one look can and cannot tell.** From camera height `hc`, an obstacle hides a stretch of floor from its foot (range `r_b`) to where the ray over its far top edge would land (`r_t`). A box of height `h` and depth `d` gives `r_t = (r_b + d) × hc / (hc − h)`. One equation, two unknowns: the 15 × 380 mm slab and a 70 × 235 mm block hide the same floor from 36 cm. Two limits always hold: it is no taller than `hc × (1 − r_b / r_t)` and no deeper than `r_t − r_b`.
+
+- **While walking** (`terrain/scan.py`): if the obstacle would be over 60 mm tall even if it were 0.7 m deep (deeper than anything crossed), it is certainly tall and is walked around from a distance. The carton is, from 1.2 m. The slab, the bar and the round bar are not, so they get a closer look.
+- **Standing at 36 cm** (`terrain/gauge.py`): the height is read from the side face, the band at the obstacle's foot that differs from the top's colour (another colour, or the same in shadow) and from the floor. Then the depth follows from the far edge. No side face seen → height "not read" → walked around. The two limits are still reported.
+- **The foot is found twice.** The floor model is general (any floor it was taught); a raw wooden edge on a wooden floor can pass for floor. Cells at the foot are therefore also compared with the strip of floor right at the robot's feet. In the rendered test this is what reads the slab's edge on a wood-coloured floor.
+- **Round things** have no side face and no flat top. Their shaded underside can read as a low side face: a 50 mm round bar comes out as "20 to 25 mm tall, 45 to 55 mm deep". The decision refuses a top less than 2.6 times as deep as it is tall, and that depth is under the 60 mm a bar needs anyway.
+
+### T7 – the scale-across gait (`crawl_planner.plan_scale_across`)
+
+The same quasi-static crawl and the same checks as the low bar (balance, reach, joint ranges, whole-leg clearance, torque, ball feet that roll), with footholds on the floor before the slab, on its top, and on the floor beyond.
+
+- **Cycles on a lattice.** The rear pair and the front pair each stand at one x (so the stance is a rectangle after every cycle), at the default width or the widened one. A foot may stand anywhere except across an edge: on the floor at least 51 mm from a face (foot centre), on the top at least 30 mm from an edge. Which x and width each pair takes in each cycle is a shortest-path search (A* over a 10 mm lattice, fewest swings). The path is a proposal: every swing is then put through the full checks, and one that fails is remembered and the path found again from where the checks had got to.
+- **The hard step is a front foot coming down past the far edge.** The shin of the foot just set down is still over the edge, so the body has to be well forward; it stays balanced there only with the rear feet about 105 mm behind the front feet and set wide. The search is told so (a cost), which is why it usually finds the way within 40 to 250 swing checks.
+- **The taller the slab, the farther out the foot lands** beyond the far edge (1 mm per mm of height above 15 mm), for the same reason.
+- **The body stays at one height above the floor.** On the slab the legs are that much more bent, which is what gives the reach to step down. Raising the body with the feet was tried and loses it.
+- **Mirror image.** On a skewed slab the side that meets the edge first leads; if that fails the other side leads; then other crossing heights (160, 155, 165 mm).
+
+### T8 – a no-touch step-over is not practical; the round bar is walked around
+
+Asked: can Pupper step over a 50 mm round bar? No. With the same lattice search and the top forbidden as a foothold (`plan_step_over`), a plan exists only for obstacles about 10 mm tall and up to 20 mm deep; none at 15 mm with the standard clearances, and only up to 20 × 20 mm with clearances cut to 10 mm fore-aft and 6 mm above. A foot set down beyond the obstacle has its shin over it (knees point backward), so it must land far out; with the obstacle's depth and the take-off distance that is a stride of about 160 mm for a 50 mm bar, against about 110 mm that can be balanced. v2 found the same for a 30 to 38 mm box and took to using the top as a stepping stone, which a round bar does not offer.
+
+So "step over" means the low flat bar, crossed with one touch of its top per foot, as in v2.
+
+### T9 – the plan counts more ground than a slab crossing covers
+
+In simulation a slab crossing ends 1.9 % short of the plan (0.4 mm a swing; a crawl of 0.24 or 0.48 m on bare floor ends within 2 mm). Uncorrected, with a depth read 15 mm short as well, the feet came down on the far edge in 5 of 40 runs (3 to 10 N, no fall). The slab is therefore planned in the crawl's own measure, everything `1 / advance_scale` farther away (0.98). With that, 60 of 60 runs with measurement errors crossed with one light touch. The number has to be measured on the robot (`deploy.md`, rung 6).
+
+### Still open
+
+- **T3 – touch check.** More useful now: a front foot feeling for the top before the first step would give the height of a slab whose edge does not show, instead of walking around it.
+- **A second look from farther off** would tell a round bar from a flat one, and a flat mark from a low slab, by how the hidden stretch of floor changes with distance. Not built.
+- **Depths of 102 to 200 mm** have no crossing: too deep for the stored patterns, too shallow for four feet.
+- T1 (range sensor) and T5 (prefer crossing) as before.
 
 ## What changed from v1
 
@@ -218,7 +266,7 @@ terrain-agility/
   tools/     check_robot, learn_colors, calibrate_camera, record_frames, step_over, walk_forward, plan_box
   sim/       crossing_sim (MuJoCo), build_templates, render_fisheye, avoid_sim, extract_model
   config/    terrain.yaml, crawl_templates.json
-  tests/     96 tests; fake_ros.py runs the real nodes off the robot
+  tests/     the test suite; fake_ros.py runs the real nodes off the robot
 ```
 
 ## Simulation results

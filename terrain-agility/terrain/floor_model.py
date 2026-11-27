@@ -1,6 +1,8 @@
 """What is floor and what is not, by colour (after Ulrich & Nourbakhsh, "Appearance-based
-obstacle detection with monocular color vision", AAAI 2000), plus fixed colour classes for
-the things the mission knows about: the step-over box's sides and top, and the ball.
+obstacle detection with monocular color vision", AAAI 2000), plus one fixed colour class for
+the thing that must never count as an obstacle: the ball. (Obstacles are told apart by their
+shape, not by taught colours: terrain/scan.py and terrain/gauge.py. The two box labels are
+kept for pictures and for anyone who wants to mark a colour.)
 
 Everything works on HSV images as OpenCV makes them from 8-bit RGB (H 0..179, S and V 0..255).
 """

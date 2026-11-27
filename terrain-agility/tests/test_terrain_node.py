@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 cv2 = pytest.importorskip("cv2")
 
 import fake_ros  # noqa: E402
-from sim.render_fisheye import BROWN, Cuboid, Scene, render  # noqa: E402
+from sim.render_fisheye import BEIGE, BROWN, WHITE, Cuboid, Cylinder, Scene, render  # noqa: E402
 from terrain.camera_model import CameraPose, DoubleSphere  # noqa: E402
 
 MODEL = DoubleSphere()
@@ -167,3 +167,60 @@ def test_flat_two_colour_patch_is_walked_over_without_stopping_again(tmp_path):
     rig.run(2.0, flat)                 # (in the test the picture does not change; on the robot it walks on)
     assert rig.state() == "CRUISE" and len(rig.sent("/terrain_cmd_vel")) == n_cmd
     assert len(rig.sent("/terrain/event")) == n_events
+
+
+# ---------------------------------------------------------------- the three course obstacles
+def slab(dist):
+    return jpeg(Scene(boxes=[Cuboid(dist, 0.0, 0.38, 0.565, 0.015, side=BEIGE, top=WHITE)], seed=3))
+
+
+def test_slab_is_approached_gauged_and_scaled_across(tmp_path):
+    rig = Rig(tmp_path)
+    rig.run(0.5, jpeg(Scene(seed=1)))
+    rig.run(0.6, slab(0.75))
+    assert rig.state() == "APPROACH", [m.data for m in rig.sent("/terrain/event")]
+    rig.run(4.0, slab(0.37))                                                   # arrived: it stops, settles and measures
+    reqs = [json.loads(m.data) for m in rig.sent("/terrain/step_over")]
+    assert len(reqs) == 1, [m.data for m in rig.sent("/terrain/event")]
+    req = reqs[0]
+    assert req["cmd"] == "cross" and req["method"] == "slab"
+    assert abs(req["height"] - 0.015) < 0.004 and abs(req["depth"] - 0.38) < 0.015
+    assert abs(req["near_x"] - 0.37) < 0.012 and abs(req["skew"]) < 0.03
+    assert any("scale across" in m.data for m in rig.sent("/terrain/event"))
+    status = rig.node.cfg.stepover["status_topic"]
+    rig.bus.publish(status, fake_ros.String(data=json.dumps({"state": "started", "request": req["id"], "plan": "..."})))
+    n = len(rig.sent("/terrain_cmd_vel"))
+    rig.run(1.0, None)
+    st = json.loads(rig.sent("/terrain/state")[-1].data)
+    assert st["state"] == "SCALE_ACROSS" and st["kind"] == "scale_across" and abs(st["box"]["depth"] - 0.38) < 0.015
+    assert len(rig.sent("/terrain_cmd_vel")) == n, "silent while the crawl has the legs"
+    rig.bus.publish(status, fake_ros.String(data=json.dumps({"state": "done", "request": req["id"], "advance": 0.86})))
+    rig.run(0.2, None)
+    assert rig.state() == "CRUISE"
+
+
+def test_round_bar_is_measured_and_walked_around(tmp_path):
+    """A 5 cm round bar: low enough to be worth a closer look, but round (no foothold) and too
+    big to carry a foot over. It is walked around, and the event says why."""
+    rig = Rig(tmp_path)
+    rig.run(0.5, jpeg(Scene(seed=1)))
+    bar = lambda dist: jpeg(Scene(cylinders=[Cylinder(dist, 0.0, 0.05, 0.70)], seed=3))    # noqa: E731
+    rig.run(0.6, bar(0.75))
+    assert rig.state() == "APPROACH"
+    rig.run(4.0, bar(0.34))        # (its foot is hidden under its own curve: it reads a little farther than it is)
+    events = [m.data for m in rig.sent("/terrain/event")]
+    assert not rig.sent("/terrain/step_over"), events
+    assert any("decision: go_around" in e for e in events), events
+    assert rig.state() == "AVOID"
+
+
+def test_carton_is_walked_around_without_a_closer_look(tmp_path):
+    """White all over and lower than the camera, but from a metre away already plainly too
+    tall to cross: no approach, no stop."""
+    rig = Rig(tmp_path)
+    rig.run(0.5, jpeg(Scene(seed=1)))
+    rig.run(1.0, jpeg(Scene(boxes=[Cuboid(1.0, 0.0, 0.348, 0.455, 0.13, side=WHITE, top=WHITE, side_shade=0.8)], seed=2)))
+    states = {json.loads(m.data)["state"] for m in rig.sent("/terrain/state")}
+    assert rig.state() == "AVOID" and "APPROACH" not in states and "GAUGE" not in states
+    assert any("tall" in m.data for m in rig.sent("/terrain/event"))
+

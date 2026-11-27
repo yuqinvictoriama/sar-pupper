@@ -2,8 +2,10 @@
 """Find where the front camera really is: its height, how much it looks down, and how far
 ahead of the body centre it sits. Everything terrain agility measures depends on these.
 
-Do it after tools/learn_colors.py (it needs to recognise the box), with the robot STANDING
-under its walking controller on level floor.
+Do it after `tools/learn_colors.py floor`, with the robot STANDING under its walking
+controller on level floor. Use any obstacle of known height whose side face shows against
+both the floor and its own top (the scale-across slab, with its raw edge, is fine);
+`tools/learn_colors.py check` must print a height for it, not "not read".
 
   1. Put the box square across the robot's path. Measure, with a ruler on the floor, from
      the FRONT OF THE FRONT FEET to the box's near face, and record it:
@@ -12,8 +14,8 @@ under its walking controller on level floor.
          python3 tools/calibrate_camera.py add 0.35
          python3 tools/calibrate_camera.py add 0.50
   3. Solve and write the result into config/terrain.yaml:
-         python3 tools/calibrate_camera.py solve --box-height 0.025 --write
-     (--box-height: the box's real height in metres, measured with calipers or a ruler.)
+         python3 tools/calibrate_camera.py solve --box-height 0.015 --write
+     (--box-height: the obstacle's real height in metres, measured with calipers or a ruler.)
   4. Check: put the box at a new distance and run  python3 tools/learn_colors.py check
      The gauge's height should be within about 3 mm and its distance within about 1 cm.
 
@@ -29,7 +31,7 @@ import numpy as np
 import _frames
 from terrain import kinematics as K
 from terrain.config import TerrainConfig
-from terrain.gauge import fine_view, measure_box, solve_camera_mount
+from terrain.gauge import fine_view, measure_obstacle, solve_camera_mount
 
 
 def toe_offset() -> float:
@@ -70,20 +72,27 @@ def main():
         frames = _frames.frames_from_args(args, 10)
         h, w = frames[0][0].shape[:2]
         view = fine_view(cfg.model.scaled(w, h), cfg.pose)
-        ms = [measure_box(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), view, cfg.box_side, cfg.box_top, R_level_body=R)
+        floor = cfg.load_floor()
+        if not floor.trained:
+            raise SystemExit("learn the floor first:  python3 tools/learn_colors.py floor")
+        ms = [measure_obstacle(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), view, floor, R_level_body=R, cfg=cfg.gauge,
+                               ball=cfg.ball, near_depression_deg=cfg.near_depression_deg)
               for bgr, R, _ in frames]
         ms = [m for m in ms if m is not None and math.isfinite(m.foot_dep)]
         if len(ms) < max(1, len(frames) // 2):
             raise SystemExit("the box was not seen clearly straight ahead; run `python3 tools/learn_colors.py check`")
         foot = float(np.median([m.foot_dep for m in ms]))
-        top = float(np.median([m.top_dep for m in ms]))
+        tops = [m.top_dep for m in ms if math.isfinite(m.top_dep)]
+        top = float(np.median(tops)) if len(tops) >= len(ms) // 2 else float("nan")
         skew = math.degrees(float(np.median([m.skew for m in ms])))
         D = args.distance + toe_offset()
         data["observations"].append({"toe_distance": args.distance, "body_distance": D, "foot_dep": foot, "top_dep": top})
         data["pose"] = pose_now
         store.write_text(json.dumps(data, indent=1))
-        print(f"recorded: box {args.distance * 100:.1f} cm from the toes = {D * 100:.1f} cm from the body centre; "
+        print(f"recorded: obstacle {args.distance * 100:.1f} cm from the toes = {D * 100:.1f} cm from the body centre; "
               f"foot of the face {foot:.2f} deg below the horizon, top edge {top:.2f} deg ({len(ms)} frames)")
+        if not math.isfinite(top):
+            print("  NOTE: no side face was seen, so only the foot of the obstacle is used (height from its top edge is not)")
         if abs(skew) > 4.0:
             print(f"  NOTE: the box looks {skew:+.0f} deg off square; square it up and add this distance again "
                   "(then `clear` and redo if you want a clean set)")

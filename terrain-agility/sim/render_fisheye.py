@@ -1,8 +1,9 @@
-"""Synthetic fisheye images: ray-cast a floor, coloured boxes and a ball through the same
-double-sphere lens model the robot uses. For testing perception without the robot.
+"""Synthetic fisheye images: ray-cast a floor, boxes, cylinders lying on the floor and a ball
+through the same double-sphere lens model the robot uses. For testing perception without
+the robot.
 
-    from sim.render_fisheye import Scene, Cuboid, render
-    img = render(Scene(boxes=[Cuboid(x=0.45, y=0.0, depth=0.064, width=0.5, height=0.025)]), model, pose)
+    from sim.render_fisheye import Scene, Cuboid, Cylinder, render
+    img = render(Scene(boxes=[Cuboid(x=0.45, y=0.0, depth=0.38, width=0.565, height=0.015, side=BEIGE)]), model, pose)
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ WHITE = (240, 240, 235)
 ORANGE = (235, 120, 30)
 BROWN = (150, 110, 70)
 BALL_GREEN = (170, 240, 40)
+BEIGE = (196, 164, 120)        # the raw edge of a white-faced shelf board
 
 
 @dataclass
@@ -40,6 +42,7 @@ class Cuboid:
     yaw_deg: float = 0.0
     side: tuple = BLUE
     top: tuple = WHITE
+    side_shade: float = 1.0           # brightness of every vertical face relative to its colour (light from above: < 1)
 
     def centre(self):
         c, s = math.cos(math.radians(self.yaw_deg)), math.sin(math.radians(self.yaw_deg))
@@ -47,9 +50,24 @@ class Cuboid:
 
 
 @dataclass
+class Cylinder:
+    """A round bar lying on the floor across the robot's path. x: its nearest surface on the
+    centreline (m ahead of the body centre); y: its middle; it is turned yaw_deg about the vertical."""
+
+    x: float
+    y: float
+    diameter: float
+    length: float
+    yaw_deg: float = 0.0
+    colour: tuple = WHITE
+    ambient: float = 0.62             # brightness of a surface facing sideways or down; 1.0 facing up
+
+
+@dataclass
 class Scene:
     boxes: list = field(default_factory=list)
     balls: list = field(default_factory=list)       # (x, y, radius)
+    cylinders: list = field(default_factory=list)
     floor: tuple = FLOOR
     wall: tuple = WALL
     wall_distance: float = 4.0                      # walls of a square room centred on the robot
@@ -104,8 +122,26 @@ def render(scene: Scene, model: DoubleSphere, pose: CameraPose, R_level_body=Non
         is_side = hit & (axis != 2)
         shade = np.where(axis == 0, 1.0, 0.82)           # faces to the left/right a little darker
         img[is_top] = b.top
-        img[is_side] = np.array(b.side)[None, :] * shade[is_side][:, None]
+        img[is_side] = np.array(b.side)[None, :] * (shade[is_side] * b.side_shade)[:, None]
         best[hit] = t_in[hit]
+
+    # round bars lying on the floor (axis horizontal; shaded by how much the surface faces up)
+    for cyl in scene.cylinders:
+        c, s = math.cos(math.radians(cyl.yaw_deg)), math.sin(math.radians(cyl.yaw_deg))
+        r = cyl.diameter / 2.0
+        rel = o[:2] - np.array([cyl.x + r * c, cyl.y + r * s])
+        ox, oy, oz = c * rel[0] + s * rel[1], -s * rel[0] + c * rel[1], o[2] - r     # in the bar's frame, axis along y
+        dx, dy, dz = c * d[..., 0] + s * d[..., 1], -s * d[..., 0] + c * d[..., 1], d[..., 2]
+        qa = dx * dx + dz * dz
+        qb = ox * dx + oz * dz
+        disc = qb * qb - qa * (ox * ox + oz * oz - r * r)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            tc = (-qb - np.sqrt(np.clip(disc, 0, None))) / qa
+        hit = (disc > 0) & (tc > 0) & (tc < best) & (np.abs(oy + tc * dy) <= cyl.length / 2.0)
+        nz = np.clip((oz + tc * dz) / r, -1.0, 1.0)
+        shade = cyl.ambient + (1.0 - cyl.ambient) * np.clip(nz, 0.0, 1.0)
+        img[hit] = np.array(cyl.colour)[None, :] * shade[hit][:, None]
+        best[hit] = tc[hit]
 
     for (bx, by, r) in scene.balls:
         ctr = np.array([bx, by, r])

@@ -58,6 +58,16 @@ def offline(cfg):
                 "slow, but it only delays the start of a crossing")
         else:
             say("FAIL", f"no plan for a 25 x 64 mm box: {plan.reason}", "check crawl.* in terrain.yaml (extra_masses, mic_bars)")
+    from terrain.crawl_planner import plan_scale_across
+    t0 = time.time()
+    plan = plan_scale_across(BoxSpec(0.015, 0.38, cfg.fsm.gauge_distance), cfg.crawl)
+    dt = time.time() - t0
+    if plan.ok:
+        say("OK" if dt < 40 else "WARN", f"planning to scale across a 15 x 380 mm slab from {cfg.fsm.gauge_distance * 100:.0f} cm: "
+            f"{dt:.1f} s on this computer, {len(plan.steps)} foot swings, {plan.duration:.0f} s to crawl",
+            "slow, but it only delays the start of a crossing")
+    else:
+        say("FAIL", f"no plan for a 15 x 380 mm slab: {plan.reason}", "check crawl.* in terrain.yaml (extra_masses, mic_bars)")
 
 
 def online(cfg):

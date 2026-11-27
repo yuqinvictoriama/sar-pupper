@@ -33,7 +33,7 @@ REQUEST = "/terrain/step_over"
 class Rig:
     """Simulated robot + controller manager + the step-over node under test."""
 
-    def __init__(self, box=None, near=0.36, switch_time=0.03):
+    def __init__(self, box=None, near=0.36, switch_time=0.03, width=0.50, mass=0.6):
         self.bus = fake_ros.install()
         for name in [m for m in sys.modules if m in ("stepover_node", "estop_guard", "terrain_node")]:
             del sys.modules[name]
@@ -42,7 +42,7 @@ class Rig:
         from terrain.config import TerrainConfig
 
         h, d = box or (0.0, 0.0)
-        self.sim_cfg = CS.SimConfig(box_height=h, box_depth=d, near=near)
+        self.sim_cfg = CS.SimConfig(box_height=h, box_depth=d, near=near, box_width=width, box_mass=mass)
         self.model = CS.build_model(MODEL_XML, self.sim_cfg, near if h > 0 else 10.0)
         self.data = mujoco.MjData(self.model)
         self.robot = CS.Robot(self.model, self.data)
@@ -223,3 +223,29 @@ def test_full_crossing_through_the_node():
     assert st[-1]["max_tilt_deg"] < 8.0
     assert float(np.linalg.norm((rig.data.xpos[box_body] - box0)[:2])) < 0.004, "the box was not pushed"
     assert pos[2] > 0.14 and rig.cm.active(rig.cm.walking)
+
+
+def test_full_scale_across_through_the_node():
+    """The whole chain for the slab: request -> footsteps planned on the measured slab ->
+    hand-over -> onto it, along it and off it in physics -> hand-back."""
+    rig = Rig(box=(0.015, 0.38), near=0.36, width=0.565, mass=2.0)
+    box_body = mujoco.mj_name2id(rig.model, mujoco.mjtObj.mjOBJ_BODY, "box")
+    box0 = rig.data.xpos[box_body].copy()
+    x0 = float(rig.robot.position()[0])
+    st = rig.request(cmd="cross", height=0.015, depth=0.38, near_x=0.36, id="s")      # the depth makes it a slab
+    assert rig.states(st) == ["planning", "started", "done"], st[-1]
+    started = next(x for x in st if x["state"] == "started")
+    assert "onto the box top" in started["plan"] and 0.80 < started["advance"] < 0.95
+    pos = rig.robot.position()
+    rear_x = min(rig.data.site_xpos[mujoco.mj_name2id(rig.model, mujoco.mjtObj.mjOBJ_SITE, f"leg_{leg}_3_foot_site")][0]
+                 for leg in ("back_r", "back_l"))
+    assert rear_x > 0.36 + 0.38 + 0.02, "rear feet are beyond the slab"
+    assert st[-1]["max_tilt_deg"] < 8.0
+    assert float(np.linalg.norm((rig.data.xpos[box_body] - box0)[:2])) < 0.004, "the slab was not pushed"
+    assert pos[2] > 0.14 and rig.cm.active(rig.cm.walking)
+    # the distance it reports is the distance it went (the mission layer counts on it)
+    assert abs((float(pos[0]) - x0) - st[-1]["advance"]) < 0.03, (pos[0] - x0, st[-1]["advance"])
+    # asking for the bar's stored patterns on a slab is refused, not attempted
+    st = rig.request(cmd="cross", height=0.015, depth=0.38, near_x=0.36, method="board", dry_run=True, id="b")
+    assert rig.states(st) == ["planning", "no_plan"]
+

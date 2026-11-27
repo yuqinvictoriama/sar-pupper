@@ -18,26 +18,39 @@ ENV = {60: 0.030, 64: 0.030, 76: 0.030, 89: 0.025}
 
 
 def est(**kw):
+    """A low bar as the gauge reports it: 22 mm tall, 64 mm deep, seen square from 36 cm."""
     base = dict(near_x=0.36, skew=0.0, height=0.022, depth=0.064, width=0.50, y_left=0.25, y_right=-0.25,
-                frames=12, height_sigma=0.001, near_sigma=0.002, ends_seen=True)
+                frames=12, height_sigma=0.001, near_sigma=0.002, ends_seen=True, height_upper=0.07, extent=0.09,
+                side_seen=1.0, far_seen=True)
     base.update(kw)
     return BoxEstimate(**base)
+
+
+def slab(**kw):
+    """The scale-across slab as the gauge reports it."""
+    return est(**{**dict(height=0.015, depth=0.38, width=0.565, y_left=0.28, y_right=-0.28, height_upper=0.16, extent=0.41), **kw})
 
 
 def cfg(**kw):
     return D.DecisionConfig(envelope=dict(ENV), **kw)
 
 
-def test_decision_steps_over_a_good_box():
+def test_a_low_bar_is_stepped_over_and_a_slab_is_scaled_across():
     d = D.decide(est(), cfg())
-    assert d.action == D.STEP_OVER and abs(d.height_used - 0.022) < 1e-9
+    assert (d.action, d.method) == (D.STEP_OVER, D.BOARD) and abs(d.height_used - 0.022) < 1e-9
+    d = D.decide(slab(), cfg())
+    assert (d.action, d.method) == (D.SCALE_ACROSS, D.SLAB) and abs(d.height_used - 0.015) < 1e-9
+    for depth in (0.20, 0.30, 0.62):
+        assert D.decide(slab(depth=depth), cfg()).action == D.SCALE_ACROSS
+    assert D.decide(slab(height=0.026), cfg()).action == D.SCALE_ACROSS         # 26 + 3 guard <= 30
 
 
 @pytest.mark.parametrize("change,word", [
     (dict(height=0.034), "limit"),                  # too tall
-    (dict(height=0.028, height_sigma=0.002), "limit"),   # tall enough that 2 sigma crosses the limit
-    (dict(depth=0.120), "outside"),                 # too deep
-    (dict(depth=float("nan")), "depth"),            # one-colour box: depth unknown
+    (dict(height=0.027, height_sigma=0.002), "limit"),   # tall enough that 2 sigma crosses the limit
+    (dict(depth=0.120), "outside"),                 # too deep for a bar, too shallow for a slab
+    (dict(depth=float("nan")), "depth"),            # far edge not seen
+    (dict(height=float("nan"), depth=float("nan")), "height could not be read"),   # no side face: one colour, or round
     (dict(width=0.30, y_left=0.15, y_right=-0.15), "wide"),
     (dict(y_left=0.40, y_right=-0.10), "centred"),
     (dict(skew=math.radians(8)), "square"),
@@ -46,16 +59,29 @@ def test_decision_steps_over_a_good_box():
     (dict(near_x=0.25), "outside"),                 # too close for the counted approach
     (dict(near_x=0.50), "outside"),
     (dict(height=0.0285), "limit"),                 # 28.5 measured could be 31.5: over the 30 limit
+    (dict(height=0.026, depth=0.062), "narrow"),    # what a 65 mm round bar reads as: not a foothold
+    (dict(far_seen=False), "taller than the camera"),
 ])
 def test_decision_goes_around_when_any_check_fails(change, word):
     d = D.decide(est(**change), cfg())
     assert d.action == D.GO_AROUND and any(word in r for r in d.reasons), d.reasons
 
 
+@pytest.mark.parametrize("change,word", [
+    (dict(height=0.0285), "limit"),
+    (dict(depth=0.70), "outside"),
+    (dict(width=0.38, y_left=0.19, y_right=-0.19), "wide"),      # the slab turned end-on
+    (dict(height=float("nan"), depth=float("nan")), "height could not be read"),
+])
+def test_a_slab_is_walked_around_when_any_check_fails(change, word):
+    d = D.decide(slab(**change), cfg())
+    assert d.action == D.GO_AROUND and any(word in r for r in d.reasons), d.reasons
+
+
 def test_envelope_check_carries_the_guard_or_the_scatter_but_the_plan_uses_the_reading():
     assert abs(D.decide(est(height=0.020), cfg()).height_used - 0.020) < 1e-9
-    assert D.decide(est(height=0.0265), cfg()).action == D.STEP_OVER                      # 26.5 + 3 guard <= 30
-    assert D.decide(est(height=0.0265, height_sigma=0.0025), cfg()).action == D.GO_AROUND   # 26.5 + 2 x 2.5 > 30
+    assert D.decide(est(height=0.0265, depth=0.076), cfg()).action == D.STEP_OVER                      # 26.5 + 3 guard <= 30
+    assert D.decide(est(height=0.0265, depth=0.076, height_sigma=0.0025), cfg()).action == D.GO_AROUND   # 26.5 + 2 x 2.5 > 30
 
 
 def test_decision_other_inputs():
@@ -63,7 +89,13 @@ def test_decision_other_inputs():
     assert D.decide(est(), cfg(), ball_tracked=True).action == D.GO_AROUND
     assert D.decide(est(), cfg(), landing_clear=False).action == D.GO_AROUND
     assert D.decide(est(), cfg(prefer_step_over=False)).action == D.GO_AROUND
+    assert D.decide(est(), cfg(step_over=False)).action == D.GO_AROUND
+    assert D.decide(slab(), cfg(step_over=False)).action == D.SCALE_ACROSS
+    assert D.decide(slab(), cfg(scale_across=False)).action == D.GO_AROUND
     assert D.decide(est(height=0.004), cfg()).action == D.IGNORE
+    # no side face, but nothing in view could be taller than 5 mm: a mark on the floor
+    assert D.decide(est(height=float("nan"), depth=float("nan"), height_upper=0.005), cfg()).action == D.IGNORE
+    assert D.decide(est(height=float("nan"), depth=float("nan"), height_upper=0.02), cfg()).action == D.GO_AROUND
 
 
 def test_envelope_lookup_is_conservative():
@@ -72,6 +104,8 @@ def test_envelope_lookup_is_conservative():
     assert c.max_height(0.080) == 0.025         # between 76 (30) and 89 (25): the lower
     assert c.max_height(0.050) == 0.0 and c.max_height(0.100) == 0.0
     assert cfg(height_cap=0.022).max_height(0.064) == 0.022
+    assert c.crossing_for(0.089)[:2] == (D.STEP_OVER, D.BOARD) and c.crossing_for(0.38)[:2] == (D.SCALE_ACROSS, D.SLAB)
+    assert c.crossing_for(0.15) is None and c.crossing_for(0.80) is None and c.crossing_for(float("nan")) is None
 
 
 def test_steer_straight_when_clear_and_tangent_when_blocked():

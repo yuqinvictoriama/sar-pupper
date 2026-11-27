@@ -10,6 +10,7 @@ from .camera_model import CameraPose, DoubleSphere
 from .crawl_planner import CrawlConfig
 from .decision import DecisionConfig
 from .floor_model import ColorRange, FloorModel
+from .gauge import GaugeConfig
 from .player import PlayerConfig
 from .scan import ScanConfig
 from .state_machine import FsmConfig
@@ -40,8 +41,6 @@ class TerrainConfig:
         self.camera_topic = cam.get("topic", "/camera/image_raw/compressed")
 
         col = self.raw.get("colors", {})
-        self.box_side = ColorRange.from_dict(col.get("box_side", {"h_lo": 100, "h_hi": 125}))
-        self.box_top = ColorRange.from_dict(col.get("box_top", {"h_lo": 0, "h_hi": 179, "s_min": 0, "s_max": 50, "v_min": 185}))
         self.ball = ColorRange.from_dict(col.get("ball", {"h_lo": 30, "h_hi": 52}))
         self.floor_file = self.path.parent / col.get("floor_file", "floor_model.json")
         self.adapt_floor = bool(col.get("adapt_floor", True))
@@ -50,6 +49,7 @@ class TerrainConfig:
         self.scan_rate = float(sc.get("rate_hz", 8.0))
         self.scan = ScanConfig(**_pick(ScanConfig, sc), near_depression_deg=self.near_depression_deg)
 
+        self.gauge = GaugeConfig(**_pick(GaugeConfig, self.raw.get("gauge", {})))
         self.decision = DecisionConfig(**_pick(DecisionConfig, self.raw.get("decision", {})))
         self.steer = SteerConfig(**_pick(SteerConfig, self.raw.get("steer", {})))
         fsm = self.raw.get("fsm", {})

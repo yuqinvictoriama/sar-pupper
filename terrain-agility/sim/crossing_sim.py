@@ -1,8 +1,12 @@
-"""Physics simulation of the step-over: the Pupper v3 MuJoCo model, a box on the floor, and
-the same planner and trajectory player the robot runs.
+"""Physics simulation of a crossing: the Pupper v3 MuJoCo model, a box on the floor, and the
+same planner and trajectory player the robot runs.
 
-    python3 sim/crossing_sim.py --height 0.019 --depth 0.064            # one crossing, printed
-    python3 sim/crossing_sim.py --height 0.03 --depth 0.064 --view      # with the viewer (laptop)
+    python3 sim/crossing_sim.py --height 0.015 --depth 0.38 --near 0.36    # the slab, scaled across; printed
+    python3 sim/crossing_sim.py --height 0.019 --depth 0.089 --near 0.36   # a low bar, stepped over
+    python3 sim/crossing_sim.py --height 0.015 --depth 0.38 --near 0.36 --view     # with the viewer (laptop)
+
+A depth of 0.20 m or more is scaled across (plan_scale_across); less is stepped over
+(plan_crossing, the stored patterns).
 
 Needs ``pip install mujoco`` and the pupper_v3_description package with real meshes (the
 copy inside pupperv3-monorepo needs ``git lfs pull``); point --model or $PUPPER_XML at
@@ -27,7 +31,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from terrain import kinematics as K  # noqa: E402
-from terrain.crawl_planner import BoxSpec, CrawlConfig, plan_crossing  # noqa: E402
+from terrain.crawl_planner import BoxSpec, CrawlConfig, plan_crossing, plan_scale_across  # noqa: E402
 from terrain.handover import Handover  # noqa: E402
 from terrain.player import DONE, STOPPED, PlayerConfig, TrajectoryPlayer  # noqa: E402
 
@@ -54,6 +58,7 @@ class SimConfig:
     box_width: float = 0.50
     box_mass: float | None = 0.6          # kg; None = fixed to the floor
     box_friction: float = 0.6
+    scale_across: bool = False            # a slab deep enough to walk on: plan with plan_scale_across
     floor_friction: float = 0.8
     stand_off: float = 0.02               # front feet start this far before the take-off line (m)
     near: float | None = None             # or: the box's near face this far ahead of the body centre (m)
@@ -89,6 +94,8 @@ class SimResult:
     handover_sag: float = 0.0             # m the body dropped while the legs changed hands
     final_height: float = 0.0
     final_x: float = 0.0
+    planned_x: float = 0.0                # how far the plan meant the body to advance (m)
+    final_y: float = 0.0                  # sideways drift (m)
     final_yaw_deg: float = 0.0
     box_moved: float = 0.0                # m
     unplanned_contact_force: float = 0.0  # N, largest leg/body contact with the box that is not a foot on its top
@@ -247,7 +254,7 @@ def run_crossing(cfg: SimConfig, crawl: CrawlConfig | None = None, player_cfg: P
     from dataclasses import replace
     masses = cfg.extra_masses if cfg.planner_extra_masses is None else cfg.planner_extra_masses
     crawl = replace(crawl, kp=cfg.kp, kd=cfg.kd, extra_masses=tuple(masses))
-    plan = plan_crossing(box, crawl)
+    plan = plan_scale_across(box, crawl) if cfg.scale_across else plan_crossing(box, crawl)
     if not plan.ok:
         return SimResult(False, plan.reason)
 
@@ -318,6 +325,8 @@ def run_crossing(cfg: SimConfig, crawl: CrawlConfig | None = None, player_cfg: P
     res.max_tilt_deg = player.max_tilt_deg
     res.final_height = float(pos[2])
     res.final_x = float(pos[0] - start[0])
+    res.planned_x = float(plan.body[-1, 0] - plan.body[0, 0])
+    res.final_y = float(pos[1] - start[1])
     res.final_yaw_deg = math.degrees(robot.yaw())
     res.events = list(player.events)
     if box_body >= 0:
@@ -335,7 +344,9 @@ def main():
     ap.add_argument("--model")
     ap.add_argument("--height", type=float, default=0.019)
     ap.add_argument("--depth", type=float, default=0.064)
+    ap.add_argument("--width", type=float, default=0.565, help="across the path (m)")
     ap.add_argument("--box-mass", type=float, default=0.6, help="kg; 0 = fixed to the floor")
+    ap.add_argument("--err-depth", type=float, default=0.0)
     ap.add_argument("--stand-off", type=float, default=0.02)
     ap.add_argument("--near", type=float, default=None, help="box's near face this far ahead of the body centre (m); "
                     "0.36 is where the robot stops to measure")
@@ -347,9 +358,12 @@ def main():
     ap.add_argument("--plan", action="store_true", help="print the planned footsteps")
     args = ap.parse_args()
     extra = ((args.head_mass, [0.055, 0.0, 0.13]),) if args.head_mass > 0 else ()
-    cfg = SimConfig(box_height=args.height, box_depth=args.depth, box_mass=args.box_mass or None,
+    cfg = SimConfig(box_height=args.height, box_depth=args.depth, box_width=args.width, box_mass=args.box_mass or None,
                     stand_off=args.stand_off, near=args.near, skew_deg=args.skew, err_near=args.err_near,
-                    err_height=args.err_height, extra_masses=extra)
+                    err_height=args.err_height, err_depth=args.err_depth, extra_masses=extra,
+                    scale_across=args.depth >= 0.197)
+    if cfg.scale_across and cfg.near is None:
+        cfg.near = 0.36
     if args.view:
         import mujoco
         import mujoco.viewer
@@ -373,6 +387,8 @@ def main():
         return
     res = run_crossing(cfg, model_path=args.model)
     print(res.line())
+    if res.planned:
+        print(f"  body advanced {res.final_x * 1000:.0f} mm, drifted {res.final_y * 1000:+.0f} mm sideways, {res.final_yaw_deg:+.1f} deg")
     for t, e in res.events:
         print(f"  {t:6.2f} s  {e}")
 

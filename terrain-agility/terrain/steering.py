@@ -75,14 +75,25 @@ class LocalMap:
             self.stamps = np.concatenate([self.stamps, np.full(len(points), t)])
 
 
+CONTACT_RADIUS = 0.15      # m: a point this close to the body centre is in the way of every heading
+
+
 def _clear_headings(points, headings, clearance, look_ahead):
-    """For each heading, is the straight path of length look_ahead clear by ``clearance``?"""
+    """For each heading, is the straight path of length look_ahead clear by ``clearance``?
+
+    A point counts against a heading only if walking that way brings the robot nearer to it.
+    A point already beside the robot, a little inside the clearance (the corner it is
+    rounding, read a centimetre or two short), does not block headings that lead away from
+    it; without this, one such point blocked every heading and the robot stood still beside
+    the obstacle it had all but passed. Only a point within ``CONTACT_RADIUS`` blocks them all."""
     if not len(points):
         return np.ones(len(headings), dtype=bool)
     ux, uy = np.cos(headings)[:, None], np.sin(headings)[:, None]
-    along = np.clip(points[None, :, 0] * ux + points[None, :, 1] * uy, 0.0, look_ahead)
+    proj = points[None, :, 0] * ux + points[None, :, 1] * uy
+    along = np.clip(proj, 0.0, look_ahead)
     dist = np.hypot(points[None, :, 0] - along * ux, points[None, :, 1] - along * uy)
-    return (dist >= clearance).all(axis=1)
+    touching = np.hypot(points[:, 0], points[:, 1])[None, :] < min(clearance, CONTACT_RADIUS)
+    return ~((dist < clearance) & ((proj > 0.0) | touching)).any(axis=1)
 
 
 @dataclass

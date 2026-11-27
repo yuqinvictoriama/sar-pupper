@@ -30,9 +30,9 @@ camera:
   # these; robot/standalone.launch.py sets them from here.
   white_balance: [1.4, 3.3]
 
-colors:                   # OpenCV HSV (H 0..179, S and V 0..255).  CALIBRATE (tools/learn_colors.py)
-  box_side: {h_lo: 100, h_hi: 125, s_min: 110, v_min: 50}                 # blue
-  box_top: {h_lo: 0, h_hi: 179, s_min: 0, s_max: 50, v_min: 185}          # white
+colors:                   # OpenCV HSV (H 0..179, S and V 0..255)
+  # Only two things are known by colour: the floor (learned: tools/learn_colors.py floor) and
+  # the ball, which is never an obstacle. Obstacles are told apart by their shape.
   ball: {h_lo: 30, h_hi: 52, s_min: 110, v_min: 110}                      # neon green
   floor_file: floor_model.json     # written by tools/learn_colors.py, next to this file
   adapt_floor: true                # keep learning the floor's colour from the patch just ahead
@@ -40,17 +40,18 @@ colors:                   # OpenCV HSV (H 0..179, S and V 0..255).  CALIBRATE (t
 scan:
   rate_hz: 8.0
   max_range: 2.5
-  tall_height: 0.080
+  tall_height: 0.060        # m: certainly at least this tall -> walked around without a closer look
+  cross_max_depth: 0.70     # m: nothing deeper than this is ever crossed (used for that "certainly")
   min_run: 3
   floor_gap: 3
 
 fsm:
   corridor_half: 0.18
   engage_range: 1.2
-  box_engage_range: 1.0
-  gauge_distance: 0.36      # m, body centre to the box's near face, where it stops to measure
+  box_engage_range: 1.0     # m: from here an obstacle that may be low is walked up to and measured
+  gauge_distance: 0.36      # m, body centre to the obstacle's near face, where it stops to measure
   approach_speed: 0.22
-  # squaring up to the box: short pulses of turning / sidestepping, then a fresh measurement
+  # squaring up to the obstacle: short pulses of turning / sidestepping, then a fresh measurement
   align_skew_deg: 4.0       # square enough
   align_yaw_rate: 0.5       # rad/s during a turn pulse
   align_side_speed: 0.22    # m/s during a sidestep pulse
@@ -70,12 +71,16 @@ steer:
   speed_scale: 1.0          # actual / commanded walking speed.          CALIBRATE (README, "walking speed")
 
 decision:
-  prefer_step_over: true
-  ignore_below: 0.010
-  height_cap: 0.030         # m: never step over anything taller than this
-  height_guard: 0.003
+  prefer_step_over: true    # false: never cross, always walk around
+  step_over: true           # a low bar, 60-102 mm deep: each foot uses its top once
+  scale_across: true        # a low slab, 200-620 mm deep: onto it, along it, off it
+  ignore_below: 0.010       # m: lower than this is walked over with the normal gait
+  height_cap: 0.030         # m: never put a foot on anything taller than this
+  height_guard: 0.003       # m the obstacle may be taller than it reads
   min_width: 0.40
   max_skew_deg: 5.0
+  slab_min_depth: 0.20
+  slab_max_depth: 0.62
 
 crawl:
   hip_height: 0.160
@@ -85,6 +90,7 @@ crawl:
   kp: 7.5
   kd: 0.25
   time_scale: 1.0           # > 1 slows the whole crossing down (use 1.5 for the first runs)
+  advance_scale: 0.98       # ground really covered per metre a slab crossing counts (0.98 in simulation).   CALIBRATE (deploy.md, rung 6)
   sag_gain: 1.0             # scales the load compensation; raise (1.2-1.5) if the body rides low on the real robot
   mic_bars: true            # keep the legs inside the design-2 mic-bar-safe joint ranges
   allow_search: false       # if no stored footstep pattern fits, search for one (slow) instead of giving up

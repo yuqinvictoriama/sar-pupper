@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Ask the step-over node for a motion and show what it reports. For bring-up, in this order:
 
-    python3 tools/step_over.py cross --height 0.025 --depth 0.064 --near 0.36 --dry-run
+    python3 tools/step_over.py cross --height 0.015 --depth 0.38 --near 0.36 --dry-run
         plan only: nothing moves. Prints the plan and how long planning took on this computer.
+        A depth of 0.20 m or more is scaled across (onto the top, along it, off the far side);
+        a depth of 0.06 to 0.10 m is stepped over (each foot uses the top once).
     python3 tools/step_over.py stand
         rise to the crossing height, stand 3 s, lower. No foot leaves the floor.
     python3 tools/step_over.py crawl --distance 0.08
         one slow crawl cycle straight ahead on clear floor.
-    python3 tools/step_over.py cross --height 0.025 --depth 0.064 --near 0.36
-        the real thing, with the box where you say it is: --near is the distance from the
-        body centre to the box's near face (front of the front feet + 0.087 m).
+    python3 tools/step_over.py cross --height 0.015 --depth 0.38 --near 0.36
+        the real thing, with the obstacle where you say it is: --near is the distance from the
+        body centre to its near face (front of the front feet + 0.087 m).
     python3 tools/step_over.py stop
         abort the motion in progress (joints go soft).
 
@@ -30,8 +32,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("cross")
-    c.add_argument("--height", type=float, required=True, help="box height (m)")
-    c.add_argument("--depth", type=float, required=True, help="box depth, fore-aft (m)")
+    c.add_argument("--height", type=float, required=True, help="obstacle height (m)")
+    c.add_argument("--depth", type=float, required=True, help="obstacle depth, fore-aft (m)")
+    c.add_argument("--method", choices=("slab", "board"), default=None,
+                   help="slab: scale across; board: step over. Default: by the depth")
     c.add_argument("--near", type=float, default=0.36, help="body centre to the box's near face (m)")
     c.add_argument("--skew", type=float, default=0.0, help="degrees; + = near face farther away on the left")
     s = sub.add_parser("stand")
@@ -50,6 +54,8 @@ def main():
     if args.cmd == "cross":
         import math
         req.update(height=args.height, depth=args.depth, near_x=args.near, skew=math.radians(args.skew))
+        if args.method:
+            req["method"] = args.method
     elif args.cmd == "stand":
         req.update(hold=args.hold)
     elif args.cmd == "crawl":
@@ -93,7 +99,7 @@ def main():
         time.sleep(0.3)
     else:
         try:
-            while not result and time.monotonic() - t0 < 240.0:
+            while not result and time.monotonic() - t0 < 420.0:
                 rclpy.spin_once(node, timeout_sec=0.1)
         except KeyboardInterrupt:
             m.data = json.dumps({"cmd": "stop"})

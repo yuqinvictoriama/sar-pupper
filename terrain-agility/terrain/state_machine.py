@@ -1,10 +1,16 @@
 """The terrain-agility state machine. Pure Python; robot/terrain_node.py feeds it and carries
 out what it asks for, and sim/avoid_sim.py drives the same code in simulation.
 
-    CRUISE -> (tall obstacle ahead)  AVOID ------------------------------> CRUISE
-           -> (the two-colour box)   APPROACH -> GAUGE -> (no)  AVOID
-                                                        -> (yes) ALIGN -> GAUGE ... -> PLAN -> STEP_OVER -> CRUISE
+    CRUISE -> (certainly tall)       AVOID --------------------------------> CRUISE
+           -> (may be low)           APPROACH -> GAUGE -> (walk around)   AVOID
+                                        ALIGN <-> GAUGE -> (low bar)      PLAN -> STEP_OVER    -> CRUISE
+                                                        -> (slab)         PLAN -> SCALE_ACROSS -> CRUISE
+                                                        -> (flat mark)    CRUISE
     any state -> HOLD (stand still, report) when something is wrong
+
+An obstacle that is certainly too tall to cross is walked around from a distance. Anything
+else is walked up to and measured standing still (terrain/gauge.py), and terrain/decision.py
+says which of the three it is: stepped over, scaled across, or walked around after all.
 
 In CRUISE it is silent: whoever is driving (planner, Gemini, person follower) drives. It
 takes over the velocity command only while it is dealing with an obstacle, and it needs to
@@ -27,8 +33,9 @@ from . import decision as D
 from .gauge import BoxGauge
 from .steering import LocalMap, SteerConfig, path_clear, steer
 
-CRUISE, AVOID, APPROACH, GAUGE, ALIGN, PLAN, STEP_OVER, HOLD = (
-    "CRUISE", "AVOID", "APPROACH", "GAUGE", "ALIGN", "PLAN", "STEP_OVER", "HOLD")
+CRUISE, AVOID, APPROACH, GAUGE, ALIGN, PLAN, STEP_OVER, SCALE_ACROSS, HOLD = (
+    "CRUISE", "AVOID", "APPROACH", "GAUGE", "ALIGN", "PLAN", "STEP_OVER", "SCALE_ACROSS", "HOLD")
+CROSSING = (STEP_OVER, SCALE_ACROSS)     # the crawl has the legs: no velocity command means anything
 REPORT = "REPORT"            # reported as the state while the mode is "report"
 
 # What the mission layer lets it do (set_mode). The demo's path navigation switches between
@@ -41,8 +48,8 @@ MODES = (FULL, AVOID_ONLY, REPORT_ONLY)
 class FsmConfig:
     corridor_half: float = 0.18        # m: half-width of the lane an obstacle must be in to matter
     engage_range: float = 1.2          # m from the body centre: start avoiding a tall obstacle
-    box_engage_range: float = 1.0      # m: start approaching the step-over box
-    gauge_distance: float = 0.36       # m, body centre to the box's near face, to measure from
+    box_engage_range: float = 1.0      # m: start approaching an obstacle that may be low enough to cross
+    gauge_distance: float = 0.36       # m, body centre to its near face, to measure from
     gauge_tolerance: float = 0.04
     approach_speed: float = 0.22       # m/s
     settle_time: float = 0.7           # s standing still before measuring
@@ -83,6 +90,7 @@ class Outputs:
     cmd: tuple = None                        # (vx, vy, wz) to publish, or None = say nothing
     want_gauge: bool = False                 # run the fine box gauge on the next frames
     plan_box: object = None                  # crawl_planner.BoxSpec to plan and cross (once, on entering PLAN)
+    plan_method: str = ""                    # with plan_box: decision.BOARD (step over) or decision.SLAB (scale across)
     state: str = CRUISE
     event: str = ""                          # something worth publishing/logging
 
@@ -107,19 +115,20 @@ class TerrainFsm:
         self.intent = (0.0, 0.0, 0.0)
         self._plan_sent = False
         self.hold_reason = ""
-        self.ignore_box_until = -1e9         # a box judged too low to matter is left alone until then
+        self.ignore_box_until = -1e9         # something judged too low to matter is left alone until then
+        self.seen_upper = float("inf")       # the lowest "no taller than" seen on the way up to the obstacle
         self.mode = FULL
 
     def set_mode(self, mode: str) -> bool:
-        """full: step over the box, walk around everything else. avoid: walk around everything,
-        the box included. report: look and report, never steer. A crossing that has been
+        """full: step over low bars, scale across slabs, walk around everything else. avoid: walk
+        around everything. report: look and report, never steer. A crossing that has been
         planned or started is always finished: the mode takes effect after it."""
         if mode not in MODES:
             return False
         self.mode = mode
         if mode == AVOID_ONLY and self.state in (APPROACH, GAUGE, ALIGN):
             self.gauge.reset()
-            self.state = CRUISE              # it was on its way to measure the box: start again as an obstacle
+            self.state = CRUISE              # it was on its way to measure it: start again as an obstacle
         return True
 
     # ------------------------------------------------------------------ helpers
@@ -151,14 +160,14 @@ class TerrainFsm:
         if self.state != PLAN:
             return
         if ok:
-            self.state = STEP_OVER
+            self.state = SCALE_ACROSS if self.decision.action == D.SCALE_ACROSS else STEP_OVER
         else:
             self.decision = D.Decision(D.GO_AROUND, [why or "no crossing plan"])
             self.state = AVOID
             self.side = 0
 
     def crossing_result(self, ok: bool, why: str = "") -> None:
-        if self.state != STEP_OVER:
+        if self.state not in CROSSING:
             return
         if ok:
             self.map.clear()
@@ -199,8 +208,8 @@ class TerrainFsm:
             self._go(CRUISE, t)
             out.event = "dodge: measurements dropped, re-assessing"
 
-        if self.state == STEP_OVER:
-            out.state = STEP_OVER
+        if self.state in CROSSING:
+            out.state = self.state
             return out                       # the crossing owns the legs; say nothing
         if self.mode == REPORT_ONLY and self.state != PLAN:
             # looking only: whatever it was doing is dropped, and nothing is published
@@ -218,7 +227,9 @@ class TerrainFsm:
                 from .crawl_planner import BoxSpec
                 e = self.estimate
                 out.plan_box = BoxSpec(height=self.decision.height_used, depth=e.depth, near_x=e.near_x, skew=e.skew)
-                out.event = (f"planning a crossing: box {e.height * 1000:.0f} x {e.depth * 1000:.0f} mm, "
+                out.plan_method = self.decision.method
+                what = "scale across the slab" if self.decision.action == D.SCALE_ACROSS else "step over the bar"
+                out.event = (f"planning to {what}: {e.height * 1000:.0f} mm tall, {e.depth * 1000:.0f} mm deep, "
                              f"{e.near_x * 1000:.0f} mm ahead, {math.degrees(e.skew):+.1f} deg")
             out.state = PLAN
             self.last_cmd = out.cmd
@@ -252,20 +263,21 @@ class TerrainFsm:
             if hit is None:
                 return out
             dist, ob = hit
-            step_box = ob.is_box and self.mode == FULL
-            if step_box and dist < cfg.box_engage_range:
+            measure = ob.is_box and self.mode == FULL
+            if measure and dist < cfg.box_engage_range:
                 self.goal_yaw = inp.yaw + heading
                 self.gauge.reset()
                 self.align_tries = 0
+                self.seen_upper = ob.height
                 self._go(APPROACH, t)
-                out.event = f"box ahead at {dist:.2f} m: approaching to measure it"
-            elif not step_box and dist < cfg.engage_range:
+                out.event = f"obstacle ahead at {dist:.2f} m, may be low enough to cross: approaching to measure it"
+            elif not measure and dist < cfg.engage_range:
                 self.goal_yaw = inp.yaw + heading
                 self.side = 0
-                why = "stepping over is switched off (mode avoid)" if ob.is_box else ("tall" if ob.tall else "not the step-over box")
+                why = "crossing is switched off (mode avoid)" if ob.is_box else "tall"
                 self.decision = D.Decision(D.GO_AROUND, [why])
                 self._go(AVOID, t)
-                kind = "the box, mode avoid" if ob.is_box else ("tall" if ob.tall else "low, unknown")
+                kind = "may be low, mode avoid" if ob.is_box else "tall"
                 out.event = f"obstacle ahead at {dist:.2f} m ({kind}): going around"
             if self.state == CRUISE:
                 return out
@@ -278,15 +290,24 @@ class TerrainFsm:
             return out
 
         if self.state == APPROACH:
-            hit = self._blocking([o for o in inp.obstacles if o.is_box], self._goal_heading(inp.yaw))
+            hit = self._blocking(inp.obstacles, self._goal_heading(inp.yaw))
             if hit is None:
                 if t - self.t_state > 2.0:
                     self._go(CRUISE, t)
-                    out.event = "box lost from view"
+                    out.event = "obstacle lost from view"
                 out.cmd = (0.0, 0.0, 0.0)
+            elif hit[1].tall:
+                # from closer it is plainly too tall: no need to stop and measure
+                self.side = 0
+                self.decision = D.Decision(D.GO_AROUND, ["tall"])
+                self._go(AVOID, t)
+                out.cmd = (0.0, 0.0, 0.0)
+                out.event = f"obstacle at {hit[0]:.2f} m is tall after all: going around"
             else:
                 dist, ob = hit
                 near = dist                   # along the lane, from the body centre
+                if math.isfinite(ob.height):  # the farther away, the tighter this limit on its height
+                    self.seen_upper = min(self.seen_upper, ob.height)
                 if near <= cfg.gauge_distance + cfg.gauge_tolerance:
                     self._go(GAUGE, t)
                     out.cmd = (0.0, 0.0, 0.0)
@@ -354,6 +375,8 @@ class TerrainFsm:
             self.side = 0
             self._go(AVOID, t)
             return f"decision: {self.decision}"
+        if math.isfinite(self.seen_upper):
+            est.height_upper = min(est.height_upper, self.seen_upper)
         # first get square to it and centred, then close enough, then decide
         skew_deg = math.degrees(est.skew)
         if self.align_tries < cfg.align_max_tries:
@@ -376,20 +399,22 @@ class TerrainFsm:
                         f"{est.near_x * 1000:.0f} mm away")
         self.decision = D.decide(est, cfg.decision, landing_clear=self._landing_clear(est), robot_ready=inp.level,
                                  ball_tracked=inp.ball_tracked, robot_half_track=cfg.robot_half_track)
-        if self.decision.action == D.STEP_OVER:
+        if self.decision.action in D.CROSSINGS:
             self._plan_sent = False
             self._go(PLAN, t)
         elif self.decision.action == D.IGNORE:
             # walk over it with the normal gait; do not stop for it again while passing it
             speed = max(0.15, math.hypot(self.intent[0], self.intent[1]))
-            depth = est.depth if math.isfinite(est.depth) else 0.1
+            depth = est.depth if math.isfinite(est.depth) else (est.extent if math.isfinite(est.extent) else 0.1)
             self.ignore_box_until = t + 1.5 * (est.near_x + depth + 0.4) / speed
             self._go(CRUISE, t)
         else:
             self.side = 0
             self._go(AVOID, t)
-        return (f"decision: {self.decision} [h {est.height * 1000:.0f} +- {est.height_sigma * 1000:.1f} mm, "
-                f"d {est.depth * 1000:.0f} mm, {est.near_x * 1000:.0f} mm away, skew {skew_deg:+.1f} deg]")
+        mm = lambda v: "?" if not math.isfinite(v) else f"{v * 1000:.0f}"      # noqa: E731
+        return (f"decision: {self.decision} [height {mm(est.height)} mm (at most {mm(est.height_upper)}), "
+                f"depth {mm(est.depth)} mm (at most {mm(est.extent)}), width {mm(est.width)} mm, "
+                f"{est.near_x * 1000:.0f} mm away, skew {skew_deg:+.1f} deg]")
 
     def _landing_clear(self, est) -> bool:
         """The strip just beyond the box is floor (as far as the camera sees over the box), and
@@ -397,9 +422,10 @@ class TerrainFsm:
         landing = getattr(est, "landing_floor", float("nan"))
         if math.isfinite(landing) and landing < self.cfg.decision.landing_min_floor:
             return False
-        if not len(self.map.points) or not math.isfinite(est.depth):
+        depth = est.depth if math.isfinite(est.depth) else est.extent
+        if not len(self.map.points) or not math.isfinite(depth):
             return True
         p = self.map.points
-        x0 = est.near_x + est.depth + 0.05
+        x0 = est.near_x + depth + 0.05
         beyond = (p[:, 0] > x0) & (p[:, 0] < x0 + self.cfg.decision.landing_clear) & (np.abs(p[:, 1]) < 0.2)
         return not bool(beyond.any())

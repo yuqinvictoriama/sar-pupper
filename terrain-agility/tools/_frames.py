@@ -124,7 +124,7 @@ def classify_frame(bgr, R, cfg, floor):
     view = PolarView(cfg.model.scaled(bgr.shape[1], bgr.shape[0]), cfg.pose)
     pol, valid = view.sample(bgr, R)
     hsv = cv2.cvtColor(pol, cv2.COLOR_BGR2HSV)
-    labels = FM.classify(hsv, valid, floor, cfg.box_side, cfg.box_top, cfg.ball)
+    labels = FM.classify(hsv, valid, floor, ball=cfg.ball)
     scan = build_scan(labels, view, cfg.scan)
     return view, pol, hsv, labels, scan, find_obstacles(scan, cfg.scan)
 
@@ -160,6 +160,6 @@ def overlay(view, pol, labels, obstacles, near_depression_deg, scale=4):
             cv2.putText(both, f"{a:+d}", (x + 2, off + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
     for ob in obstacles:
         x = int(round((az_max - 0.5 * (ob.left_deg + ob.right_deg)) / ares * scale))
-        tag = ("BOX" if ob.is_box else ("TALL" if ob.tall else "LOW")) + f" {ob.nearest:.2f}m"
+        tag = ("TALL" if ob.tall else "LOW?") + f" {ob.nearest:.2f}m"
         cv2.putText(both, tag, (max(0, x - 40), n_dep * scale + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
     return both

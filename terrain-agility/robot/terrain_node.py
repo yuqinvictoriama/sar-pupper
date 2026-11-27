@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Terrain agility node: sees obstacles in the front fisheye, decides step over / go around,
-and steers. The thinking is in terrain/ (pure Python, tested off the robot); this file is
+"""Terrain agility node: sees obstacles in the front fisheye, decides step over / scale across /
+walk around, and steers. The thinking is in terrain/ (pure Python, tested off the robot); this file is
 the ROS plumbing around it.
 
     python3 robot/terrain_node.py [--config config/terrain.yaml]
@@ -13,8 +13,8 @@ In
   /dodge/event, /dodge/state       optional, from the projectile-dodging node
   /terrain/enable (Bool), /terrain/reset (Empty)
   /terrain/mode (String)           full | avoid | report | off   (the demo's path navigation sets this by zone)
-                                     full    step over the box, walk around everything else
-                                     avoid   walk around everything, the box included
+                                     full    step over low bars, scale across slabs, walk around the rest
+                                     avoid   walk around everything
                                      report  publish obstacles and the scan, never steer
                                      off     the same as /terrain/enable false
 
@@ -23,8 +23,9 @@ Out
                                    silent otherwise, so the mux gives control back to the driver
   /terrain/step_over               crossing requests to robot/stepover_node.py
   /terrain/state, /terrain/event   JSON / text, for the mission layer, Gemini and logs. The state carries the
-                                   mode and, from the moment the box has been measured, the measurement
-                                   ("box": near_x, height, depth, skew, width; metres and radians)
+                                   mode and, from the moment the obstacle has been measured, the measurement
+                                   ("box": near_x, height, depth, skew, width; metres and radians) and what
+                                   was decided ("kind": step_over | scale_across | go_around | ignore)
   /terrain/obstacles               JSON list of the obstacles in view
   /terrain/scan                    JSON: range to the nearest obstacle at each bearing (free space)
   /terrain/debug/compressed        the classified polar view (only rendered while someone subscribes)
@@ -55,7 +56,7 @@ from terrain import floor_model as FM  # noqa: E402
 from terrain import state_machine as SM  # noqa: E402
 from terrain.camera_model import PolarView, level_from_body, tilt_of  # noqa: E402
 from terrain.config import TerrainConfig  # noqa: E402
-from terrain.gauge import fine_view, measure_box  # noqa: E402
+from terrain.gauge import fine_view, measure_obstacle  # noqa: E402
 from terrain.scan import build_scan, find_obstacles, scan_points  # noqa: E402
 
 TICK_HZ = 20.0
@@ -78,7 +79,7 @@ def label_colours():
 
 
 class Perception(threading.Thread):
-    """Turns camera frames into a scan (always) and a box measurement (when asked)."""
+    """Turns camera frames into a scan (always) and a close measurement of the obstacle ahead (when asked)."""
 
     def __init__(self, cfg: TerrainConfig, log, clock=time.monotonic):
         super().__init__(daemon=True)
@@ -145,7 +146,7 @@ class Perception(threading.Thread):
         patch = hsv[np.ix_(rows, cols)]
         if not self.floor.trained:
             self.floor.learn(patch)
-        labels = FM.classify(hsv, valid, self.floor, self.cfg.box_side, self.cfg.box_top, self.cfg.ball)
+        labels = FM.classify(hsv, valid, self.floor, ball=self.cfg.ball)
         if self.cfg.adapt_floor:
             if float(np.mean(labels[np.ix_(rows, cols)] == FM.FLOOR)) > ADAPT_MIN_FLOOR:
                 self.floor.learn(patch, rate=ADAPT_RATE)
@@ -160,7 +161,7 @@ class Perception(threading.Thread):
             for ob in obstacles:
                 j0 = int(np.argmin(np.abs(view.bearings - ob.right_deg)))
                 j1 = int(np.argmin(np.abs(view.bearings - ob.left_deg)))
-                tag = ("BOX" if ob.is_box else ("TALL" if ob.tall else "LOW")) + f" {ob.nearest:.2f}m"
+                tag = ("TALL" if ob.tall else "LOW?") + f" {ob.nearest:.2f}m"
                 cv2.putText(img, tag, (3 * min(j0, j1), 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
             # bearings increase to the left; show left on the left
             ok, jpg = cv2.imencode(".jpg", img[:, ::-1], [cv2.IMWRITE_JPEG_QUALITY, 70])
@@ -174,8 +175,11 @@ class Perception(threading.Thread):
         if bgr.shape[1] != self.gauge_view.model.width:
             self.gauge_view = fine_view(self.cfg.model.scaled(bgr.shape[1], bgr.shape[0]), self.cfg.pose)
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        m = measure_box(rgb, self.gauge_view, self.cfg.box_side, self.cfg.box_top, R_level_body=R,
-                        floor=self.floor if self.floor.trained else None, landing=self.cfg.decision.landing_clear)
+        m = None
+        if self.floor.trained:
+            m = measure_obstacle(rgb, self.gauge_view, self.floor, R_level_body=R, cfg=self.cfg.gauge,
+                                 landing=self.cfg.decision.landing_clear, ball=self.cfg.ball,
+                                 near_depression_deg=self.cfg.near_depression_deg)
         self._count += 1
         self.box_result = (self._count, t_arr, m)
 
@@ -230,7 +234,7 @@ class TerrainNode(Node):
         self.create_timer(1.0 / TICK_HZ, self._tick)
         self.get_logger().info(
             f"terrain agility ready ({'enabled' if self.enabled else 'DISABLED'}); intent from {cfg.intent_topics}, "
-            f"commands on {cfg.cmd_topic}; step-over limit {cfg.decision.height_cap * 1000:.0f} mm")
+            f"commands on {cfg.cmd_topic}; nothing taller than {cfg.decision.height_cap * 1000:.0f} mm is stepped on")
 
     # ------------------------------------------------------------------ inputs
     def _on_image(self, msg: CompressedImage) -> None:
@@ -301,11 +305,12 @@ class TerrainNode(Node):
         state, why = st.get("state"), st.get("why", "")
         if state == "started":
             self.fsm.plan_result(True)
-            self.event(f"stepping over: {st.get('plan', '')}")
+            doing = "scaling across" if self.fsm.state == SM.SCALE_ACROSS else "stepping over"
+            self.event(f"{doing}: {st.get('plan', '')}")
         elif state in ("no_plan", "refused"):
             self.cross_sent = None
             self.fsm.plan_result(False, why)
-            self.event(f"not stepping over ({why}); going around")
+            self.event(f"not crossing ({why}); going around")
         elif state == "done":
             self.cross_sent = None
             self.fsm.crossing_result(True)
@@ -362,7 +367,7 @@ class TerrainNode(Node):
             inp.box = box[2]
 
         if (not scan_fresh and self.fsm.mode != SM.REPORT_ONLY
-                and self.fsm.state not in (SM.CRUISE, SM.STEP_OVER, SM.PLAN, SM.GAUGE, SM.ALIGN, SM.HOLD)):
+                and self.fsm.state not in (SM.CRUISE, SM.STEP_OVER, SM.SCALE_ACROSS, SM.PLAN, SM.GAUGE, SM.ALIGN, SM.HOLD)):
             # blind while steering round something: stop rather than walk on old data
             if now - self.last_warn > 2.0:
                 self.last_warn = now
@@ -380,8 +385,9 @@ class TerrainNode(Node):
             self.cross_sent = now
             b = out.plan_box
             m = String()
-            m.data = json.dumps({"cmd": "cross", "id": f"terrain-{self.cross_id}", "height": round(b.height, 4),
-                                 "depth": round(b.depth, 4), "near_x": round(b.near_x, 4), "skew": round(b.skew, 4)})
+            m.data = json.dumps({"cmd": "cross", "id": f"terrain-{self.cross_id}", "method": out.plan_method,
+                                 "height": round(b.height, 4), "depth": round(b.depth, 4),
+                                 "near_x": round(b.near_x, 4), "skew": round(b.skew, 4)})
             self.pub_req.publish(m)
         if self.fsm.state == SM.PLAN and self.cross_sent is not None and now - self.cross_sent > PLAN_TIMEOUT:
             self.cross_sent = None
@@ -417,11 +423,14 @@ class TerrainNode(Node):
             status = {"state": state, "reason": reason, "scan_ms": round(self.perception.scan_ms, 1),
                       "mode": self.fsm.mode if self.enabled else "off"}
             e = self.fsm.estimate
-            if e is not None and state in (SM.ALIGN, SM.PLAN, SM.STEP_OVER):
-                # the box as measured, for whoever keeps track of where the robot is (it is a landmark)
+            if e is not None and state in (SM.ALIGN, SM.PLAN, SM.STEP_OVER, SM.SCALE_ACROSS):
+                # the obstacle as measured, for whoever keeps track of where the robot is (it is a landmark)
                 num = lambda v: round(float(v), 4) if math.isfinite(v) else None      # noqa: E731
                 status["box"] = {"near_x": num(e.near_x), "height": num(e.height), "depth": num(e.depth),
                                  "skew": num(e.skew), "width": num(e.width)}
+            d = self.fsm.decision
+            if d is not None and state in (SM.PLAN, SM.STEP_OVER, SM.SCALE_ACROSS, SM.AVOID):
+                status["kind"] = d.action
             m.data = json.dumps(status)
             self.pub_state.publish(m)
 
@@ -434,6 +443,8 @@ class TerrainNode(Node):
                               "left_deg": round(o.left_deg, 1), "right_deg": round(o.right_deg, 1),
                               "left_xy": [round(v, 3) for v in o.left_xy], "right_xy": [round(v, 3) for v in o.right_xy],
                               "width": round(o.width, 3), "height": None if not math.isfinite(o.height) else round(o.height, 3),
+                              "min_height": None if not math.isfinite(o.min_height) else round(max(0.0, o.min_height), 3),
+                              "extent": None if not math.isfinite(o.extent) else round(o.extent, 3),
                               "tall": o.tall, "is_box": o.is_box} for o in obstacles])
         self.pub_obstacles.publish(m)
         if self.pub_scan.get_subscription_count() > 0:

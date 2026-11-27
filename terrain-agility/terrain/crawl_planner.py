@@ -103,6 +103,21 @@ class CrawlConfig:
     pair_lead: float = 0.08          # a foot is discouraged from leading its left/right partner by more (m)
     stand_off: float = 0.020         # the counted approach stops with the front feet this far before the take-off line (m)
     hold_time: float = 0.0           # s to stand at the crossing height before the first step (tests)
+    # scale-across: a low slab deep enough to walk on (plan_scale_across). Its margins are wider
+    # than the board's: the far edge is reached only after a metre of counted steps.
+    slab_edge_margin: float = 0.030  # a foot is set down on the slab with its centre this far from the slab's edges (m);
+    #                                  from there it may roll, as the body passes over it, to top_edge_margin from an edge
+    slab_foot_gap: float = 0.030     # gap between a foot set down on the floor and the slab's faces (m)
+    slab_step_down_gain: float = 1.0   # beyond the far edge a foot lands this much farther out per metre of slab
+    slab_step_down_from: float = 0.015  # height above this (m): its shin has to clear the edge behind it
+    slab_max_step: float = 0.12      # longest single foot move in the slab crawl (m)
+    slab_min_top: float = 0.050      # shortest stretch of top, between the margins, worth standing on (m)
+    slab_wheelbase: tuple = (0.105, 0.215)   # allowed distance between the front and rear feet (m); 0.150 by default
+    slab_pair_gap: float = 0.075     # a rear foot never comes closer than this behind the front foot on its side (m)
+    slab_max_evaluations: int = 400  # search budget (foot swings evaluated) per crossing height and leading side
+    advance_scale: float = 0.98      # distance the robot really covers per metre a slab plan counts. In simulation a
+    #                                  slab crossing ends 1.9 % short (a crawl on bare floor does not); measure it on
+    #                                  the robot (deploy.md, rung 6)
 
 
 @dataclass
@@ -139,6 +154,7 @@ class CrawlPlan:
     phase_names: list = field(default_factory=list)
     margin: np.ndarray | None = None     # (N,) planned support margin (m)
     template: dict | None = None         # the stored footstep pattern this plan came from, if any
+    counted: bool = False                # distances are in the crawl's own measure (config.advance_scale times as far on the floor)
 
     @property
     def duration(self) -> float:
@@ -852,6 +868,223 @@ class _Planner:
                                     "(box too tall or too deep)", self.box, cfg)
         return self.finish(steps)
 
+    # ------------------------------------------------------------------ scale-across
+    def slab_zones(self):
+        """The two stretches, fore-aft, where no foot may be set down: across the slab's near
+        edge and across its far edge. Between them a foot stands on the top; before and
+        beyond them, on the floor. Both feet of a left/right pair are given the same x, so on
+        a skewed slab each stretch covers the edge's position at either side.
+        Returns ((lo, hi), (lo, hi)) in world x."""
+        cfg = self.cfg
+        y_max = float(np.abs(self.wide_y).max())
+        spread = y_max * abs(math.tan(self.box.skew))
+        near = self.box.near_x
+        far = near + self.box.depth / math.cos(self.box.skew)
+        pad = K.FOOT_ENVELOPE_RADIUS + cfg.slab_foot_gap
+        edge = cfg.slab_edge_margin
+        # A foot set down beyond the far edge still has its knee over the slab, so its shin
+        # crosses the edge: the taller the slab, the farther out the foot has to land for the
+        # shin to clear it.
+        step_down = cfg.slab_step_down_gain * max(0.0, self.box.height - cfg.slab_step_down_from)
+
+        def out(lo, hi):                # widened to whole millimetres, so the lattice can hold its ends exactly
+            return math.floor(lo * 1000.0 + 1e-6) / 1000.0, math.ceil(hi * 1000.0 - 1e-6) / 1000.0
+
+        near_zone = out(near - spread - pad, near + spread + edge)
+        far_zone = out(far - spread - edge, far + spread + pad + step_down)
+        return near_zone, far_zone
+
+    def plan_slab(self, lead_left: bool = True, use_top: bool = True):
+        """Footsteps across a slab that is deep enough to walk on: a crawl whose footholds are
+        on the floor before the slab, on its top, and on the floor beyond it.
+
+        The crawl is a string of cycles. In a cycle the rear pair moves to one x and the front
+        pair to another (one side first: rear-left, front-left, rear-right, front-right, or
+        the mirror image with ``lead_left`` off), so after every cycle the feet stand in a
+        rectangle. Each pair stands either at the default
+        width or at the widened crossing stance. Which x and which width each pair takes in
+        each cycle is a shortest-path problem on a 10 mm lattice: a pair may stand anywhere
+        except across an edge of the slab, the front and rear pairs must stay a workable
+        distance apart, and fewer foot swings is better. That path is only a proposal: every
+        swing on it is then put through the same checks as every other step this planner makes
+        (balance, reach, joint ranges, whole-leg clearance, torque). A swing that fails is
+        remembered and the path is found again from where the checks had got to."""
+        import heapq
+
+        cfg = self.cfg
+        err = self.setup()
+        if err:
+            return CrawlPlan(False, err, self.box, cfg)
+        if not self.has_box:
+            return CrawlPlan(False, "no slab to cross", self.box, cfg)
+        (z1_lo, z1_hi), (z2_lo, z2_hi) = self.slab_zones()
+        if not use_top:
+            # stepping over: nothing is set down on it, so the two keep-outs are one, from
+            # before its near face to beyond its far face, and every foot crosses it in one swing
+            z1_hi = z2_lo = 0.5 * (z1_hi + z2_lo)
+        elif z2_lo - z1_hi < cfg.slab_min_top:
+            return CrawlPlan(False, f"the top is too shallow to stand on between its edges "
+                                    f"({(z2_lo - z1_hi) * 1000:.0f} mm usable)", self.box, cfg)
+        xf0 = round(float(self.default_feet_body[FL, 0]), 4)
+        xr0 = round(float(self.default_feet_body[BL, 0]), 4)
+        wheelbase = xf0 - xr0
+        if xf0 > z1_lo + 1e-6:
+            return CrawlPlan(False, "the front feet are already at the slab; too close to start", self.box, cfg)
+        # where it ends: the rear feet just beyond the far edge's keep-out, default stance
+        self.final_body_x = z2_hi - xr0
+        self.final_x = self.default_feet_body[:, 0] + self.final_body_x
+        goal = (round(xf0 + self.final_body_x, 4), round(xr0 + self.final_body_x, 4), 0, 0)
+
+        def surface(x):
+            """Foot-centre height and "on the top" for a foothold at x, or None if no foot may stand there."""
+            if x <= z1_lo + 1e-6 or x >= z2_hi - 1e-6:
+                return self.zf, False
+            if use_top and z1_hi - 1e-6 <= x <= z2_lo + 1e-6:
+                return self.z_top, True
+            return None
+
+        # footholds: a 10 mm lattice from the start, plus the last place before and the first
+        # place after each edge, plus the final stance
+        lattice = [round(xr0 + 0.01 * k, 4) for k in range(int(math.ceil((goal[0] - xr0) / 0.01)) + 1)]
+        special = [round(v, 4) for v in (z1_lo, z1_hi, z2_lo, z2_hi, goal[0], goal[1])]
+        if not use_top:
+            # the take-off places that leave a rear foot close behind a front foot at the line
+            special += [round(z1_lo - w, 4) for w in (cfg.slab_wheelbase[0], cfg.slab_wheelbase[0] + 0.01)]
+        holds = sorted({x for x in lattice + special if surface(x) is not None and x <= goal[0] + 1e-6})
+        w_min, w_max = cfg.slab_wheelbase
+        banned = set()          # swings that failed the checks, each with where the other feet stood
+
+        def swings(n, m):
+            """The foot swings of the cycle from node n to node m, in order: (leg, x, wide, key).
+            The key is what a failed swing is remembered under: the same swing with the other
+            feet in the same places is never tried twice, whichever cycle proposes it."""
+            (xf, xr, wf, wr), (xf2, xr2, wf2, wr2) = n, m
+            r1, f1, r2, f2 = (BL, FL, BR, FR) if lead_left else (BR, FR, BL, FL)
+            out = []
+            if xr2 > xr:
+                out.append((r1, xr2, wr2, (r1, xr, xr2, wr2, xf, wf, xf, wf, xr, wr)))
+            if xf2 > xf:
+                out.append((f1, xf2, wf2, (f1, xf, xf2, wf2, xf, wf, xr2, wr2, xr, wr)))
+            if xr2 > xr:
+                out.append((r2, xr2, wr2, (r2, xr, xr2, wr2, xf2, wf2, xf, wf, xr2, wr2)))
+            if xf2 > xf:
+                out.append((f2, xf2, wf2, (f2, xf, xf2, wf2, xf2, wf2, xr2, wr2, xr2, wr2)))
+            return out
+
+        height = {x: surface(x)[0] for x in holds}
+        height[xf0] = height[xr0] = self.zf
+        memo = {}
+
+        def moves(x, wide, x_goal, may_widen):
+            """Where a pair may go from x: stay as it is, or step to a foothold - the rear pair
+            at either width, the front pair at the default width only (it is the rear stance
+            that balances a front step), and anyone at the final place at the default width."""
+            k = (x, wide, x_goal, may_widen)
+            if k not in memo:
+                out = [(x, wide)]
+                for v in holds:
+                    if cfg.min_step - 1e-6 <= v - x <= cfg.slab_max_step + 1e-6 and v <= x_goal + 1e-6:
+                        out.append((v, 0))
+                        if may_widen and v < x_goal - 1e-6:
+                            out.append((v, 1))
+                memo[k] = out
+            return memo[k]
+
+        def path_from(node):
+            """Fewest foot swings from ``node`` (front x, rear x, front wide, rear wide) to the
+            final stance, avoiding the swings already struck out. A*; None if there is no way."""
+            def h(n):
+                # (weighted: the lower bound on the swings left is doubled, which finds a way
+                #  a few swings longer than the shortest in a small fraction of the time)
+                return 4 * (math.ceil(max(0.0, goal[0] - n[0] - 1e-6) / cfg.slab_max_step)
+                            + math.ceil(max(0.0, goal[1] - n[1] - 1e-6) / cfg.slab_max_step))
+            best = {node: 0.0}
+            came = {}
+            heap = [(h(node), 0.0, node)]
+            while heap:
+                _, g, n = heapq.heappop(heap)
+                if n == goal:
+                    out = [n]
+                    while out[-1] != node:
+                        out.append(came[out[-1]])
+                    return out[::-1]
+                if g > best.get(n, math.inf) + 1e-9:
+                    continue
+                xf, xr, wf, wr = n
+                for xr2, wr2 in moves(xr, wr, goal[1], True):
+                    if xf - xr2 < cfg.slab_pair_gap - 1e-6:     # the rear foot would crowd the front foot it follows
+                        continue
+                    for xf2, wf2 in moves(xf, wf, goal[0], False):
+                        m = (xf2, xr2, wf2, wr2)
+                        if m == n or not (w_min - 1e-6 <= xf2 - xr2 <= w_max + 1e-6):
+                            continue
+                        # two swings per pair that moves; a little extra for leaving the default
+                        # wheelbase and for the wide stance, so both are used only where they help
+                        g2 = g + 2 * (xf2 > xf) + 2 * (xr2 > xr) + 2.0 * abs(xf2 - xr2 - wheelbase) + 0.05 * (wf2 + wr2)
+                        if xf2 > xf and height[xf2] < height[xf] - 1e-6:
+                            # A front foot stepping down past the far edge: the body must be well
+                            # forward for the shin to clear the edge, and stays balanced there only
+                            # with the rear feet close behind (not crowding) and set wide. Say so
+                            # here, so the first proposal is one that can pass.
+                            g2 += 1.0 * (not wr2) + 10.0 * abs(xf - xr2 - w_min)
+                        if g2 < best.get(m, math.inf) - 1e-9 and not any(sw[3] in banned for sw in swings(n, m)):
+                            best[m] = g2
+                            came[m] = n
+                            heapq.heappush(heap, (g2 + h(m), g2, m))
+            return None
+
+        def cycle(feet, on_top, body_c, n, m):
+            """The swings that take the stance from node n to node m, each one checked."""
+            steps = []
+            for leg, x_new, wide, key in swings(n, m):
+                z_new, top = surface(x_new)
+                # (the body stays at one height above the floor throughout: on the slab the legs
+                #  are that much more bent, which gives the reach to step down past the far edge;
+                #  raising the body with the feet was tried and loses it)
+                res = self.try_step(feet, on_top, body_c, leg, x_new, z_new, top, narrow=not wide)
+                if res is None:
+                    banned.add(key)
+                    return None
+                st, feet, on_top, body_c = res
+                steps.append(st)
+            return steps, feet, on_top, body_c
+
+        # the stack holds the checked part of the way: (node, feet, on_top, body, steps so far)
+        stack = [((xf0, xr0, 0, 0), self.start_feet.copy(), [False] * 4, self.start_body.copy(), [])]
+        dead = set()            # stances from which no way on was found
+        route = None
+        while True:
+            node, feet, on_top, body_c, steps = stack[-1]
+            if node == goal:
+                break
+            if self.evals >= cfg.slab_max_evaluations:
+                return CrawlPlan(False, "search budget used up before a way across was found", self.box, cfg)
+            if route is None or route[0] != node:
+                route = path_from(node)
+            if route is not None and route[1] in dead:
+                # the proposal runs into a stance already known to be a dead end: strike out
+                # the swing that completes the move there, and ask again
+                banned.add(swings(node, route[1])[-1][3])
+                route = None
+                continue
+            if route is None:
+                if len(stack) == 1:
+                    return CrawlPlan(False, "no crawl across passes the balance, reach and clearance checks "
+                                            "(slab too tall, or its top too short for the feet)", self.box, cfg)
+                dead.add(node)
+                stack.pop()
+                continue
+            nxt = route[1]
+            res = cycle(feet, on_top, body_c, node, nxt)
+            if res is None:
+                route = None
+                continue
+            new_steps, feet2, top2, body2 = res
+            stack.append((nxt, feet2, top2, body2, steps + new_steps))
+            route = route[1:]
+        self.approach_steps = 0
+        return self.finish(stack[-1][4])
+
     # ------------------------------------------------------------------ trajectory
     def build(self, steps, final_body):
         cfg = self.cfg
@@ -1110,6 +1343,65 @@ def plan_crossing(box: BoxSpec, cfg: CrawlConfig | None = None, hip_heights=None
             h for h in HIP_HEIGHTS if abs(h - cfg.hip_height) > 1e-6]
         for hh in heights:
             last = _Planner(box, replace(cfg, hip_height=hh)).plan()
+            if last.ok:
+                return last
+    return last
+
+
+SLAB_HIP_HEIGHTS = (0.160, 0.155, 0.165)
+_SLAB_LAST_GOOD = []                      # (crossing height, side that leads) of the last slab plan that worked
+
+
+def plan_scale_across(box: BoxSpec, cfg: CrawlConfig | None = None, hip_heights=None) -> CrawlPlan:
+    """Plan a crawl onto, along and off a low slab that is deep enough to walk on (deeper than
+    the robot is long between its feet, or nearly), starting from the default stance.
+
+    Unlike ``plan_crossing`` this needs no stored pattern: the footholds follow from the
+    slab's two edges (see ``_Planner.plan_slab``). The slab's margins replace the board's."""
+    cfg = cfg or CrawlConfig()
+    if box.height <= 0 or box.depth <= 0:
+        return CrawlPlan(False, "slab dimensions must be positive", box, cfg)
+    if abs(box.skew) > math.radians(12.0):
+        return CrawlPlan(False, "slab is more than 12 degrees off square; align first", box, cfg)
+    last = None
+    # On a skewed slab the side whose feet meet the edge first matters: lead with the side the
+    # near face is nearer on, then the other; then the other crossing heights.
+    leads = (True, False) if box.skew >= 0 else (False, True)
+    trials = [(hh, lead) for hh in (hip_heights or SLAB_HIP_HEIGHTS) for lead in leads]
+    # what worked last time goes first: the same slab is usually crossed again
+    trials.sort(key=lambda tr: 0 if tr in _SLAB_LAST_GOOD else 1)
+    # The far edge is reached after about a metre of counted steps, and the robot covers a
+    # little less ground than the plan counts. Plan in the plan's own measure: everything
+    # that much farther away.
+    k = 1.0 / min(1.0, max(0.9, cfg.advance_scale))
+    counted = BoxSpec(box.height, box.depth * k, box.near_x * k, box.skew)
+    for hh, lead_left in trials:
+        last = _Planner(counted, replace(cfg, hip_height=hh)).plan_slab(lead_left)
+        last.box, last.counted = box, True
+        if last.ok:
+            _SLAB_LAST_GOOD[:] = [(hh, lead_left)]
+            return last
+    return last
+
+
+def plan_step_over(box: BoxSpec, cfg: CrawlConfig | None = None, hip_heights=None) -> CrawlPlan:
+    """Plan a crawl that carries every foot over a small obstacle without touching it: no
+    foot is set down on it. ``box`` is the obstacle's bounding box (a round bar: its diameter
+    as both height and depth). Whether a plan exists is decided by the checks alone; expect
+    one only for obstacles a few centimetres across (see deploy.md for the range)."""
+    cfg = cfg or CrawlConfig()
+    if box.height <= 0 or box.depth <= 0:
+        return CrawlPlan(False, "obstacle dimensions must be positive", box, cfg)
+    if abs(box.skew) > math.radians(12.0):
+        return CrawlPlan(False, "obstacle is more than 12 degrees off square; align first", box, cfg)
+    last = None
+    leads = (True, False) if box.skew >= 0 else (False, True)
+    for hh in (hip_heights or SLAB_HIP_HEIGHTS):
+        for lead_left in leads:
+            # (the foot gap is the low bar's, not the slab's: the obstacle is met after a few
+            #  counted steps, not a metre of them, and every millimetre of stride matters here)
+            trial = replace(cfg, hip_height=hh, allow_step_on=False, slab_foot_gap=cfg.foot_gap)
+            last = _Planner(box, trial).plan_slab(lead_left, use_top=False)
             if last.ok:
                 return last
     return last
