@@ -42,6 +42,10 @@ def main() -> None:
     frames: dict = {}
     for path in args.recordings:
         reader = RecordingReader(path)
+        absent = [c for c in reader.cameras if not os.path.exists(os.path.join(path, c + ".bin"))]
+        if absent:                           # only the small files were copied off the robot
+            print("skipped %s: no pictures for %s" % (path, ", ".join(absent)), file=sys.stderr)
+            continue
         for cam in reader.cameras:
             if cam in cfg["cameras"]:
                 frames.setdefault(cam, []).extend(reader.read(cam, off, ln) for _t, off, ln in reader.index[cam])
