@@ -95,7 +95,7 @@ SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 ## 2. Check the code runs (no robot needed)
 
 ```bash
-python3 -m unittest discover -s tests     # expect: Ran 70 tests ... OK
+python3 -m unittest discover -s tests     # expect: Ran 77 tests ... OK
 python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7 --elp-fps 30    # simulated 2 m throws, rear cameras at their 30 a second; about a minute on the Pi
 ```
 
@@ -366,12 +366,19 @@ for each one it would have dodged. Every such moment, and every throw it saw
 but would not have dodged, is saved under `data/throws/` and shown in the
 **Pupper Dodging View** (the section after stage 8): open it now, in a browser, at the
 address `start.sh` printed. In the `watch.sh` line, "lag" is how old a frame is
-when it has been processed and "cpu" is the processing time per frame. A healthy
-line shows the ELPs at about 30 fps (their `max_process_fps`), "cpu" under 20 ms
-and "lag" under 100 ms. If the frame rates are far below that, lag climbs, or
-`top` shows the Pi near 100 % on all cores, the Pi is overloaded and no dodge
-will be in time: lower `max_process_fps` for the ELPs, or stop whatever else is
-using the processor.
+when the node has acted on it and "cpu" is the work per frame, split into
+decoding the camera's JPEG and searching it for the ball. Each camera does that
+work in a process of its own (since 2026-11-26; `top` shows them as three extra
+`python3` lines beside the dodge node). A healthy line shows the ELPs at about
+30 fps (their `max_process_fps`), "cpu" under 25 ms and "lag" under 70 ms.
+Frame rate is what decides a dodge: in simulation, throws from 2-3 m are
+dodged 73-100 % of the time at 30 pictures a second, about half the time at
+15, and never at 7, which is what the Pupper managed before the cameras had
+their own processes. If the rates are far below 30, lag climbs, or `top` shows
+the Pi near 100 % on all four cores, something else is using the processor:
+`start.sh` names the `llm-agent` service if it is running; stop it. Once the
+rates hold with "cpu" well under the 33 ms between frames, try
+`max_process_fps: 60` for the ELPs (in a file under `config/calib/`).
 
 Now the first step that **moves the robot**. Stand it up:
 
@@ -526,7 +533,7 @@ To run it by hand: `bash robot/dodging_view.sh`. It cannot move or arm the robot
 |---|---|
 | Ball first in a picture, to the decision | How long Pupper took to make up its mind, from the first picture with the ball in it |
 | Decision, to the command being sent | Should be a few ms |
-| Command, to the mux passing it on | The velocity mux's delay. If it is tens of ms, try `bash robot/start.sh --fast-mux` |
+| Command, to the mux passing it on | The velocity mux's delay. A few ms with `robot/fast_mux.py`, the default since 2026-11-26; 40-43 ms were measured with the monorepo's mux (`--slow-mux`) |
 | Command, to the body starting to move | **The robot's own latency**: from the command to the IMU showing the body turn |
 | Decision, to the body starting to move | **From recognising the ball to starting to move** |
 | Ball first seen, to the body moving | The whole reaction |
@@ -610,7 +617,7 @@ robot idle.
 | Tracks appear with no ball | Something else in view is ball-coloured | Remove it and redo the colour step for that camera |
 | Range reads consistently wrong | Size calibration | `calibrate_color.py <cam> --distance ...`; check `ball.diameter_m` |
 | Dodges balls that would miss by a lot | Prediction too generous | Lower `threat.k_sigma` or `threat.sigma_cap_m` |
-| Reacts too late | Open the throw in Pupper Dodging View: it says where the time went | Few pictures per second or old pictures (age over 100 ms) in "Cameras during this throw": the Pi is overloaded, see stage 7. Ball first seen close to the robot: lighting or colour calibration (stage 5). A long time from command to body moving: `--fast-mux`. Otherwise more time in the air: throw higher, or from further back |
+| Reacts too late | Open the throw in Pupper Dodging View: it says where the time went | Few pictures per second or old pictures (age over 100 ms) in "Cameras during this throw": the Pi is overloaded, see stage 7. Ball first seen close to the robot: lighting or colour calibration (stage 5). A long time from command to the mux passing it on: check `start.sh` was not given `--slow-mux`. Otherwise more time in the air: throw higher, or from further back |
 | Loses a high lob that left the picture | It is followed unseen for 0.6 s; a very high lob is out of sight longer | Raise `tracker.flight_coast_s` (0.8), or throw a little lower |
 | Reacts in time but does not get clear | Robot slower than the config assumes | Raise `escape.accel_lag_s` in steps of 0.05 (or measure it with the stage 7 video), set `react_s` from stage 7; raise `vx_*` if steady |
 | Moves the wrong way | Left/right swapped or a camera is rotated | Stage 4 and the bearing table in stage 5 |

@@ -11,8 +11,9 @@ out of the way, from any direction around it.
 ```
 dodge/      the reflex itself, plain Python (no ROS): lens models, colour detection,
             3D tracking, hit prediction, escape choice, state machine, simulator
-robot/      what runs on the Pupper: USB camera capture, the ROS node, the launch
-            file, start/stop scripts, mux configuration
+robot/      what runs on the Pupper: USB camera capture, the camera processes
+            (one per camera: capture, decode, ball search), the ROS node that
+            tracks and decides, the launch file, start/stop scripts, the mux
 tools/      setting up and tuning: find and check the cameras, tune exposure, fit the
             fisheye's rim, calibrate colour and lenses, record, replay, measure latency
             and step response, pre-flight check, simulation report
@@ -24,7 +25,7 @@ data/       recordings made on the robot (not in git)
 ## Try it without a robot
 
 ```bash
-python3 -m unittest discover -s tests     # 70 tests, a few seconds
+python3 -m unittest discover -s tests     # 77 tests, about half a minute
 python3 tools/sim_report.py               # simulated throws from every direction
 ```
 
