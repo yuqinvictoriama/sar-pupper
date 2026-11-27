@@ -106,16 +106,16 @@ class Mission:
         self.crossing_advance = self.cfg.reckon.crossing_advance
         self.crossing_counted = 0.0
         self.restart_until = -1e9
-        self.box_done = False
-        self.box_landmarked = False
-        self.landmark_due = False
-        self.walk_around_done = False
+        self.passed = 0                         # obstacles of the course behind it: crossed or walked around
+        self.landmark_due = False               # the step-over node has just said it is planning a crossing
+        self.crossing_planning = False
         self.terrain_prev = ""
         self.terrain_idle_since = None
         self.terrain_hold_since = None
         self.terrain_holds: list = []           # when terrain agility last gave up on a way round
         self.back_off_until = -1e9              # reversing a little to give it a second look
         self.back_offs = 0
+        self.avoid_next = False                 # terrain agility got stuck at an obstacle: walk around it from further back
         self.progress_mark = None               # (time, s): the last time it had clearly moved on
         self.said_stepping = False
         # zone 2
@@ -236,7 +236,7 @@ class Mission:
             self.reck.set_line(inp.yaw, at)
             self.target = inp.yaw
         if state in (REFIX, ZONE2, ARRIVE, RESCUE):
-            self.box_done = self.walk_around_done = True
+            self.passed = len(self.cfg.course.obstacles)
         self._note("jumped", state=state, s=at)
         self._go(state)
         if state == REFIX:
@@ -335,7 +335,10 @@ class Mission:
         if not self.motion:
             return False, "report" if self.state in ACTIVE else "off"
         if self.state == ZONE1:
-            return False, "avoid" if self.box_done else "full"
+            # full while a course obstacle is still ahead; after the last one anything in the way is walked around
+            if self.avoid_next:
+                return False, "avoid"
+            return False, "full" if self.passed < len(self.cfg.course.obstacles) else "avoid"
         if self.state == REFIX:
             return False, "report"
         if self.state == ZONE2:
@@ -465,9 +468,13 @@ class Mission:
 
     def _crossing(self, st: dict) -> None:
         state = st.get("state")
-        if state in ("planning", "started") and not st.get("dry_run"):
+        if state == "planning" and not st.get("dry_run"):
             self.landmark_due = True                # Pupper is standing a measured distance from the obstacle
+            self.crossing_planning = True
+        elif state in ("no_plan", "refused"):
+            self.crossing_planning = False          # terrain agility walks around it instead
         if state == "started":
+            self.crossing_planning = False
             self.crossing_active = True
             self.crossing_progress = 0.0
             advance = st.get("advance")             # metres the plan moves the body; there are no velocity commands
@@ -485,12 +492,13 @@ class Mission:
                 self.reck.advance(total - self.crossing_counted)
                 self.restart_until = self.t + self.cfg.reckon.restart_s
                 self._note("crossed", s=round(self.reck.s, 2))
+                self.passed += 1
+                self.said_stepping = False          # the next crossing is announced too
             self.crossing_active = False
             self.crossing_progress = 1.0
-            self.box_done = True
         elif state == "failed":
             was = self.crossing_active
-            self.crossing_active = False
+            self.crossing_active = self.crossing_planning = False
             if was and self.state in ACTIVE:
                 self._hold("the crossing stopped: " + str(st.get("why", ""))[:60])
 
@@ -511,6 +519,7 @@ class Mission:
                 # It stands for 2 s and tries again by itself. Twice without getting on usually means it
                 # has ended up too close to the obstacle's corner: step back and let it look again.
                 self.back_offs += 1
+                self.avoid_next = True              # and do not walk up to measure it again: go around from here
                 self.terrain_holds = []
                 self.terrain_hold_since = None
                 self.back_off_until = inp.t + 2.0 + self.cfg.walk.back_off_m / self.cfg.walk.back_off_speed
@@ -534,7 +543,7 @@ class Mission:
 
     def _stalled(self, inp: Inputs, limit_s: float = 25.0) -> bool:
         """Walking states only: True (and HOLD) if Pupper has not got 15 cm further in `limit_s`."""
-        waiting = self.crossing_active or inp.t < self.restart_until + 1.0 or (self.landmark_due and not self.box_done)
+        waiting = self.crossing_active or inp.t < self.restart_until + 1.0 or self.crossing_planning
         if self.progress_mark is None or waiting or not self.motion or self.reck.s - self.progress_mark[1] > 0.15:
             self.progress_mark = (inp.t, self.reck.s)
             return False
@@ -556,26 +565,30 @@ class Mission:
         if self._stalled(inp):
             return None
 
-        # the low obstacle is a landmark: terrain agility is standing a measured distance from it.
-        # (Taken from the step-over node's report, not from terrain's state names, which may grow.)
-        if self.landmark_due and not self.box_landmarked:
-            self.box_landmarked = True
+        # An obstacle about to be crossed is a landmark: terrain agility is standing a measured distance
+        # from it, and its place on the course is known. (Taken from the step-over node's report, not
+        # from terrain's state names, which may grow.)
+        obstacles = c.obstacles
+        if self.landmark_due:
+            self.landmark_due = False
             box = inp.terrain.get("box") or {}
             near = box.get("near_x")
             near = float(near) if isinstance(near, (int, float)) else cfg.reckon.gauge_distance
-            before = self.reck.s
-            self.reck.set_s(c.box_near - near)
-            self._note("box_landmark", s=round(self.reck.s, 2), was=round(before, 2))
+            if self.passed < len(obstacles):
+                before, there = self.reck.s, float(obstacles[self.passed]["near"]) - near
+                if abs(there - before) < 1.0:       # further off than that, it is not the obstacle expected next
+                    self.reck.set_s(there)
+                self._note("box_landmark", s=round(self.reck.s, 2), was=round(before, 2),
+                           obstacle=str(obstacles[self.passed].get("name", self.passed + 1))[:24])
         if self.crossing_active and not self.said_stepping:
             self.said_stepping = True
             self._say("stepping_over")
         if ts == "AVOID" and prev != "AVOID":
             self._say("going_around")
         if prev == "AVOID" and ts in TERRAIN_IDLE:
-            if self.reck.s >= c.tall_near - 0.3:
-                self.walk_around_done = True
-            else:
-                self.box_done = True                # it went round the low box instead of over it
+            self.passed += 1                        # walked around: a course obstacle, or something in its place
+            self.avoid_next = False
+            self.back_offs = 0
             self._note("walked_around", s=round(self.reck.s, 2), d=round(self.reck.d, 2))
 
         if self.crossing_active or inp.t < self.restart_until:
@@ -586,7 +599,8 @@ class Mission:
         idle = ts in TERRAIN_IDLE
         idle_for = inp.t - self.terrain_idle_since if self.terrain_idle_since is not None else 0.0
         s = self.reck.s
-        passed = self.walk_around_done or not cfg.refix.need_walk_around or s >= c.refix_at + cfg.refix.fallback_extra
+        passed = (self.passed >= len(obstacles) or not cfg.refix.need_walk_around
+                  or s >= c.refix_at + cfg.refix.fallback_extra)
         if s >= c.refix_at and idle and idle_for >= 0.5 and passed:
             if cfg.refix.enabled:
                 self._go(REFIX)
@@ -598,10 +612,14 @@ class Mission:
             # terrain agility has the legs. Keep asking to walk straight on: it treats the
             # driver's command as "where the robot was going" and lets go if the driver stops.
             return (cfg.walk.cruise, 0.0, 0.0)
-        # Up to the low obstacle: on the line, so Pupper meets it centred. After it: parallel to the line
-        # only. The line runs through the tall obstacle, and steering back onto it while beside that
-        # obstacle turns Pupper into its corner. The second listen redraws the line from wherever it is.
-        d = 0.0 if self.box_done else self.reck.d
+        # On the line, so Pupper meets each obstacle centred, except while it is beside one it has gone
+        # around: the line runs through that obstacle, and steering back onto it there turns Pupper into
+        # the obstacle's corner. Then it only holds the line's direction until the obstacle is behind it.
+        d = self.reck.d
+        if abs(d) > 0.12:
+            for ob in obstacles:
+                if float(ob["near"]) - 0.6 <= s <= float(ob["near"]) + float(ob.get("depth", 0.1)) + 0.30:
+                    d = 0.0
         return line_command(d, self.reck.heading_error, cfg.walk.cruise, cfg.walk)
 
     def _refix(self, inp: Inputs):
@@ -742,7 +760,7 @@ class Mission:
         zone = {ZONE1: "obstacles", REFIX: "second listen", ZONE2: "gauntlet", ARRIVE: "at the cover",
                 RESCUE: "with the survivor"}.get(self.state, "")
         cue = EV.cue(self.state, quiet=self.quiet, s=r.s, course=c,
-                     crossing=self.crossing_active or (self.landmark_due and not self.box_done),
+                     crossing=self.crossing_active or self.crossing_planning,
                      reason=self.reason, motion=self.motion)
         would = getattr(self, "would", None)
         return {
@@ -764,7 +782,7 @@ class Mission:
             "resume_state": self.resume_state, "arrive_why": self.arrive_why,
             "checks": self.checks, "missing": self.missing,
             "crossing": {"active": self.crossing_active, "progress": round(self.crossing_progress, 3)},
-            "box_done": self.box_done, "walk_around_done": self.walk_around_done, "cover_seen": self.cover_seen,
+            "passed": self.passed, "obstacles": len(c.obstacles), "cover_seen": self.cover_seen,
             "cover_range": self.cover_range, "dodges": self.dodges, "keyword_ignored": self.keyword_ignored,
             "cue": cue,
         }

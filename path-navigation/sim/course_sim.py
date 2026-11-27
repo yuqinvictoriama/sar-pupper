@@ -65,7 +65,7 @@ class SimOptions:
     speed_factor: float = 0.92              # actual / commanded walking speed (the mission assumes 1.0)
     walk_lag: float = 0.25
     yaw_drift_deg_min: float = 1.5          # IMU drift
-    crossing_s: float | None = None         # None: what terrain agility's simulation takes (slab 70 s, bar 57 s)
+    crossing_s: float | None = None         # None: what terrain agility's simulation takes (slab 81 s, bar 52 s)
     plan_s: float = 4.0
     throws: bool = True
     throw_gap_s: float = 3.0
@@ -95,11 +95,15 @@ class CourseSim:
         self.imu_drift = 0.0
         self.path = [(0.0, 0.0)]
         self.survivor = (c.cover_near + 0.45, 0.0)
-        self.rects = [
-            Rect(c.box_near + c.box_depth / 2, 0.0, c.box_depth, c.box_width, tall=False, is_box=True),
-            Rect(c.tall_near + c.tall_depth / 2, 0.0, c.tall_depth, c.tall_width),
-            Rect(c.cover_near + 0.03, 0.0, 0.06, c.cover_width),
-        ]
+        # The course's obstacles, then the cover. To the walking scan a thing is "certainly tall" (walked
+        # around from a distance) or "may be low" (walked up to and measured): terrain agility's own rule.
+        self.rects = []
+        for ob in c.obstacles:
+            tall = float(ob.get("height", 0.02)) >= 0.08
+            self.rects.append(Rect(float(ob["near"]) + float(ob["depth"]) / 2, 0.0, float(ob["depth"]), float(ob["width"]),
+                                   tall=tall, is_box=not tall))
+        self.rects.append(Rect(c.cover_near + 0.03, 0.0, 0.06, c.cover_width))
+        self.crossed = set()                # indices of obstacles a crossing went over
         self.min_clear = {"tall": 9.9, "cover": 9.9}
         # terrain agility (the real state machine)
         self.fsm = SM.TerrainFsm(SM.FsmConfig())
@@ -147,6 +151,7 @@ class CourseSim:
             # starting from a stage: the operator has put Pupper there, facing along the line
             c = self.cfg.course
             at = {"REFIX": c.refix_at + 0.1, "ZONE2": c.refix_at + 0.1, "ARRIVE": c.length, "RESCUE": c.length}
+            self.crossed = set(range(len(c.obstacles)))
             self.pose[:] = (at.get(text[5:], 0.0), 0.0, 0.0)
             self.vel[:] = 0.0
             self.path = [(float(self.pose[0]), 0.0)]
@@ -284,12 +289,14 @@ class CourseSim:
         if out.plan_box is not None:
             b = out.plan_box
             slab = getattr(out, "plan_method", "") == "slab"
-            # body travel, from terrain agility's own simulation: a slab is scaled across (feet on top),
-            # depth + 0.49 m from the usual 0.36 m stop; a bar is stepped over, about 0.59 m
+            # Body travel and time as terrain agility measured them in physics through its step-over node
+            # (2026-11-26): a slab is scaled across, depth + 0.49 m from the usual 0.36 m stop, 81 s;
+            # a 19 x 89 mm bar is stepped over, 0.58 m, 52 s.
             advance = (b.near_x - 0.36) + b.depth + 0.49 if slab else b.near_x + b.depth + 0.13
-            duration = self.opt.crossing_s or (70.0 if slab else 57.0)
+            duration = self.opt.crossing_s or (81.0 if slab else 52.0)
             self.cross = {"stage": "planning", "until": t + self.opt.plan_s, "advance": advance, "moved": 0.0,
                           "duration": duration, "slab": slab}
+            self.crossed.add(getattr(self, "_gauged", 0))
             self.board.crossing(t, {"state": "planning"})
         status = {"state": out.state, "mode": self.fsm.mode,
                   "reason": self.fsm.hold_reason if self.fsm.state == SM.HOLD else "", "scan_ms": 0.0}
@@ -301,26 +308,38 @@ class CourseSim:
         return out.cmd
 
     def _measure_box(self):
-        """What the fine gauge would read, standing still in front of the box."""
-        box = self.rects[0]
+        """What the fine gauge would read, standing still in front of the nearest low obstacle."""
         x, y, th = self.pose
-        near_face = box.cx - box.depth / 2
         if abs(math.cos(th)) < 0.3:
             return None
-        near_x = (near_face - x) / math.cos(th) + self.rng.gauss(0.0, 0.004)
-        if not (0.15 < near_x < 0.7):
+        best = None
+        for k, ob in enumerate(self.cfg.course.obstacles):
+            box = self.rects[k]
+            if box.tall:
+                continue
+            near_x = (box.cx - box.depth / 2 - x) / math.cos(th)
+            if 0.15 < near_x < 0.7 and (best is None or near_x < best[0]):
+                best = (near_x, k, ob, box)
+        if best is None:
             return None
-        # the box's ends in the body frame (left positive)
+        near_x, k, ob, box = best
+        near_x += self.rng.gauss(0.0, 0.004)
+        self._gauged = k
+        # its ends in the body frame (left positive)
         y_left = (box.width / 2 - y) / max(0.3, math.cos(th)) - near_x * math.tan(th)
         y_right = (-box.width / 2 - y) / max(0.3, math.cos(th)) - near_x * math.tan(th)
-        height = self.cfg.course.box_height
+        height, depth = float(ob.get("height", 0.02)), box.depth
+        if ob.get("shape") == "round":
+            # A round bar has no side face and no flat top. Terrain agility's gauge reads a 50 mm one as
+            # "20 to 25 mm tall, 45 to 55 mm deep" (its plan.md), which its decision refuses: no foothold.
+            height, depth = 0.45 * height, 1.0 * depth
         seen = dict(near_x=near_x, skew=-th + self.rng.gauss(0.0, 0.004),
-                    height=height + self.rng.gauss(0.0, 0.0007), depth=box.depth + self.rng.gauss(0.0, 0.002),
+                    height=height + self.rng.gauss(0.0, 0.0007), depth=depth + self.rng.gauss(0.0, 0.002),
                     width=box.width, y_left=y_left, y_right=y_right, columns=60, height_spread=0.001,
                     ends_seen=True, landing_floor=1.0,
-                    height_upper=height + 0.004, extent=box.depth + 0.01, side_seen=1.0, far_seen=True)
+                    height_upper=height + 0.004, extent=depth + 0.01, side_seen=1.0, far_seen=True)
         known = {f.name for f in fields(BoxMeasurement)}        # older terrain code has fewer fields
-        return BoxMeasurement(**{k: v for k, v in seen.items() if k in known})
+        return BoxMeasurement(**{k_: v for k_, v in seen.items() if k_ in known})
 
     def _crossing_step(self) -> None:
         cr, t = self.cross, self.t
@@ -503,8 +522,10 @@ class CourseSim:
         if math.hypot(self.pose[0] - self.path[-1][0], self.pose[1] - self.path[-1][1]) > 0.03:
             self.path.append((round(float(self.pose[0]), 3), round(float(self.pose[1]), 3)))
         p = self.pose[:2]
-        self.min_clear["tall"] = min(self.min_clear["tall"], self.rects[1].distance(p))
-        self.min_clear["cover"] = min(self.min_clear["cover"], self.rects[2].distance(p))
+        for k, rect in enumerate(self.rects[:-1]):      # the obstacles it did not cross: how close it came
+            if k not in self.crossed:
+                self.min_clear["tall"] = min(self.min_clear["tall"], rect.distance(p))
+        self.min_clear["cover"] = min(self.min_clear["cover"], self.rects[-1].distance(p))
 
     # ------------------------------------------------------------------ what Mission Control draws
     def snapshot(self) -> dict:
@@ -547,6 +568,7 @@ class CourseSim:
                 "time": round(self.t, 1), "x": round(x, 2), "y": round(y, 2), "est_s": st["s"], "est_d": st["d"],
                 "throws": self.throws, "hits": self.hits, "dodged": self.dodged, "reason": st["reason"],
                 "clear_tall": round(self.min_clear["tall"], 2), "clear_cover": round(self.min_clear["cover"], 2),
+                "crossings": sum(n == "crossed" for _, n in events), "walk_arounds": sum(n == "walked_around" for _, n in events),
                 "phrase_said": self.said_phrase, "events": events}
 
 
@@ -573,13 +595,15 @@ def main() -> None:
                 print(f"  {t:6.1f} s  {name:16s} {line}")
         print(f"run {args.seed + k}: {'REACHED the cover' if res['reached'] else 'DID NOT: ' + res['state'] + ' ' + res['reason']}"
               f" in {res['time']:.0f} s, stopped at x {res['x']:.2f} m, {res['y']:+.2f} m off the line "
-              f"(believed s {res['est_s']:.2f}); {res['throws']} throws, {res['hits']} hits; "
-              f"closest {res['clear_tall']:.2f} m to the tall obstacle")
+              f"(believed s {res['est_s']:.2f}); crossed {res['crossings']}, walked around {res['walk_arounds']}; "
+              f"{res['throws']} throws, {res['hits']} hits; closest {res['clear_tall']:.2f} m to an obstacle it went around")
     if args.runs > 1:
         ok = sum(r["reached"] for r in results)
         off = sorted(abs(r["y"]) for r in results)
         throws, hits = sum(r["throws"] for r in results), sum(r["hits"] for r in results)
-        print(f"\n{ok} of {len(results)} runs ended in front of the cover. Sideways miss: median {off[len(off) // 2]:.2f} m, "
+        print(f"\nCrossings per run: {sorted(set(r['crossings'] for r in results))}; walk-arounds per run: "
+              f"{sorted(set(r['walk_arounds'] for r in results))}.")
+        print(f"{ok} of {len(results)} runs ended in front of the cover. Sideways miss: median {off[len(off) // 2]:.2f} m, "
               f"worst {off[-1]:.2f} m. Balls: {hits} hits in {throws} throws. "
               f"Median time {sorted(r['time'] for r in results)[len(results) // 2]:.0f} s.")
 

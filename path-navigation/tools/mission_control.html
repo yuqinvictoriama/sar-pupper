@@ -219,7 +219,7 @@ const fmt = (v, n = 2) => (v == null || !isFinite(v)) ? "–" : Number(v).toFixe
 const C = { robot: "#2456D6", sound: "#7A3FD1", terrain: "#C96A0A", ball: "#63C416", stop: "#D5322F", ink: "#17233A", graphite: "#56647B", rule: "#CCD4DF", ok: "#1E8E4E" };
 const STAGES = [
   ["SEEK", "Seek", "listen for a cry"], ["ORIENT", "Orient", "turn to the voice"], ["CONFIRM", "Confirm", "listen again, nose-on"],
-  ["ZONE1", "Obstacles", "0–2 m: over, then around"], ["REFIX", "Second call", "redraw the line"],
+  ["ZONE1", "Obstacles", "0–2 m: step over, scale across"], ["REFIX", "Second call", "redraw the line"],
   ["ZONE2", "Gauntlet", "2–6 m: dodge"], ["ARRIVE", "At the cover", "wait for the phrase"], ["RESCUE", "Rescue", "comfort and report"]];
 const ACTIVE = ["PREFLIGHT", "SEEK", "ORIENT", "CONFIRM", "ZONE1", "REFIX", "ZONE2", "ARRIVE"];
 let snap = null, picked = null, trail = [], courseKey = "", lastLogLen = -1, failures = 0;
@@ -248,10 +248,9 @@ function drawCourse(c) {
   add("line", { x1: -8, y1: 0, x2: 8, y2: 0, stroke: C.ink, "stroke-width": 2 }); add("line", { x1: 0, y1: -8, x2: 0, y2: 8, stroke: C.ink, "stroke-width": 2 });
   add("text", { x: 0, y: 30, "text-anchor": "middle", class: "lab" }, "start mark");
   for (const m of [c.refix_at, c.throw_from, c.throw_to]) for (const s of [-1, 1]) add("rect", { x: X(m) - 2.5, y: Y(s * 1) - 15, width: 5, height: 30, fill: C.graphite, opacity: .55 });
-  add("rect", { x: X(c.box_near), y: Y(c.box_width / 2), width: X(c.box_depth), height: X(c.box_width), fill: "#fff", stroke: C.terrain, "stroke-width": 2.5 });
-  add("text", { x: X(c.box_near + c.box_depth / 2), y: Y(c.box_width / 2) - 8, "text-anchor": "middle", class: "lab" }, c.box_depth > 0.2 ? "slab: scale across" : "low: step over");
-  add("rect", { x: X(c.tall_near), y: Y(c.tall_width / 2), width: X(c.tall_depth), height: X(c.tall_width), fill: C.terrain, opacity: .85 });
-  add("text", { x: X(c.tall_near + c.tall_depth / 2), y: Y(c.tall_width / 2) - 8, "text-anchor": "middle", class: "lab" }, "tall: go around");
+  c.obstacles.forEach((o, i) => { const tall = o.height >= 0.08, round = o.shape === "round";
+    add("rect", { x: X(o.near), y: Y(o.width / 2), width: Math.max(4, X(o.depth)), height: X(o.width), rx: round ? 2.5 : 0, fill: tall ? C.terrain : "#fff", stroke: C.terrain, "stroke-width": 2.5, opacity: tall ? .85 : 1 });
+    add("text", { x: X(o.near + o.depth / 2), y: i % 2 ? Y(-o.width / 2) + 17 : Y(o.width / 2) - 8, "text-anchor": "middle", class: "lab" }, o.name + (tall || round ? ": go around" : o.depth > 0.2 ? ": scale across" : ": step over")); });
   add("rect", { x: X(c.cover_near), y: Y(c.cover_width / 2), width: 7, height: X(c.cover_width), fill: C.ink });
   add("text", { x: X(c.cover_near) + 4, y: Y(c.cover_width / 2) - 8, "text-anchor": "middle", class: "lab" }, "cover");
   add("circle", { cx: X(c.cover_near + 0.45), cy: 0, r: 15, fill: C.sound }); add("text", { x: X(c.cover_near + 0.45), y: 34, "text-anchor": "middle", class: "lab" }, "survivor");
@@ -342,9 +341,9 @@ function drawFan(s) {
   $("terrainmode").textContent = "mode " + (t.mode || "–") + (s.wanted.terrain_mode !== t.mode && t.alive ? " → " + s.wanted.terrain_mode : "");
   const tall = t.obstacles.filter(o => o.tall && !o.is_box).sort((a, b) => a.nearest - b.nearest)[0], box = t.box, cr = s.nav.crossing, cs = t.crossing || {};
   $("terraindl").innerHTML = row("Doing", ({ CRUISE: "watching", REPORT: "watching (not steering)", APPROACH: "walking up to the low obstacle", GAUGE: "measuring it", ALIGN: "squaring up", PLAN: "planning the crossing", STEP_OVER: "stepping over", SCALE_ACROSS: "scaling across the slab", AVOID: "walking around", HOLD: "holding", DISABLED: "off" })[t.state] || t.state || "–") +
-    row("Low obstacle", box && box.near_x != null ? `${fmt(box.height * 1000, 0)} mm tall · ${fmt(box.near_x * 100, 0)} cm ahead` : (s.nav.box_done ? "passed" : "not measured")) +
+    row("Low obstacle", box && box.near_x != null ? `${fmt(box.height * 1000, 0)} mm tall · ${fmt(box.near_x * 100, 0)} cm ahead` : (s.nav.passed ? s.nav.passed + " of " + s.nav.obstacles + " passed" : "not measured")) +
     row("Nearest tall", tall ? `${fmt(tall.nearest, 2)} m at ${fmt(tall.bearing_deg, 0)}°` : "none in view") +
-    row("Crossing", cr.active ? `${fmt(cr.progress * 100, 0)} %` + (cs.duration ? ` of ${fmt(cs.duration, 0)} s` : "") : (cs.state === "planning" ? "planning" : s.nav.box_done ? "done" : "–")) +
+    row("Crossing", cr.active ? `${fmt(cr.progress * 100, 0)} %` + (cs.duration ? ` of ${fmt(cs.duration, 0)} s` : "") : (cs.state === "planning" ? "planning" : s.nav.passed ? "done" : "–")) +
     (t.reason ? row("Reason", t.reason) : "");
   $("crossbar").style.width = (cr.active ? cr.progress * 100 : 0) + "%";
 }

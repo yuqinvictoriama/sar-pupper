@@ -300,7 +300,8 @@ def test_zone1_keeps_asking_while_terrain_has_the_legs_and_is_silent_during_a_cr
     assert r.out.cmd == (r.m.cfg.walk.cruise, 0.0, 0.0)
     r.terrain.update(state="PLAN", box={"near_x": 0.35, "height": 0.019, "depth": 0.089}); r.sent = (0.0, 0.0, 0.0)
     r.tick(0.1, crossing=[{"state": "planning"}])
-    stop = r.m.cfg.course.box_near - 0.35           # the obstacle's place on the course, less the measured gap
+    first, second = r.m.cfg.course.obstacles
+    stop = first["near"] - 0.35                     # the obstacle's place on the course, less the measured gap
     assert "box_landmark" in r.events and abs(r.m.reck.s - stop) < 0.02
     r.terrain.update(state="STEP_OVER"); r.mux = "none"; r.sent = None
     r.tick(0.1, crossing=[{"state": "started", "advance": 0.58}])
@@ -309,11 +310,30 @@ def test_zone1_keeps_asking_while_terrain_has_the_legs_and_is_silent_during_a_cr
     assert r.out.cmd is None and abs(r.m.reck.s - (stop + 0.29)) < 0.02      # counted as it happens
     r.terrain.update(state="CRUISE")
     r.tick(0.1, crossing=[{"state": "done", "advance": 0.58}])
-    assert abs(r.m.reck.s - (stop + 0.58)) < 0.02 and r.out.terrain_mode == "avoid"
+    assert abs(r.m.reck.s - (stop + 0.58)) < 0.02
+    assert r.out.terrain_mode == "full" and r.m.passed == 1     # the slab is still ahead: it may cross again
     r.tick(2.0)
     assert r.out.cmd is None                        # the walking controller is still coming back
     r.tick(3.0)
     assert r.out.cmd is not None and r.out.cmd[0] > 0
+    # the second obstacle: its own landmark, announced again, and only then is everything else walked around
+    r.terrain.update(state="PLAN", box={"near_x": 0.37, "height": 0.015, "depth": 0.38}); r.mux = "/terrain_cmd_vel"
+    r.tick(0.1, crossing=[{"state": "planning"}])
+    assert abs(r.m.reck.s - (second["near"] - 0.37)) < 0.02 and r.events.count("box_landmark") == 2
+    r.terrain.update(state="SCALE_ACROSS"); r.mux = "none"; r.sent = None      # a state name the mission was never told about
+    r.tick(0.1, crossing=[{"state": "started", "advance": 0.87}])
+    r.terrain.update(state="CRUISE")
+    r.tick(0.1, crossing=[{"state": "done", "advance": 0.87}])
+    assert r.events.count("stepping_over") == 2 and r.m.passed == 2 and r.out.terrain_mode == "avoid"
+    assert abs(r.m.reck.s - (second["near"] - 0.37 + 0.87)) < 0.02
+
+
+def test_a_landmark_far_from_where_the_next_obstacle_should_be_is_not_believed():
+    r = Rig()
+    r.to_zone1()
+    r.m.reck.set_s(3.0)                             # nowhere near the first obstacle
+    r.tick(0.1, crossing=[{"state": "planning"}])
+    assert abs(r.m.reck.s - 3.0) < 0.05
 
 
 def test_a_failed_crossing_holds_for_the_operator():
@@ -331,10 +351,11 @@ def test_second_listen_waits_for_the_walk_around_then_redraws_the_line():
     r.to_zone1()
     r.m.reck.set_s(2.1)
     r.tick(1.0)
-    assert r.m.state == M.ZONE1                     # far enough, but the tall obstacle has not been passed
-    r.terrain.update(state="AVOID"); r.tick(0.2)
-    assert "going_around" in r.events
-    r.terrain.update(state="CRUISE"); r.tick(1.0)
+    assert r.m.state == M.ZONE1                     # far enough, but the course's obstacles are not behind it yet
+    for _ in r.m.cfg.course.obstacles:              # it walks around each of them (terrain agility's choice)
+        r.terrain.update(state="AVOID"); r.tick(0.2)
+        assert "going_around" in r.events
+        r.terrain.update(state="CRUISE"); r.tick(1.0)
     assert r.m.state == M.REFIX and "refix" in r.events and r.out.terrain_mode == "report"
     r.sent = None
     r.tick(5.0)

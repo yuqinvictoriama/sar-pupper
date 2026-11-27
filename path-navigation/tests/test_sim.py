@@ -13,10 +13,12 @@ try:
 except ImportError as exc:                              # terrain-agility not beside this folder
     pytest.skip(f"course simulator not importable: {exc}", allow_module_level=True)
 
-from nav.config import DemoConfig  # noqa: E402
+from nav.config import DemoConfig, apply  # noqa: E402
 
-ORDER = ["start", "heard", "line_set", "box_landmark", "stepping_over", "crossed", "going_around", "walked_around",
-         "refix", "arrived", "saved"]
+ORDER = ["start", "heard", "line_set", "box_landmark", "stepping_over", "crossed", "refix", "arrived", "saved"]
+SLAB = {"name": "slab", "shape": "flat", "depth": 0.38, "width": 0.565, "height": 0.015}
+CARTON = {"name": "carton", "shape": "flat", "depth": 0.348, "width": 0.455, "height": 0.13}
+CYLINDER = {"name": "cylinder", "shape": "round", "depth": 0.05, "width": 0.70, "height": 0.05}
 
 
 def test_one_run_goes_through_every_stage_in_order():
@@ -24,7 +26,29 @@ def test_one_run_goes_through_every_stage_in_order():
     names = [n for _, n in res["events"]]
     at = [names.index(n) for n in ORDER]
     assert at == sorted(at), names
-    assert res["reached"] and res["clear_tall"] > 0.15 and res["throws"] >= 3
+    assert res["reached"] and res["throws"] >= 3
+    # the course as laid out: the low bar is stepped over, then the slab is scaled across. Two crossings.
+    assert res["crossings"] == 2 and res["walk_arounds"] == 0 and names.count("stepping_over") == 2
+
+
+def test_a_crossing_then_a_walk_around_still_works():
+    """The earlier course: the slab, then a carton too tall to cross."""
+    cfg = apply(DemoConfig(), {"course": {"obstacles": [dict(SLAB, near=0.50), dict(CARTON, near=1.60)]}})
+    results = [CourseSim(cfg, SimOptions(seed=k)).run() for k in range(8)]
+    assert all(r["reached"] and r["crossings"] == 1 and r["walk_arounds"] == 1 for r in results), results
+    assert min(r["clear_tall"] for r in results) > 0.12                 # never touched the carton
+
+
+def test_a_round_bar_is_never_crossed():
+    """A cylinder is measured and refused by terrain agility (no flat top to stand on). This pins down
+    that the mission does not count on a crossing there; it does NOT show the cylinder is passed
+    reliably: in simulation about half the runs stall in front of it."""
+    cfg = apply(DemoConfig(), {"course": {"obstacles": [dict(CYLINDER, near=0.45), dict(SLAB, near=2.30)],
+                                          "refix_at": 3.3, "throw_from": 4.2}})
+    for seed in range(4):
+        sim = CourseSim(cfg, SimOptions(seed=seed))
+        res = sim.run(max_time=120.0)
+        assert 0 not in sim.crossed, res            # obstacle 0, the cylinder, was not crossed
 
 
 def test_it_ends_in_front_of_the_cover_in_nearly_every_room():
@@ -32,7 +56,7 @@ def test_it_ends_in_front_of_the_cover_in_nearly_every_room():
     reached = sum(r["reached"] for r in results)
     assert reached >= 29, [(k, r["state"], r["reason"], r["x"], r["y"]) for k, r in enumerate(results) if not r["reached"]]
     assert max(abs(r["y"]) for r in results if r["reached"]) < 0.6       # inside a 1.2 m cover
-    assert min(r["clear_tall"] for r in results) > 0.12                 # never touched the tall obstacle
+    assert all(r["crossings"] == 2 for r in results)                    # the bar and the slab, every time
 
 
 def test_without_the_phrase_it_still_stops_at_the_cover():
