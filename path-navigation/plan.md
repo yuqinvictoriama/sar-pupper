@@ -1,18 +1,36 @@
-# Path navigation – the demo mission (plan v2)
+# Path navigation – the demo mission (plan v3)
 
 Written 2026-11-26. This is the module that runs the demo from start to finish: hear a cry for help, turn to it, cross two obstacles, walk through thrown balls, reach the hidden survivor, stop on "You saved me, Pupper!", and comfort them. It sits beside `terrain-agility/plan.md`, `projectile-dodging/plan.md` and the mission personality, and it is the one thing that drives them in order.
 
-**Status.** The detector for "You saved me, Pupper!" is built and tested off the robot (`keyphrase/`; see its README). Everything else here is still the plan to code against.
+**This file is the why. `README.md` is the how: it holds "Demo instructions" (materials, course, script, both calls), how to start a run, and what has been verified.**
 
-**Changed in v2 (2026-11-26, later the same day):**
+**Status (v3, 2026-11-26, evening).** The module is built: the mission state machine (`nav/`), the robot node (`robot/nav_node.py`), the launch and start scripts, a simulator of the whole run (`sim/course_sim.py`) and Pupper Mission Control (`tools/mission_control.py`), a page that shows the run and starts it with one click. 46 tests pass off the robot, and the simulated run ends in front of the cover (figures in the README). **None of it has run on the robot**, and the sound module has still not been seen: its topic and sign convention are settings in `config/demo.yaml`.
+
+**Changed in v3 – where the build departs from the text below:**
+
+- **Demo instructions moved to `README.md`**, so there is one copy.
+- **Operator commands are one topic, `/nav/command`** (`start`, `pause`, `resume`, `end`, `phrase`, `motion_on`, `goto:<STATE>`, `bearing:<deg>`), not four `Trigger` services and a `SetBool`. Mission Control's buttons and `tools/nav_cmd.sh` both write to it. `/nav/goal` was not built: nothing reads it.
+- **The fix is the largest group of bearings that agree**, not a plain median; ties go to the group nearest where the voice is expected. Two bearings 40° apart never average to a direction nobody called from.
+- **Confirm blends the two looks** (first fix and the nose-on one, half and half, when they agree within 10°). Two independent readings at ±5° give about ±3.5°: 0.37 m at the cover instead of 0.52 m.
+- **The second listen waits for the walk-around to finish**, not only for 2.0 m, so a distance estimate that reads long cannot stop Pupper in front of the tall obstacle with terrain agility switched to report-only.
+- **The low obstacle's landmark and the crossing's length come from the step-over node's reports** (`planning`, `started`, `progress`, `done`, with `advance`), not from terrain's state names, so they survive terrain agility growing new obstacle types.
+- **Terrain agility has the three-way mode** (`/terrain/mode`: full, avoid, report) and publishes the box measurement and the crossing's advance. Built and committed in `terrain-agility/`.
+- **A stuck walk-around is retried**: if terrain agility holds twice, navigation steps back 0.45 m and lets it look again (up to twice) before asking for the operator, and between the low obstacle and the second call it holds the line's direction without steering back onto the line itself (the line runs through the tall obstacle). The simulation found terrain agility stopping beside the tall obstacle in 2–10 % of walk-arounds; the terrain work then fixed its steering, and these stay as a safety net.
+- **The course is laid out for the obstacles the team has** (specifications from the terrain work, 2026-11-26): the 15 × 565 × 380 mm slab, near edge at 0.50 m, which terrain agility scales across (0.87 m of travel, about 70 s), then the 455 × 348 × 130 mm carton, near face at 1.60 m, which it walks around. The 0.6 m / 1.7 m figures and the "1×4" box in the text below are the earlier layout; the reasoning about spacing still holds. A 50 mm round bar cannot be stepped over.
+- **`dodge` is not sent on `/nav/event`**: the personality's bridge takes it from `/dodge/event` itself. Navigation only counts dodges.
+- **After 30 s at the cover with no phrase, Pupper says the `hold` line once** ("I've stopped. I need my team. Still here.") and keeps waiting; there is no separate event for it.
+- **Past the cover's expected distance with the camera pipeline silent, Pupper stops at 6.0 m** instead of walking on to the 7.2 m hard stop blind.
+- **The event bridge and the call-out words live in `personality/`** (`event_bridge.py`, `callouts.py`); navigation reads the words from there.
+- **Not built:** the free-space feed from terrain's scan to the dodge node (dodging decision D4), the recorded-clip fallback (the personality's own voice now covers it), `tools/calibrate_speed`, `yaw_drift`, `bearing_test`, `walk_line`, `show_run` (the run log in `data/runs/` is JSON lines; Mission Control shows the same numbers live).
+
+**Changed in v2 (2026-11-26, earlier):**
 
 - Hearing the phrase is our own job, not the sound module's. The detector is written and its tests pass; it has not been on the robot.
 - The second call at 2 m is decided: the survivor will call again when Pupper asks.
 - The sound module's accuracy is taken as about ±5°. The error budget, the cover width and the tall obstacle's position follow from that.
-- A new section, **Demo instructions**, holds the materials, the course measurements, the script and both calls in one place.
 - Floor markers moved off the line: tape across Pupper's path would read as an obstacle.
 
-**What this plan could not check.** Your partner's sound module and the `sar-pupper` code were not readable from this session. Every topic name for the sound module is a proposal, and every interface to terrain agility and dodging is taken from their plans, not their code. Items marked **(confirm)** need one look at the real code before they are relied on.
+**What this plan could not check.** Your partner's sound module was not readable when this was written. Every topic name for it is a proposal. Items marked **(confirm)** in the text below were written before the other components' code could be read; the build checked the terrain and dodging ones against the code.
 
 ## What changed, and what this replaces
 
@@ -44,127 +62,7 @@ Each of these is a default that is easy to change; the ones still open are liste
 
 ## Demo instructions
 
-Everything the team needs to set up and run the demo is in this section. The rest of the plan is the why and the how.
-
-### Materials
-
-| Item | Specification | Qty |
-|---|---|---|
-| **Low box** (stepped over) | "1×4" timber: 19 mm tall × 89 mm deep, cut **600 mm** long. Blue painter's tape round all four sides, white tape or paint on top, matte. 250 g or more, or taped down; non-slip underside | 1 |
-| **Tall obstacle** (walked around) | Cardboard box about 0.40 m wide, at most 0.25 m deep, at least 0.25 m tall. Not floor-coloured, not green. Weighted inside so it cannot be pushed | 1 |
-| **Cover** (hides the survivor) | Board or large box, **at least 1.2 m wide** and 0.8 m tall, matte, not floor-coloured, not green. Must stand on its own without tipping | 1 |
-| **Balls** | The neon green foam pickleballs, 74 mm | 6–8 |
-| **Markers** | Flat tape for the start mark and the three pairs of side markers, 30 cm strips so the throwers can see them. Not cones: a cone is a small obstacle | 1 roll |
-| **Tape measure** | 8 m or longer, plus a ruler for the box | 1 |
-| **Gamepad** | The e-stop. Charged | 1 |
-| **Battery** | Charged, plus a spare. A run is 3 to 4½ minutes | 2 |
-| **Laptop** | On the robot's network, to launch and watch | 1 |
-| **Floor space** | About 8 m long and 7 m wide, flat, matte, evenly lit | – |
-
-### Setting up the course
-
-Lay the tape measure on the floor from the start mark to where the cover will stand. That is **the line**. Every distance below is read off that tape, from the start mark. **Take the tape measure away before the run**: it is an obstacle too.
-
-```
- metres  0        0.6       1.7      2.0   3.0                 5.2      6.0   6.4
-         |---------|=========|##|------|-----|===================|--------|-----|▓▓ survivor
-       start     low box   tall box  second  first-throw      last-throw  Pupper cover
-        mark   (step over) (go round) call     marker           marker     stops
-                                              Thrower L: 3 m left of the line, level with 4.0 m
-                                              Thrower R: 3 m right of the line, level with 4.0 m
-```
-
-| Place | At | How |
-|---|---|---|
-| **Start mark** | 0 m | A small cross Pupper stands over. Pupper may face any way; facing away from the survivor shows off the turn |
-| **Low box**, near edge | 0.60 m | Across the line, square to it, centred on it. Keep the floor bare for 35 cm beyond it |
-| **Tall obstacle**, near face | 1.70 m | Centred on the line. Keep 1 m of bare floor on both sides of it: Pupper picks the side itself |
-| **Second-call markers** | 2.00 m | One marker each side, **1 m off the line**. Pupper stops for the second call somewhere between here and about 2.5 m |
-| **First-throw markers** | 3.00 m | One each side, 1 m off the line |
-| **Last-throw markers** | 5.20 m | One each side, 1 m off the line |
-| **Cover**, near face | 6.40 m | Centred on the line, square to it. Pupper stops about 0.3 m short of it |
-| **Survivor** | Behind the middle of the cover | Sitting or crouching, out of sight, head within half a metre of the cover |
-| **Throwers** | 3 m either side of the line, level with 4.0 m | Mark the two spots. They do not move during the run |
-
-Rules for the floor:
-
-- **Nothing across the line.** No tape, no cables, no marker in Pupper's path. A stripe of tape on the floor looks like a low obstacle to the camera, and Pupper will try to go around it. All markers sit 1 m to the side.
-- **1 m clear either side of the line** for things, **1.5 m** for people. Thrower spots are 3 m out.
-- **No neon green or yellow-green** anywhere near the course, including clothes. The balls are the only green thing.
-- **Same floor and lighting as the calibration.** If the room or the lights change, redo the floor and box colours (terrain README, section 4) and the ball colour.
-
-### Who does what
-
-| Role | Job |
-|---|---|
-| **Operator** | Holds the gamepad the whole time (right-stick press is the e-stop). Starts the run. Stays quiet |
-| **Survivor** | Hidden behind the cover. Makes the first call, the second call, and says the phrase |
-| **Thrower L, Thrower R** | Lob balls from their marks, only inside the throw window |
-| **Everyone else** | Stays 1.5 m from the line and silent until Pupper says "I've got you" |
-
-### The run, step by step
-
-| # | Pupper does | Pupper says | The team does |
-|---|---|---|---|
-| 1 | Operator starts the run. Pupper stands still | "Pupper, on duty. If you need help, call out. I will come to your voice." | Silence. Survivor waits for the line to finish |
-| 2 | Listens | – | **First call.** Survivor calls **"Help! Help me!"** loudly toward Pupper, once every 4 s |
-| 3 | Barks, turns to face the voice, listens once more | "I hear you. Keep calling. I'm coming to you." | Survivor **keeps calling every 4 s until Pupper starts walking**, then stops |
-| 4 | Walks to the low box, stops, squares up, steps over it. About a minute, most of it very slow | "Low obstacle. Stepping over. Still coming." | Silence. **No throws.** Nobody near the line |
-| 5 | Walks around the tall obstacle | "Something is in my way. Going around. Still coming." | Silence. No throws |
-| 6 | Stops just past the tall obstacle, around the 2 m markers | **"Call out again, so I can find you."** | **Second call.** Survivor waits for the sentence to end, then calls **"Help! Help me!"** twice, 2 s apart, then stays quiet. Everyone else silent |
-| 7 | Turns a little toward the voice and walks on, slowly | – | Throwers get ready |
-| 8 | Walks from the 3.0 m markers to the 5.2 m markers, dodging | "Something flew past me. I'm okay. Still coming." after a dodge | **Throw window.** Throwers follow the throwing rules below |
-| 9 | Stops in front of the cover | **"I'm here. I can't see you. Can you hear me?"** | Throwers stop. Silence |
-| 10 | Holds still, listening | – | **The phrase.** Survivor says **"You saved me, Pupper!"** in one go, clearly, at speaking-up volume, toward Pupper. If Pupper does not answer, say it again every 3 s |
-| 11 | Stays beside the cover | "I've got you. You're not alone now. I'm staying right here." Then encouragement, then its questions | Survivor answers: name, hurt or not, can walk or not, anyone else. Audience may react now |
-| 12 | Reports to the team | "Team: survivor found…" | Operator ends the run |
-
-### The two calls and the phrase
-
-| | When | Survivor says | Until |
-|---|---|---|---|
-| **First call** | After Pupper's opening line ends | "Help! Help me!" every 4 s | Pupper starts walking |
-| **Second call** | After Pupper says "Call out again, so I can find you." (about 2 m in) | "Help! Help me!" twice, 2 s apart | Done after two |
-| **The phrase** | After Pupper says "I'm here. Can you hear me?" | "You saved me, Pupper!" every 3 s | Pupper says "I've got you" |
-
-- **Wait for Pupper to stop talking before calling.** While it speaks it cannot listen, and it waits about 3 s after its own line before trusting what it hears.
-- **Nobody says "You saved me, Pupper" at any other time**, or anything close to it. That includes rehearsal chatter beside the robot.
-- **Between calls the survivor is silent.** So is everyone else: to the mics, any voice is a direction.
-
-### Throwing rules
-
-- **Only while Pupper's body is between the 3.0 m and 5.2 m markers.** Before that the tall obstacle is close behind it; after that the cover is close ahead.
-- **Underhand lobs only**, released at waist to chest height, peaking between the thrower's shoulder and about 30 cm above their head.
-- **From the marked spots**, 3 m to the side. Balls then arrive from Pupper's side, which is where it dodges best, and its escape is forward or back along its own line.
-- **One ball in the air at a time, at least 3 s apart.** Throwers alternate: left, right, left. Expect about four throws in the window.
-- **Never during the step-over.** Pupper cannot dodge for that minute.
-- **Stop at "I'm here".**
-- Balls that land stay where they are until the run ends.
-
-### Before every run
-
-- [ ] Battery charged; gamepad on; e-stop tested once today.
-- [ ] Course measured from the start mark; box square; tape measure removed; no balls left in the lane.
-- [ ] Colours calibrated in this room and this light (floor, box, ball).
-- [ ] One warm-up step-over done today, so the crossing plans quickly.
-- [ ] Phrase check: survivor behind the cover says the phrase three times with Pupper at the stop point. Three detections (`tools/keyword_test.py --live`).
-- [ ] Direction check: one call from the cover with Pupper on the start mark. The bearing points at the cover.
-- [ ] Gemini connected and audible. Dodge node, terrain, sound and keyword nodes all report alive.
-- [ ] Pupper on the start mark, standing. Everyone in place. Quiet.
-
-### If something goes wrong
-
-| What happens | What to do |
-|---|---|
-| Pupper says "I can't hear anyone yet" | Survivor calls louder and keeps the 4 s rhythm. Check nobody else is talking |
-| Pupper turns the wrong way | Operator pauses with the joystick and restarts the run |
-| Pupper walks around the low box instead of over it | Let it. The run carries on; it will say so |
-| Pupper stops mid-crossing and settles onto the floor | That is a safe abort. Operator stands it up and resumes |
-| A ball knocks Pupper over | It says it has fallen. Set it on its feet; the run resumes |
-| Pupper stops for the second call and hears nothing | It carries on along its first line after 6 s. Nothing to do |
-| No answer to the phrase after three tries | Operator sends it by hand (the command is in `keyphrase/README.md`). Pupper stops at the cover regardless |
-| Pupper stops early, as if it heard the phrase | Operator resumes; Pupper goes back to walking the line |
-| Anything looks unsafe | E-stop. Always |
+Moved to `README.md`, section "Demo instructions": materials, course measurements, who does what, the run step by step, the two calls and the phrase, the throwing rules, the checklist before every run and what to do when something goes wrong. Mission Control shows the same cues live, one at a time.
 
 ## Fixed facts
 
@@ -504,7 +402,7 @@ Each line is a working demo on its own; cut from the bottom.
 | Sound bearing is not accurate enough | Second listen stays on; widen the cover. Last resort: Pupper turns to the cry for show, and an operator-supplied bearing sets the line |
 | Step-over is not reliable on the robot | Terrain in walk-around only: Pupper goes around both obstacles. Or start the crossing from a ruler-placed mark |
 | Rear cameras are not both working | Move the throwers forward so balls arrive 30°–70° off the nose, where the fisheye alone sees them |
-| The phrase detector is unreliable in the room | Pupper stops at the cover anyway; the operator sends the detection by hand when the survivor says it (one `ros2 topic pub`, in `keyphrase/README.md`) |
+| The phrase detector is unreliable in the room | Pupper stops at the cover anyway; the operator presses "Survivor said the phrase" in Mission Control (or `bash tools/nav_cmd.sh phrase`) |
 | Gemini is offline in the room | Bark and recorded clips for `heard`, `arrived` and the comfort lines |
 
 ## Success criteria

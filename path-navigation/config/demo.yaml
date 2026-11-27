@@ -1,0 +1,124 @@
+# Every number of the demo. nav/config.py holds the same values as defaults and reads this file
+# over them, so change a number HERE (for the room, the floor, the sound module) and nowhere else.
+# A name that is not a setting is an error when the node starts: nothing is ignored silently.
+# Distances are metres, speeds m/s, angles degrees. After editing: python3 -m pytest tests -q
+
+
+# The course, measured along the line from the start mark. "Demo instructions" in README.md is the same layout.
+course:
+  length: 6.0                     # Pupper's body centre when it stands in front of the cover
+  box_near: 0.5                   # low obstacle, near edge. As laid out: the slab, scaled across
+  box_depth: 0.38                 # the way Pupper walks (slab 0.38; a "1x4" bar, stepped over, is 0.089)
+  box_width: 0.565                # across the path
+  box_height: 0.015               # (slab 0.015; "1x4" bar 0.019)
+  tall_near: 1.6                  # tall obstacle, near face. As laid out: the carton, walked around
+  tall_depth: 0.348
+  tall_width: 0.455
+  refix_at: 2.0                   # second listen: not before this
+  throw_from: 3.0                 # throw window, by Pupper's body centre
+  throw_to: 5.2
+  cover_near: 6.4                 # cover, near face
+  cover_width: 1.2
+  thrower_along: 4.0              # throwers stand level with this
+  thrower_side: 3.0               # and this far either side of the line
+
+# The sound-direction module (the partner's): how its bearings are turned into one fix.
+sound:
+  moe_deg: 5.0                    # its margin of error, as given: about +-5 degrees
+  min_bearings: 3                 # bearings that must agree before a fix is believed
+  spread_deg: 8.0                 # they agree if they are within this of their median
+  window_s: 14.0                  # bearings older than this are forgotten
+  min_confidence: 0.0             # bearings reported with less confidence are ignored
+  still_s: 0.6                    # Pupper must have stood still this long for a bearing to count
+  no_sound_after_s: 20.0          # say "I can't hear anyone yet"
+  turn_after_s: 60.0              # then turn a quarter and listen again
+
+# Turning to the cry, and the second look once Pupper faces it.
+orient:
+  turn_rate: 0.8                  # rad/s, in place
+  min_rate: 0.25                  # rad/s: slower than this the legs do not turn
+  gain: 2.0                       # 1/s
+  done_deg: 5.0
+  settle_s: 0.5
+  timeout_s: 14.0
+  confirm_ok_deg: 10.0            # second listen within this of straight ahead: correct the line and go
+  confirm_redo_deg: 25.0          # beyond this: the first fix was wrong, listen again from scratch
+  confirm_timeout_s: 6.0          # nothing heard: go with the first fix
+  confirm_min_bearings: 1
+  confirm_blend: 0.5              # weight of the first fix when the two agree (0 = trust only the second listen)
+  max_reorients: 2
+
+# Walking the line.
+walk:
+  cruise: 0.25                    # m/s in zone 1
+  gauntlet: 0.2                   # m/s in zone 2
+  look_ahead: 1.0                 # m: aim at the point this far ahead on the line
+  max_off_line_deg: 25.0          # never point further than this from the line to get back to it
+  yaw_gain: 1.5                   # 1/s
+  max_yaw_rate: 0.6               # rad/s
+  turn_in_place_deg: 35.0         # heading error beyond which it stops walking and turns
+  min_forward: 0.1                # m/s while walking and turning at once
+  brake_s: 0.5                    # s of zero commands when stopping, before going silent
+  back_off_tries: 2               # times it may step back when terrain agility cannot find a way round
+  back_off_m: 0.45
+  back_off_speed: 0.15            # m/s, backwards
+
+# Distance along the line, from the commands the legs were sent. CALIBRATE the factors on the demo floor.
+reckon:
+  forward_factor: 1.0             # actual / commanded, forwards, at the speeds above
+  sideways_factor: 1.0
+  lag_s: 0.2                      # the legs follow a command about this late
+  restart_s: 4.0                  # after a crossing the walking controller takes this long to come back
+  crossing_advance: 0.87          # m the body moves in a crossing, if the step-over node does not say (slab 0.87, bar 0.59)
+  gauge_distance: 0.36            # m from the box where terrain agility stops to measure (its fsm.gauge_distance)
+
+# The second call, about 2 m in.
+refix:
+  enabled: true
+  min_bearings: 1                 # bearings that must agree before a fix is believed
+  gather_s: 2.5                   # after the first bearing, wait this long for the second
+  accept_deg: 20.0                # a bearing further than this from where the survivor should be is an echo
+  timeout_s: 6.0
+  need_walk_around: true          # wait for the tall obstacle to be passed, not only for the distance
+  fallback_extra: 0.8             # m past refix_at at which it stops for the second listen regardless
+
+# The last 4 m: dodging.
+gauntlet:
+  arm_dodge: true
+  obstacle_stop_range: 0.6        # m: something tall this close in the lane, before the cover is expected
+  obstacle_wait_s: 3.0            # stand this long; if it is still there, walk around it
+  lane_half: 0.2
+
+# Stopping at the cover and waiting for the phrase.
+arrive:
+  keyword_from: 4.0               # the phrase is ignored (and logged) before this distance
+  cover_from: 4.8                 # a tall thing ahead past this distance is the cover
+  cover_cone_deg: 35.0
+  stop_range: 0.45                # m from the lens to the cover at which to stop
+  home_on_cover: true             # steer at the middle of the cover once it is seen
+  home_max_deg: 20.0
+  hard_stop: 7.2                  # m: stop here whatever else is true
+  blind_stop: 6.0                 # m: stop here if terrain agility's camera has gone quiet
+  repeat_s: 10.0                  # say "I'm here" again this often while waiting for the phrase
+  give_up_s: 30.0                 # then tell the team and wait for the operator
+
+# What must be alive before a run starts, and what pauses one.
+safety:
+  stale_s: 1.0                    # a component not heard from for this long is not alive
+  tilt_deg: 25.0                  # more than this: fallen or being carried, pause
+  joystick_release_s: 1.0         # carry on this long after the joystick lets go
+  require: [imu, walking, sound, keyword, terrain, dodge]
+
+# ROS names. The sound module's are a PROPOSAL until its code is seen: set them to what it really publishes.
+topics:
+  cmd: /nav_cmd_vel
+  sound: /sound/bearing
+  sound_type: json                # json | float32 | float64 | vector3
+  sound_units: deg                # deg | rad
+  sound_positive: left            # left (ROS) | right (compass)
+  sound_zero_deg: 0.0             # where the module's zero points, measured from the nose, left positive
+  sound_json_key: bearing
+  sound_status: /sound/status
+  walking_controllers: [gemini_walk, neural_controller, neural_controller_default, neural_controller_default_alt,
+  neural_controller_student]
+  robot_server: http://127.0.0.1:8000

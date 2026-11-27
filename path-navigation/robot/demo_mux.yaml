@@ -1,0 +1,23 @@
+# Velocity arbitration for the demo. First = highest priority.
+#
+#   joystick  >  projectile dodge  >  terrain agility  >  path navigation  >  Gemini
+#
+# The joystick always wins (it is how the operator takes over). The dodge reflex outranks
+# terrain agility (a half-second reflex must not wait for a detour). Terrain agility outranks
+# navigation so it can step over or walk around what navigation is walking into; it publishes
+# nothing when there is no obstacle, so the mux hands straight back. Navigation outranks
+# Gemini so a stray spoken "walk forward" cannot take the legs in the middle of a run.
+#
+# The survivor-approach and person-follower inputs of the earlier files are not here:
+# neither is launched in the demo. A source that sends nothing for timeout_ms is dropped,
+# and ANY message, even zeros, takes an input: a node with nothing to do publishes nothing.
+cmd_vel_mux:
+  ros__parameters:
+    deadband: 0.05
+    timeout_ms: 500
+    inputs:
+      - /teleop_cmd_vel
+      - /dodge_cmd_vel
+      - /terrain_cmd_vel
+      - /nav_cmd_vel
+      - /llm_cmd_vel

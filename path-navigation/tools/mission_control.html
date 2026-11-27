@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pupper Mission Control</title>
+<style>
+  /* Same sheet as Pupper Dodging View, and the same rule: colour means actor.
+     blue = Pupper, violet = sound (the survivor's voice), amber = terrain and obstacles,
+     green = the ball, red = stop / the instant something decided. */
+  :root {
+    --floor: #E9EDF2; --sheet: #FFFFFF; --ink: #17233A; --graphite: #56647B; --rule: #CCD4DF; --faint: #F4F6F9;
+    --robot: #2456D6; --robot-wash: #D5DFF9;
+    --sound: #7A3FD1; --sound-wash: #E9DDFA;
+    --terrain: #C96A0A; --terrain-wash: #FBE7CF;
+    --ball: #63C416; --ball-ink: #2C7408; --ball-wash: #E3F5D2;
+    --stop: #D5322F; --stop-wash: #FBE0DF; --ok: #1E8E4E;
+    --display: "DIN Alternate", "Bahnschrift", "Roboto Condensed", "DejaVu Sans Condensed", "Arial Narrow", sans-serif;
+    --body: "Avenir Next", "Segoe UI Variable Text", "Segoe UI", "Noto Sans", system-ui, sans-serif;
+    --bar-h: 54px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--floor); color: var(--ink); font: 14.5px/1.45 var(--body); }
+  button, select, input { font: inherit; color: inherit; }
+  button { cursor: pointer; background: var(--sheet); border: 1px solid var(--rule); border-radius: 4px; padding: 6px 12px; }
+  button:hover:not(:disabled) { border-color: var(--ink); }
+  button:disabled { cursor: default; color: #98A3B5; background: transparent; }
+  :focus-visible { outline: 2px solid var(--robot); outline-offset: 2px; }
+  .num { font-family: var(--display); font-variant-numeric: tabular-nums; }
+  .quiet { color: var(--graphite); }
+  h2 { font: 600 15px/1.2 var(--display); letter-spacing: .04em; text-transform: uppercase; margin: 0; }
+
+  /* ---- top bar: the run, and the buttons that drive it */
+  #bar { position: sticky; top: 0; z-index: 20; min-height: var(--bar-h); display: flex; align-items: center; gap: 14px;
+         padding: 6px 18px; background: var(--ink); color: #fff; flex-wrap: wrap; }
+  #bar .name { font: 600 19px/1 var(--display); letter-spacing: .02em; white-space: nowrap; }
+  #modechip { font: 600 12px/1 var(--display); letter-spacing: .08em; padding: 5px 8px; border-radius: 3px; background: #33415E; white-space: nowrap; }
+  #modechip.robot { background: var(--stop); } #modechip.lost { background: #8A5F00; }
+  #run { flex: 1; display: flex; gap: 16px; align-items: baseline; min-width: 0; white-space: nowrap; font-size: 13px; color: #C5CEDD; overflow: hidden; }
+  #run b { color: #fff; font: 600 17px/1 var(--display); }
+  #bar button { background: transparent; color: #fff; border-color: #5B6B88; white-space: nowrap; }
+  #bar button:hover:not(:disabled) { border-color: #fff; }
+  #bar button:disabled { color: #71809B; border-color: #34425F; }
+  #bar #start { background: #fff; color: var(--ink); border-color: #fff; font: 600 16px/1 var(--display); letter-spacing: .03em; padding: 10px 22px; }
+  #bar #start:disabled { background: transparent; color: #71809B; border-color: #34425F; }
+  #bar #start.warn { background: #FFD27A; border-color: #FFD27A; }
+  #motion { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border: 1px solid #5B6B88; border-radius: 4px; cursor: pointer; white-space: nowrap; user-select: none; }
+  #motion input { accent-color: var(--stop); width: 16px; height: 16px; margin: 0; }
+  #motion.on { background: var(--stop); border-color: var(--stop); font-weight: 600; }
+
+  /* ---- the cue: the one thing the people in the room should be doing now */
+  #cue { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 18px; padding: 12px 22px;
+         background: var(--sheet); border-bottom: 1px solid var(--rule); border-left: 10px solid var(--graphite); }
+  #cue .who { font: 600 13px/1 var(--display); letter-spacing: .1em; text-transform: uppercase; color: var(--graphite); }
+  #cue .text { font: 600 clamp(19px, 2.3vw, 30px)/1.2 var(--display); letter-spacing: .005em; }
+  #cue.go { border-left-color: var(--ok); background: #EAF7EF; } #cue.go .who { color: var(--ok); }
+  #cue.stop { border-left-color: var(--stop); background: var(--stop-wash); } #cue.stop .who { color: var(--stop); }
+  #cue.done { border-left-color: var(--robot); background: var(--robot-wash); } #cue.done .who { color: var(--robot); }
+  #says { max-width: 36ch; font-size: 13.5px; color: var(--graphite); text-align: right; }
+  #says q { display: block; color: var(--robot); font-weight: 600; font-size: 15px; quotes: "\201C" "\201D"; }
+
+  /* ---- the stages of the run */
+  #stages { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 0; background: var(--sheet); border-bottom: 1px solid var(--rule); }
+  .stage { position: relative; text-align: left; border: 0; border-right: 1px solid var(--rule); border-radius: 0; padding: 8px 12px 9px; background: var(--sheet); min-width: 0; }
+  .stage:last-child { border-right: 0; }
+  .stage .n { font: 600 11px/1 var(--display); letter-spacing: .1em; color: var(--graphite); }
+  .stage .t { display: block; font: 600 15px/1.25 var(--display); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stage .s { display: block; font-size: 11.5px; color: var(--graphite); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stage.done { background: var(--faint); } .stage.done .t { color: var(--graphite); }
+  .stage.done .n::after { content: " \2713"; color: var(--ok); }
+  .stage.now { background: var(--ink); } .stage.now .t, .stage.now .n { color: #fff; } .stage.now .s { color: #C5CEDD; }
+  .stage.picked { box-shadow: inset 0 -4px 0 var(--robot); }
+  .stage:disabled { cursor: default; color: inherit; }
+
+  /* ---- the room and the three senses */
+  #main { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr); gap: 14px; padding: 14px 18px 40px; align-items: start; max-width: 1680px; margin: 0 auto; }
+  .panel { background: var(--sheet); border: 1px solid var(--rule); }
+  .panel > header { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+  .panel > header .spacer { flex: 1; }
+  .chip { font: 600 12px/1 var(--display); letter-spacing: .06em; padding: 4px 7px; border-radius: 3px; background: var(--faint); color: var(--graphite); white-space: nowrap; }
+  .chip.sound { background: var(--sound-wash); color: var(--sound); } .chip.terrain { background: var(--terrain-wash); color: var(--terrain); }
+  .chip.ball { background: var(--ball-wash); color: var(--ball-ink); } .chip.robot { background: var(--robot-wash); color: var(--robot); }
+  .chip.stop { background: var(--stop); color: #fff; } .chip.ok { background: #DDF2E5; color: var(--ok); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #B8C2D1; margin-right: 6px; vertical-align: 0; }
+  .dot.sound { background: var(--sound); } .dot.terrain { background: var(--terrain); } .dot.ball { background: var(--ball); }
+  #map { display: block; width: 100%; height: auto; background: var(--faint); }
+  #map text { font-family: var(--body); font-size: 12px; fill: var(--graphite); }
+  #map text.d { font-family: var(--display); font-size: 13px; }
+  #map text.lab { font-size: 11.5px; fill: var(--ink); paint-order: stroke; stroke: var(--faint); stroke-width: 4px; stroke-linejoin: round; }
+  #map text.bubble { font-size: 13px; font-weight: 600; paint-order: stroke; stroke: #fff; stroke-width: 5px; stroke-linejoin: round; }
+  #facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); border-top: 1px solid var(--rule); }
+  #facts div { padding: 8px 12px; border-right: 1px solid var(--rule); } #facts div:last-child { border-right: 0; }
+  #facts b { display: block; font: 600 19px/1.15 var(--display); } #facts span { font-size: 12px; color: var(--graphite); }
+  #side { display: grid; gap: 14px; }
+  .sense { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 4px 14px; padding: 10px 12px 12px; align-items: start; }
+  .sense svg { display: block; width: 150px; height: auto; }
+  .sense svg text { font-family: var(--display); font-size: 10px; fill: var(--graphite); }
+  .sense dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; font-size: 13px; }
+  .sense dt { color: var(--graphite); white-space: nowrap; } .sense dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+  .sense .row { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
+  .sense .hint { grid-column: 1 / -1; font-size: 12px; color: var(--graphite); }
+  #compass { cursor: crosshair; }
+  .bar { height: 7px; background: var(--faint); border-radius: 4px; overflow: hidden; } .bar i { display: block; height: 100%; background: var(--terrain); width: 0; }
+  .levels { display: flex; gap: 3px; align-items: flex-end; height: 22px; } .levels i { width: 7px; background: var(--sound); border-radius: 1px; min-height: 2px; }
+  #heardflash { transition: background .3s; }
+  #systems { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 10px 12px; font-size: 13px; }
+  #systems span.bad { color: var(--stop); font-weight: 600; } #systems span.bad .dot { background: var(--stop); } #systems span.good .dot { background: var(--ok); }
+  #log { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; font-size: 13px; }
+  #log li { display: grid; grid-template-columns: 52px 118px minmax(0, 1fr); gap: 8px; padding: 4px 12px; border-bottom: 1px solid var(--faint); }
+  #log li .t { color: var(--graphite); text-align: right; } #log li.said .e { color: var(--robot); font-weight: 600; }
+  #log li .w { color: var(--graphite); overflow-wrap: anywhere; } #log li.said .w { color: var(--ink); }
+  #simbox, #robotbox { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 12px; font-size: 13px; }
+  #simbox label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+  #simbox button[aria-pressed=true] { background: var(--ink); color: #fff; border-color: var(--ink); }
+  #waiting { padding: 30px 22px; max-width: 70ch; }
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 9px 16px;
+           border-radius: 4px; opacity: 0; pointer-events: none; transition: opacity .2s; max-width: 90vw; z-index: 30; }
+  #toast.show { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) { #toast, #heardflash { transition: none; } }
+  @media (max-width: 1080px) {
+    #main { grid-template-columns: minmax(0, 1fr); padding: 10px; }
+    #stages { grid-template-columns: repeat(4, minmax(0, 1fr)); } .stage { border-bottom: 1px solid var(--rule); }
+    #cue { grid-template-columns: 1fr; gap: 6px; } #says { text-align: left; max-width: none; }
+  }
+</style>
+</head>
+<body>
+<header id="bar">
+  <span class="name">Pupper Mission Control</span>
+  <span id="modechip">CONNECTING</span>
+  <div id="run" aria-live="polite"></div>
+  <label id="motion" title="The dry-run switch. Until this is on, navigation publishes no velocity: Pupper listens and reports but does not walk. Switch it on only with someone holding the gamepad (right-stick press is the e-stop)."><input type="checkbox" id="motionbox"> Allow motion</label>
+  <button id="pause" disabled>Pause</button>
+  <button id="end" disabled>End run</button>
+  <button id="start" disabled>Start</button>
+</header>
+
+<section id="cue" aria-live="polite">
+  <div class="who" id="cuewho">Everyone</div>
+  <div class="text" id="cuetext">Connecting to Pupper</div>
+  <div id="says"></div>
+</section>
+
+<nav id="stages" aria-label="Stages of the run"></nav>
+
+<div id="waiting" hidden></div>
+
+<main id="main">
+  <section class="panel">
+    <header><h2>The course</h2><span class="chip robot" id="zonechip"></span><span class="spacer"></span>
+      <span class="quiet" id="maplegend"></span></header>
+    <svg id="map" viewBox="-95 -355 870 710" role="img" aria-label="Top view of the course with Pupper on it"></svg>
+    <div id="facts"></div>
+    <header style="border-top:1px solid var(--rule)"><h2>What happened</h2><span class="spacer"></span><span class="quiet" id="cfgsrc"></span></header>
+    <ol id="log"></ol>
+  </section>
+
+  <div id="side">
+    <section class="panel">
+      <header><span class="dot sound"></span><h2>Sound</h2><span class="chip sound" id="soundchip"></span><span class="spacer"></span><span class="chip" id="heardflash">phrase</span></header>
+      <div class="sense">
+        <svg id="compass" viewBox="0 0 150 150" role="img" aria-label="Bearings to the cry, Pupper's nose at the top. Click a direction to send that bearing by hand."></svg>
+        <dl id="sounddl"></dl>
+        <div class="row"><button id="phrase" title="Stand in for the phrase detector: press when the survivor has said &quot;You saved me, Pupper!&quot; and Pupper has not answered.">Survivor said the phrase</button>
+          <span class="levels" id="levels" title="Microphone level per channel, as the phrase detector hears it"></span></div>
+        <div class="hint">Click the dial to send a bearing by hand (stands in for the sound module while Pupper is listening).</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <header><span class="dot terrain"></span><h2>Terrain</h2><span class="chip terrain" id="terrainchip"></span><span class="spacer"></span><span class="chip" id="terrainmode"></span></header>
+      <div class="sense">
+        <svg id="fan" viewBox="0 0 150 110" role="img" aria-label="What the front camera sees: obstacles by bearing and range"></svg>
+        <dl id="terraindl"></dl>
+        <div class="row" style="display:block"><div class="bar" title="Progress of the crossing"><i id="crossbar"></i></div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <header><span class="dot ball"></span><h2>Projectiles</h2><span class="chip ball" id="dodgechip"></span><span class="spacer"></span><span class="chip" id="armchip"></span></header>
+      <div class="sense">
+        <svg id="radar" viewBox="0 0 150 150" role="img" aria-label="Balls being tracked around Pupper"></svg>
+        <dl id="dodgedl"></dl>
+        <div class="row"><a id="dvlink" target="_blank" rel="noopener">Pupper Dodging View (saved throws)</a></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <header><h2>Systems</h2><span class="spacer"></span><span class="quiet" id="sysnote"></span></header>
+      <div id="systems"></div>
+      <div id="robotbox" hidden style="border-top:1px solid var(--rule)">
+        <button id="stand" title="Asks the lab's robot server to put gemini_walk in charge of the legs. PUPPER STANDS UP: floor clear, operator at the e-stop.">Stand up</button>
+        <button id="relax" title="Lets the legs go: Pupper settles onto the floor.">Relax</button>
+        <span class="quiet">Stand up before Start. The gamepad's right-stick press is the e-stop at all times.</span>
+      </div>
+      <div id="simbox" hidden style="border-top:1px solid var(--rule)">
+        <span>Speed</span>
+        <span id="speeds"></span>
+        <button id="newrun">New room</button>
+        <label title="The sound module's margin of error">Bearing error &plusmn;<input type="range" id="moe" min="1" max="12" step="1" style="width:90px"><b id="moev" class="num"></b>&deg;</label>
+        <label><input type="checkbox" id="o_second_call"> second call</label>
+        <label><input type="checkbox" id="o_throws"> throws</label>
+        <label><input type="checkbox" id="o_says_phrase"> survivor says the phrase</label>
+        <button id="nudge" title="A tap on the joystick: the run pauses, and carries on when the stick is let go">Nudge the joystick</button>
+      </div>
+    </section>
+  </div>
+</main>
+<div id="toast" role="status"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const NS = "http://www.w3.org/2000/svg";
+const el = (name, attrs = {}, text) => { const e = document.createElementNS(NS, name); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; };
+const rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
+const fmt = (v, n = 2) => (v == null || !isFinite(v)) ? "–" : Number(v).toFixed(n);
+const C = { robot: "#2456D6", sound: "#7A3FD1", terrain: "#C96A0A", ball: "#63C416", stop: "#D5322F", ink: "#17233A", graphite: "#56647B", rule: "#CCD4DF", ok: "#1E8E4E" };
+const STAGES = [
+  ["SEEK", "Seek", "listen for a cry"], ["ORIENT", "Orient", "turn to the voice"], ["CONFIRM", "Confirm", "listen again, nose-on"],
+  ["ZONE1", "Obstacles", "0–2 m: over, then around"], ["REFIX", "Second call", "redraw the line"],
+  ["ZONE2", "Gauntlet", "2–6 m: dodge"], ["ARRIVE", "At the cover", "wait for the phrase"], ["RESCUE", "Rescue", "comfort and report"]];
+const ACTIVE = ["PREFLIGHT", "SEEK", "ORIENT", "CONFIRM", "ZONE1", "REFIX", "ZONE2", "ARRIVE"];
+let snap = null, picked = null, trail = [], courseKey = "", lastLogLen = -1, failures = 0;
+
+function toast(text) { const t = $("toast"); t.textContent = text; t.classList.add("show"); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("show"), 3200); }
+async function post(path, body) {
+  try {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json(); if (!j.ok) toast(j.message || "refused"); return j.ok;
+  } catch (e) { toast("Mission Control's server did not answer"); return false; }
+}
+const send = command => post("/api/command", { command });
+
+/* ---------------------------------------------------------------- the course, drawn once */
+function X(m) { return m * 100; } function Y(m) { return -m * 100; }
+function drawCourse(c) {
+  const g = $("map"); g.textContent = "";
+  const add = (name, attrs, text) => g.appendChild(el(name, attrs, text));
+  add("rect", { x: X(0), y: -150, width: X(c.refix_at), height: 300, fill: "#FBE7CF", opacity: .45 });
+  add("rect", { x: X(c.refix_at), y: -150, width: X(c.length - c.refix_at), height: 300, fill: "#E3F5D2", opacity: .45 });
+  add("rect", { x: X(c.throw_from), y: -150, width: X(c.throw_to - c.throw_from), height: 300, fill: "#E3F5D2" });
+  add("text", { x: X(c.refix_at / 2), y: -160, "text-anchor": "middle", class: "d" }, "OBSTACLES");
+  add("text", { x: X((c.throw_from + c.throw_to) / 2), y: -160, "text-anchor": "middle", class: "d" }, "THROW WINDOW");
+  add("line", { x1: X(0), y1: 0, x2: X(c.cover_near), y2: 0, stroke: C.rule, "stroke-width": 2, "stroke-dasharray": "2 8" });
+  for (let m = 0; m <= 7; m++) { add("line", { x1: X(m), y1: 330, x2: X(m), y2: 338, stroke: C.graphite }); add("text", { x: X(m), y: 351, "text-anchor": "middle", class: "d" }, m + " m"); }
+  add("line", { x1: -8, y1: 0, x2: 8, y2: 0, stroke: C.ink, "stroke-width": 2 }); add("line", { x1: 0, y1: -8, x2: 0, y2: 8, stroke: C.ink, "stroke-width": 2 });
+  add("text", { x: 0, y: 30, "text-anchor": "middle", class: "lab" }, "start mark");
+  for (const m of [c.refix_at, c.throw_from, c.throw_to]) for (const s of [-1, 1]) add("rect", { x: X(m) - 2.5, y: Y(s * 1) - 15, width: 5, height: 30, fill: C.graphite, opacity: .55 });
+  add("rect", { x: X(c.box_near), y: Y(c.box_width / 2), width: X(c.box_depth), height: X(c.box_width), fill: "#fff", stroke: C.terrain, "stroke-width": 2.5 });
+  add("text", { x: X(c.box_near + c.box_depth / 2), y: Y(c.box_width / 2) - 8, "text-anchor": "middle", class: "lab" }, c.box_depth > 0.2 ? "slab: scale across" : "low: step over");
+  add("rect", { x: X(c.tall_near), y: Y(c.tall_width / 2), width: X(c.tall_depth), height: X(c.tall_width), fill: C.terrain, opacity: .85 });
+  add("text", { x: X(c.tall_near + c.tall_depth / 2), y: Y(c.tall_width / 2) - 8, "text-anchor": "middle", class: "lab" }, "tall: go around");
+  add("rect", { x: X(c.cover_near), y: Y(c.cover_width / 2), width: 7, height: X(c.cover_width), fill: C.ink });
+  add("text", { x: X(c.cover_near) + 4, y: Y(c.cover_width / 2) - 8, "text-anchor": "middle", class: "lab" }, "cover");
+  add("circle", { cx: X(c.cover_near + 0.45), cy: 0, r: 15, fill: C.sound }); add("text", { x: X(c.cover_near + 0.45), y: 34, "text-anchor": "middle", class: "lab" }, "survivor");
+  for (const s of [-1, 1]) { add("circle", { cx: X(c.thrower_along), cy: Y(s * c.thrower_side), r: 13, fill: "none", stroke: C.ball, "stroke-width": 3 });
+    add("text", { x: X(c.thrower_along), y: Y(s * c.thrower_side) + (s > 0 ? -20 : 30), "text-anchor": "middle", class: "lab" }, "thrower " + (s > 0 ? "L" : "R")); }
+  g.appendChild(el("g", { id: "dyn" }));
+}
+function dog(x, y, yaw, opts = {}) {
+  const g = el("g", { transform: `translate(${X(x)} ${Y(y)}) rotate(${-deg(yaw)})`, opacity: opts.opacity || 1 });
+  g.appendChild(el("rect", { x: -20, y: -12, width: 40, height: 24, rx: 7, fill: opts.fill || C.robot, stroke: opts.stroke || "none", "stroke-width": 2, "stroke-dasharray": opts.dash || "" }));
+  g.appendChild(el("circle", { cx: 23, cy: 0, r: 7.5, fill: opts.fill || C.robot, stroke: opts.stroke || "none", "stroke-width": 2 }));
+  return g;
+}
+function drawRoom(s) {
+  const nav = s.nav, c = s.course, truth = s.truth, d = $("dyn"); d.textContent = "";
+  const add = (name, attrs, text) => d.appendChild(el(name, attrs, text));
+  const est = nav.has_line ? { x: nav.pose[0], y: nav.pose[1], yaw: nav.pose[2] } : null;
+  const me = truth ? { x: truth.robot[0], y: truth.robot[1], yaw: truth.robot[2] } : (est || { x: 0, y: 0, yaw: Math.PI / 2 });
+  // where it has been
+  if (truth) trail = truth.path; else if (est && nav.state !== "IDLE") { const last = trail[trail.length - 1]; if (!last || Math.hypot(last[0] - est.x, last[1] - est.y) > 0.03) trail.push([est.x, est.y]); if (trail.length > 600) trail.shift(); }
+  if (nav.state === "IDLE" && !truth) trail = [];
+  if (trail.length > 1) add("polyline", { points: trail.map(p => X(p[0]) + "," + Y(p[1])).join(" "), fill: "none", stroke: C.robot, "stroke-width": 3, opacity: .35, "stroke-linejoin": "round" });
+  // the line it is walking: the direction of the cry
+  if (nav.line) { const L = nav.line, len = Math.max(0.5, c.cover_near + 0.3 - L.s0);
+    add("line", { x1: X(L.x0), y1: Y(L.y0), x2: X(L.x0 + len * Math.cos(L.heading)), y2: Y(L.y0 + len * Math.sin(L.heading)), stroke: C.sound, "stroke-width": 2.5, "stroke-dasharray": "10 6" }); }
+  // bearings heard, as rays from Pupper
+  const listening = ["SEEK", "ORIENT", "CONFIRM", "REFIX"].includes(nav.state);
+  if (listening) for (const b of nav.bearings) { if (b.age > 12) continue; const a = me.yaw + rad(b.deg), len = 1.5;
+    add("line", { x1: X(me.x), y1: Y(me.y), x2: X(me.x + len * Math.cos(a)), y2: Y(me.y + len * Math.sin(a)), stroke: b.used ? C.sound : C.graphite, "stroke-width": b.used ? 2.5 : 1.5, opacity: Math.max(.15, 1 - b.age / 12) }); }
+  if (listening && nav.fix) { const a = me.yaw + rad(nav.fix.deg), m = rad(s.limits.moe_deg), len = 2.2, p = t => `${X(me.x + len * Math.cos(t))},${Y(me.y + len * Math.sin(t))}`;
+    add("polygon", { points: `${X(me.x)},${Y(me.y)} ${p(a - m)} ${p(a)} ${p(a + m)}`, fill: C.sound, opacity: .16 }); }
+  // balls
+  if (truth) for (const b of truth.balls) {
+    if (b.flying) { add("circle", { cx: X(b.x), cy: Y(b.y), r: 5, fill: "#000", opacity: .13 }); add("circle", { cx: X(b.x), cy: Y(b.y) - b.z * 22, r: 5.5 + b.z * 3, fill: C.ball, stroke: "#2C7408", "stroke-width": 1.2 }); }
+    else add("circle", { cx: X(b.x), cy: Y(b.y), r: 4.5, fill: b.hit ? C.stop : C.ball, opacity: b.hit ? .9 : .55 });
+  }
+  // Pupper: where it is (simulation) and where it believes it is
+  if (truth && est) d.appendChild(dog(est.x, est.y, est.yaw, { fill: "none", stroke: C.robot, dash: "5 4", opacity: .8 }));
+  if (s.dodge.state === "DODGE") add("circle", { cx: X(me.x), cy: Y(me.y), r: 42, fill: "none", stroke: C.stop, "stroke-width": 3 });
+  d.appendChild(dog(me.x, me.y, me.yaw));
+  // who is speaking
+  if (truth && truth.survivor_says) add("text", { x: X(c.cover_near + 0.45), y: -34, "text-anchor": "middle", class: "bubble", fill: C.sound }, "“" + truth.survivor_says + "”");
+  if (s.said && s.said.line && s.said.age != null && s.said.age < 5) { const t = s.said.line.length > 46 ? s.said.line.slice(0, 44) + "…" : s.said.line;
+    add("text", { x: Math.max(120, Math.min(X(me.x), 560)), y: Y(me.y) - 40, "text-anchor": "middle", class: "bubble", fill: C.robot }, "“" + t + "”"); }
+  $("maplegend").textContent = truth ? "solid: where Pupper is · dashed outline: where it believes it is · violet: the line to the voice" : "Pupper is drawn where it believes it is · violet: the line to the voice";
+}
+
+/* ---------------------------------------------------------------- sound */
+function drawCompass(s) {
+  const g = $("compass"), nav = s.nav; g.textContent = "";
+  const cx = 75, cy = 75, R = 60, pt = (b, r) => [cx - r * Math.sin(rad(b)), cy - r * Math.cos(rad(b))];
+  g.appendChild(el("circle", { cx, cy, r: R, fill: "#F4F6F9", stroke: C.rule }));
+  for (let a = -180; a < 180; a += 30) { const [x1, y1] = pt(a, R - 4), [x2, y2] = pt(a, R); g.appendChild(el("line", { x1, y1, x2, y2, stroke: C.graphite, "stroke-width": a % 90 ? .8 : 1.5 })); }
+  g.appendChild(el("text", { x: cx, y: 9, "text-anchor": "middle" }, "nose")); g.appendChild(el("text", { x: 4, y: cy + 3 }, "L")); g.appendChild(el("text", { x: 141, y: cy + 3 }, "R"));
+  if (nav.fix) { const m = s.limits.moe_deg, [x1, y1] = pt(nav.fix.deg - m, R), [x2, y2] = pt(nav.fix.deg + m, R);
+    g.appendChild(el("path", { d: `M${cx} ${cy} L${x1} ${y1} A${R} ${R} 0 0 0 ${x2} ${y2} Z`, fill: C.sound, opacity: .22 })); }
+  for (const b of nav.bearings) { const [x1, y1] = pt(b.deg, 14), [x2, y2] = pt(b.deg, R - 5);
+    g.appendChild(el("line", { x1, y1, x2, y2, stroke: b.used ? C.sound : C.graphite, "stroke-width": b.used ? 2.2 : 1.2, opacity: Math.max(.2, 1 - b.age / 20), "stroke-dasharray": b.used ? "" : "3 3" })); }
+  if (nav.target_deg != null && ["ORIENT", "CONFIRM"].includes(nav.state)) { const [x, y] = pt(nav.target_deg, R + 6); g.appendChild(el("circle", { cx: x, cy: y, r: 4, fill: C.sound })); }
+  if (s.truth && nav.state !== "IDLE") { const [x, y] = pt(s.truth.true_bearing_deg, R + 6); g.appendChild(el("circle", { cx: x, cy: y, r: 3, fill: "none", stroke: C.ink, "stroke-width": 1.2 })); }
+  g.appendChild(el("rect", { x: cx - 6, y: cy - 10, width: 12, height: 20, rx: 4, fill: C.robot })); g.appendChild(el("circle", { cx, cy: cy - 12, r: 4, fill: C.robot }));
+  const st = nav.listening ? "LISTENING" : nav.quiet && ["SEEK", "CONFIRM", "REFIX", "PREFLIGHT"].includes(nav.state) ? "PUPPER IS TALKING" : "NOT LISTENING";
+  $("soundchip").textContent = st; $("soundchip").className = "chip" + (nav.listening ? " sound" : "");
+  const used = nav.bearings.filter(b => b.used).length, last = nav.bearings.length ? nav.bearings[nav.bearings.length - 1] : null;
+  $("sounddl").innerHTML = row("Last bearing", last ? fmt(last.deg, 0) + "° " + (last.deg >= 0 ? "left" : "right") + (last.used ? "" : " (not used)") : "none yet") +
+    row("Fix", nav.fix ? `${fmt(nav.fix.deg, 0)}° from ${nav.fix.count} of ${s.limits.min_bearings} · spread ${fmt(nav.fix.spread_deg, 1)}°` + (nav.fix.rejected ? ` · ${nav.fix.rejected} echo` : "") : (nav.has_line ? "line set" : "–")) +
+    row("Margin", "±" + fmt(s.limits.moe_deg, 0) + "° assumed") + row("Heard", used + " used of " + nav.bearings.length) +
+    row("Phrase", s.keyword.heard_age != null ? "heard " + fmt(s.keyword.heard_age, 0) + " s ago" : "not heard") +
+    (nav.keyword_ignored ? row("Ignored", nav.keyword_ignored + " (too early)") : "");
+  const f = $("heardflash"), fresh = s.keyword.heard_age != null && s.keyword.heard_age < 3;
+  f.textContent = fresh ? "PHRASE HEARD" : "phrase"; f.className = "chip" + (fresh ? " sound" : "");
+  const lv = (s.keyword.status && s.keyword.status.level_db) || [];
+  $("levels").innerHTML = lv.map(v => `<i style="height:${Math.max(2, Math.min(22, (v + 70) / 60 * 22))}px"></i>`).join("");
+}
+const row = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`;
+
+/* ---------------------------------------------------------------- terrain */
+function drawFan(s) {
+  const g = $("fan"), t = s.terrain; g.textContent = "";
+  const cx = 75, cy = 100, K = 36, pt = (b, r) => [cx - r * K * Math.sin(rad(b)), cy - r * K * Math.cos(rad(b))];
+  const arc = (r, a, b) => { const [x1, y1] = pt(a, r), [x2, y2] = pt(b, r); return `M${x1} ${y1} A${r * K} ${r * K} 0 0 1 ${x2} ${y2}`; };
+  for (const r of [1, 2, 2.5]) g.appendChild(el("path", { d: arc(r, 100, -100), fill: "none", stroke: C.rule, "stroke-width": r === 2.5 ? 1.4 : .8 }));
+  g.appendChild(el("text", { x: cx + 3, y: cy - K + 9 }, "1 m")); g.appendChild(el("text", { x: cx + 3, y: cy - 2 * K + 9 }, "2 m"));
+  for (const o of t.obstacles) { const r = Math.max(.12, Math.min(2.5, o.nearest + .145)), a = Math.min(100, o.left_deg), b = Math.max(-100, o.right_deg);
+    g.appendChild(el("path", { d: arc(r, a, b), fill: "none", stroke: o.is_box ? C.robot : o.tall ? C.terrain : C.graphite, "stroke-width": o.tall ? 5 : 3, "stroke-linecap": "round" })); }
+  g.appendChild(el("rect", { x: cx - 5, y: cy - 4, width: 10, height: 12, rx: 3, fill: C.robot }));
+  $("terrainchip").textContent = t.alive ? (t.state || "–") : "NOT RUNNING"; $("terrainchip").className = "chip" + (t.alive ? (["CRUISE", "REPORT", "DISABLED", ""].includes(t.state) ? "" : " terrain") : " stop");
+  $("terrainmode").textContent = "mode " + (t.mode || "–") + (s.wanted.terrain_mode !== t.mode && t.alive ? " → " + s.wanted.terrain_mode : "");
+  const tall = t.obstacles.filter(o => o.tall && !o.is_box).sort((a, b) => a.nearest - b.nearest)[0], box = t.box, cr = s.nav.crossing, cs = t.crossing || {};
+  $("terraindl").innerHTML = row("Doing", ({ CRUISE: "watching", REPORT: "watching (not steering)", APPROACH: "walking up to the low obstacle", GAUGE: "measuring it", ALIGN: "squaring up", PLAN: "planning the crossing", STEP_OVER: "stepping over", SCALE_ACROSS: "scaling across the slab", AVOID: "walking around", HOLD: "holding", DISABLED: "off" })[t.state] || t.state || "–") +
+    row("Low obstacle", box && box.near_x != null ? `${fmt(box.height * 1000, 0)} mm tall · ${fmt(box.near_x * 100, 0)} cm ahead` : (s.nav.box_done ? "passed" : "not measured")) +
+    row("Nearest tall", tall ? `${fmt(tall.nearest, 2)} m at ${fmt(tall.bearing_deg, 0)}°` : "none in view") +
+    row("Crossing", cr.active ? `${fmt(cr.progress * 100, 0)} %` + (cs.duration ? ` of ${fmt(cs.duration, 0)} s` : "") : (cs.state === "planning" ? "planning" : s.nav.box_done ? "done" : "–")) +
+    (t.reason ? row("Reason", t.reason) : "");
+  $("crossbar").style.width = (cr.active ? cr.progress * 100 : 0) + "%";
+}
+
+/* ---------------------------------------------------------------- projectiles */
+function drawRadar(s) {
+  const g = $("radar"), d = s.dodge; g.textContent = "";
+  const cx = 75, cy = 75, K = 17, pt = (b, r) => [cx - r * K * Math.sin(rad(b)), cy - r * K * Math.cos(rad(b))];
+  for (const r of [1, 2, 3, 4]) g.appendChild(el("circle", { cx, cy, r: r * K, fill: r === 4 ? "#F4F6F9" : "none", stroke: C.rule, "stroke-width": .8 }));
+  g.appendChild(el("text", { x: cx + 2, y: cy - 4 * K + 10 }, "4 m"));
+  for (const t of d.tracks || []) { const [x, y] = pt(t.azimuth_deg, Math.min(4, t.range_m));
+    g.appendChild(el("line", { x1: x, y1: y, x2: cx, y2: cy, stroke: C.ball, "stroke-width": 1, "stroke-dasharray": "2 3" }));
+    g.appendChild(el("circle", { cx: x, cy: y, r: 5, fill: C.ball, stroke: "#2C7408", "stroke-width": 1.2 })); }
+  if (d.state === "DODGE") g.appendChild(el("circle", { cx, cy, r: 16, fill: "none", stroke: C.stop, "stroke-width": 2.5 }));
+  g.appendChild(el("rect", { x: cx - 6, y: cy - 10, width: 12, height: 20, rx: 4, fill: C.robot })); g.appendChild(el("circle", { cx, cy: cy - 12, r: 4, fill: C.robot }));
+  $("dodgechip").textContent = d.alive ? (d.state || "–") : "NOT RUNNING"; $("dodgechip").className = "chip" + (!d.alive ? " stop" : d.state === "DODGE" ? " stop" : d.state && d.state !== "SEARCH" ? " ball" : "");
+  $("armchip").textContent = d.armed ? "ARMED" : "not armed" + (s.wanted.arm_dodge && d.alive ? " → arming" : ""); $("armchip").className = "chip" + (d.armed ? " stop" : "");
+  const cams = Object.entries(d.cameras || {}).map(([k, v]) => `${k.replace("elp_", "")} ${fmt(v.fps, 0)}`).join(" · ");
+  const tr = (d.tracks || [])[0], th = s.truth;
+  $("dodgedl").innerHTML = row("Dodges", s.nav.dodges + (th ? ` · ${th.throws} thrown · ${th.hits} hit` : "")) +
+    row("Tracking", tr ? `${fmt(tr.range_m, 1)} m at ${fmt(tr.azimuth_deg, 0)}°` : "nothing") +
+    row("Can dodge", d.can_dodge === false ? "no: " + (d.cannot_reason || "") : d.alive ? "yes" : "–") + (cams ? row("Frames/s", cams) : "");
+  $("dvlink").href = location.protocol + "//" + location.hostname + ":8077";
+}
+
+/* ---------------------------------------------------------------- everything else */
+function render(s) {
+  const nav = s.nav, mode = s.server.mode, sim = mode === "sim";
+  const key = JSON.stringify(s.course); if (key !== courseKey) { courseKey = key; drawCourse(s.course); }
+  const chip = $("modechip"); chip.textContent = sim ? "SIMULATION" : s.server.connected ? "ROBOT" : "ROBOT: NO DATA " + fmt(s.server.age, 0) + " s"; chip.className = sim ? "" : s.server.connected ? "robot" : "lost";
+  const active = ACTIVE.includes(nav.state), stopped = ["PAUSED", "HOLD"].includes(nav.state);
+  $("run").innerHTML = `<span><b>${nav.state}</b>${nav.zone ? " · " + nav.zone : ""}</span><span><b class="num">${fmt(nav.run_s, 0)}</b> s</span>` +
+    `<span><b class="num">${fmt(nav.s, 2)}</b> m along</span><span><b class="num">${nav.d >= 0 ? "+" : ""}${fmt(nav.d, 2)}</b> m off the line</span>` +
+    `<span>legs: <b>${(s.mux || "none").replace("_cmd_vel", "").replace("/", "") || "none"}</b></span>`;
+  // the cue and Pupper's last line
+  const cue = nav.cue || {}; $("cue").className = cue.tone || ""; $("cuewho").textContent = cue.who || ""; $("cuetext").textContent = cue.text || "";
+  $("says").innerHTML = s.said && s.said.line ? `Pupper ${s.said.age < 6 ? "is saying" : "last said"}<q>${s.said.line}</q>` : "";
+  // buttons
+  const missing = s.limits.require.filter(n => !s.alive[n]), idle = ["IDLE", "DONE"].includes(nav.state);
+  const sb = $("start"); sb.disabled = !idle;
+  const from = picked ? STAGES.find(x => x[0] === picked)[1] : null;
+  sb.textContent = !idle ? "Running" : from ? "Start from " + from : missing.length ? "Start anyway" : "Start";
+  sb.className = idle && missing.length && !from ? "warn" : "";
+  sb.title = missing.length ? "Not ready: " + missing.join(", ") + ". Starting anyway runs without them (the buttons on this page can stand in for the sound module and the phrase detector)." : "Run the mission from the start mark";
+  const pb = $("pause"); pb.disabled = !(active || stopped || (nav.state === "RESCUE" && nav.resume_state));
+  pb.textContent = stopped ? "Resume" : nav.state === "RESCUE" ? "Not the phrase: carry on" : "Pause";
+  $("end").disabled = idle;
+  $("motionbox").checked = nav.motion; $("motion").className = nav.motion ? "on" : ""; $("motion").firstChild.nextSibling && 0;
+  $("zonechip").textContent = nav.state === "IDLE" ? "ready" : nav.state + (nav.reason ? ": " + nav.reason : "");
+  // stages
+  const order = STAGES.map(x => x[0]), at = order.indexOf(stopped ? nav.resume_state : nav.state);
+  [...$("stages").children].forEach((b, i) => { b.className = "stage" + (at > i ? " done" : "") + (at === i ? " now" : "") + (picked === order[i] ? " picked" : ""); b.disabled = !idle; });
+  // the room
+  drawRoom(s); drawCompass(s); drawFan(s); drawRadar(s);
+  const th = s.truth;
+  $("facts").innerHTML = fact(fmt(nav.s, 2) + " m", "along the line") + fact((nav.d >= 0 ? "+" : "") + fmt(nav.d, 2) + " m", "off the line (left +)") +
+    fact(fmt(nav.heading_error_deg, 0) + "°", "off its heading") + fact(nav.would_cmd ? fmt(nav.would_cmd[0], 2) + " m/s" : "silent", nav.motion ? "navigation asks for" : "would ask for (dry run)") +
+    fact(nav.cover_seen ? fmt(nav.cover_range, 2) + " m" : "–", "to the cover") + (th ? fact((th.robot[1] >= 0 ? "+" : "") + fmt(th.robot[1], 2) + " m", "truly off the first line") : fact(fmt(nav.walked_m, 1) + " m", "walked"));
+  // systems
+  const names = { imu: "IMU", walking: "Walking controller", sound: "Sound module", keyword: "Phrase detector", terrain: "Terrain agility", dodge: "Dodge node", voice: "Voice" };
+  $("systems").innerHTML = Object.keys(names).map(k => `<span class="${s.alive[k] ? "good" : (s.limits.require.includes(k) ? "bad" : "")}"><span class="dot"></span>${names[k]}</span>`).join("");
+  $("sysnote").textContent = missing.length ? "missing: " + missing.map(k => names[k]).join(", ") : "all there";
+  $("robotbox").hidden = sim; $("simbox").hidden = !sim; $("motion").hidden = false;
+  if (sim) { const o = s.server.options;
+    $("speeds").innerHTML = [0, 1, 2, 5, 10].map(v => `<button data-speed="${v}" aria-pressed="${s.server.speed === v}">${v ? v + "×" : "❚❚"}</button>`).join(" ");
+    if (document.activeElement !== $("moe")) $("moe").value = o.moe_deg; $("moev").textContent = fmt(o.moe_deg, 0);
+    for (const k of ["second_call", "throws", "says_phrase"]) $("o_" + k).checked = o[k]; }
+  $("cfgsrc").textContent = "numbers from " + (s.config_source || "").split("/").slice(-2).join("/");
+  // the log
+  if (s.events.length !== lastLogLen || (s.events.length && s.events[s.events.length - 1].t !== render.lastT)) {
+    lastLogLen = s.events.length; render.lastT = s.events.length ? s.events[s.events.length - 1].t : null;
+    $("log").innerHTML = s.events.slice().reverse().map(e => { const dt = Object.entries(e.details || {}).map(([k, v]) => k + " " + v).join(", ");
+      return `<li class="${e.line ? "said" : ""}"><span class="t num">${fmt(e.run_s, 0)} s</span><span class="e">${e.event.replace(/_/g, " ")}</span><span class="w">${e.line ? "“" + e.line + "”" : dt}</span></li>`; }).join("");
+  }
+}
+const fact = (v, k) => `<div><b class="num">${v}</b><span>${k}</span></div>`;
+
+function buildStages() {
+  $("stages").innerHTML = STAGES.map((x, i) => `<button class="stage" data-stage="${x[0]}" title="Start the run from here: place Pupper at this stage, facing along the line, then press Start."><span class="n">${i + 1}</span><span class="t">${x[1]}</span><span class="s">${x[2]}</span></button>`).join("");
+  $("stages").addEventListener("click", e => { const b = e.target.closest(".stage"); if (!b || b.disabled) return; picked = picked === b.dataset.stage || b.dataset.stage === "SEEK" ? null : b.dataset.stage; if (snap) render(snap); });
+}
+$("start").onclick = () => { if (!snap) return; const missing = snap.limits.require.filter(n => !snap.alive[n]);
+  if (!snap.nav.motion && snap.server.mode === "robot") toast("Motion is off: this is a dry run. Pupper will listen and report but not walk.");
+  if (picked) { send("goto:" + picked); picked = null; } else send(missing.length ? "start!" : "start"); };
+$("pause").onclick = () => { if (!snap) return; send(ACTIVE.includes(snap.nav.state) ? "pause" : "resume"); };
+$("end").onclick = () => send("end");
+$("motionbox").onchange = e => { const on = e.target.checked;
+  if (on && snap && snap.server.mode === "robot" && !confirm("Allow motion?\n\nPupper will walk when a run is started. Someone must be holding the gamepad: a press on the right stick is the e-stop.")) { e.target.checked = false; return; }
+  send(on ? "motion_on" : "motion_off"); };
+$("phrase").onclick = () => send("phrase");
+$("stand").onclick = () => { if (confirm("Stand Pupper up?\n\nIt will get to its feet. Floor clear, operator at the e-stop.")) send("robot:stand").then(ok => ok && toast("Asked Pupper to stand")); };
+$("relax").onclick = () => send("robot:relax").then(ok => ok && toast("Legs relaxed"));
+$("compass").onclick = e => { if (!snap) return; const r = $("compass").getBoundingClientRect(), dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+  if (Math.hypot(dx, dy) < 12) return; const b = Math.round(deg(Math.atan2(-dx, -dy)));
+  if (!["SEEK", "CONFIRM", "REFIX"].includes(snap.nav.state)) { toast("Pupper is not listening for a direction now"); return; }
+  send("bearing:" + b).then(ok => ok && toast("Sent a bearing by hand: " + Math.abs(b) + "° " + (b >= 0 ? "left" : "right"))); };
+$("speeds").onclick = e => { const b = e.target.closest("button"); if (b) post("/api/sim", { speed: Number(b.dataset.speed) }); };
+$("newrun").onclick = () => { trail = []; picked = null; post("/api/sim", { action: "reset" }); };
+$("moe").oninput = e => { $("moev").textContent = e.target.value; };
+$("moe").onchange = e => post("/api/sim", { options: { moe_deg: Number(e.target.value) } });
+for (const k of ["second_call", "throws", "says_phrase"]) $("o_" + k).onchange = e => post("/api/sim", { options: { [k]: e.target.checked } });
+$("nudge").onclick = () => send("nudge:0.3,0");
+document.addEventListener("keydown", e => { if (e.target.tagName === "INPUT" || e.metaKey || e.ctrlKey) return;
+  if (e.key === " ") { e.preventDefault(); $("pause").disabled || $("pause").click(); } });
+
+async function poll() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" }); const s = await r.json(); failures = 0;
+    if (s.waiting) { $("waiting").hidden = false; $("waiting").textContent = s.waiting; $("main").hidden = true; $("modechip").textContent = "ROBOT: WAITING"; $("modechip").className = "lost"; $("cuetext").textContent = "Waiting for the navigation node"; }
+    else { $("waiting").hidden = true; $("main").hidden = false; snap = s; render(s); }
+  } catch (e) { if (++failures > 5) { $("modechip").textContent = "PAGE DISCONNECTED"; $("modechip").className = "lost"; } }
+  setTimeout(poll, snap && snap.server.mode === "robot" ? 200 : 100);   // the robot's Pi has little to spare
+}
+buildStages(); poll();
+</script>
+</body>
+</html>
