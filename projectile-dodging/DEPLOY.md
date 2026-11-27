@@ -95,7 +95,7 @@ SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 ## 2. Check the code runs (no robot needed)
 
 ```bash
-python3 -m unittest discover -s tests     # expect: Ran 77 tests ... OK
+python3 -m unittest discover -s tests     # expect: Ran 81 tests ... OK
 python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7 --elp-fps 30    # simulated 2 m throws, rear cameras at their 30 a second; about a minute on the Pi
 ```
 
@@ -376,9 +376,12 @@ dodged 73-100 % of the time at 30 pictures a second, about half the time at
 15, and never at 7, which is what the Pupper managed before the cameras had
 their own processes. If the rates are far below 30, lag climbs, or `top` shows
 the Pi near 100 % on all four cores, something else is using the processor:
-`start.sh` names the `llm-agent` service if it is running; stop it. Once the
-rates hold with "cpu" well under the 33 ms between frames, try
-`max_process_fps: 60` for the ELPs (in a file under `config/calib/`).
+`start.sh` names the `llm-agent` service if it is running; stop it.
+`python3 tools/bench_detect.py data/throws/<a saved throw>` shows what each
+camera's work costs on the Pi by itself. `COLOUR CAST` after a camera in the
+`watch.sh` line means that camera is not showing the white balance it was
+given: the node sends its settings again by itself; if the words stay, run
+`tools/tune_exposure.py` and then the colour step for that camera.
 
 Now the first step that **moves the robot**. Stand it up:
 

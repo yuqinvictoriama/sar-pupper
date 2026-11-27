@@ -25,7 +25,7 @@ data/       recordings made on the robot (not in git)
 ## Try it without a robot
 
 ```bash
-python3 -m unittest discover -s tests     # 77 tests, about half a minute
+python3 -m unittest discover -s tests     # 81 tests, about half a minute
 python3 tools/sim_report.py               # simulated throws from every direction
 ```
 
