@@ -1,0 +1,63 @@
+# The three controllers the step-over crawl drives the legs through: one array of 12 numbers
+# each for the joint position targets, the position gains and the damping gains. They are
+# loaded INACTIVE (spawn_controllers.py); robot/stepover_node.py switches to them for a
+# crossing and back to the walking controller afterwards.
+#
+# These are stock ros2_control forward_command_controllers writing to the command interfaces
+# the Pupper hardware interface already exports (position, kp, kd per joint). The hardware
+# interface still clamps what it is sent: kp <= 10, kd <= 1, torque <= 3 N m, joint limits.
+# (No YAML anchors here: ROS parameter files reject them.)
+
+terrain_position_controller:
+  ros__parameters:
+    type: forward_command_controller/ForwardCommandController
+    joints:
+      - leg_front_r_1
+      - leg_front_r_2
+      - leg_front_r_3
+      - leg_front_l_1
+      - leg_front_l_2
+      - leg_front_l_3
+      - leg_back_r_1
+      - leg_back_r_2
+      - leg_back_r_3
+      - leg_back_l_1
+      - leg_back_l_2
+      - leg_back_l_3
+    interface_name: position
+
+terrain_kp_controller:
+  ros__parameters:
+    type: forward_command_controller/ForwardCommandController
+    joints:
+      - leg_front_r_1
+      - leg_front_r_2
+      - leg_front_r_3
+      - leg_front_l_1
+      - leg_front_l_2
+      - leg_front_l_3
+      - leg_back_r_1
+      - leg_back_r_2
+      - leg_back_r_3
+      - leg_back_l_1
+      - leg_back_l_2
+      - leg_back_l_3
+    interface_name: kp
+
+terrain_kd_controller:
+  ros__parameters:
+    type: forward_command_controller/ForwardCommandController
+    joints:
+      - leg_front_r_1
+      - leg_front_r_2
+      - leg_front_r_3
+      - leg_front_l_1
+      - leg_front_l_2
+      - leg_front_l_3
+      - leg_back_r_1
+      - leg_back_r_2
+      - leg_back_r_3
+      - leg_back_l_1
+      - leg_back_l_2
+      - leg_back_l_3
+    interface_name: kd

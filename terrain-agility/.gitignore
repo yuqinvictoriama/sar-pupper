@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+look.jpg
+config/camera_calibration.json

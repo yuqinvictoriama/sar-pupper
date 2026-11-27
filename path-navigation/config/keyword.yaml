@@ -1,0 +1,26 @@
+# The phrase that ends the search, and how eagerly to accept it.
+# After changing anything under `phrases`, run:  python3 tools/make_keywords.py
+#
+# Each phrase is one way the model may hear "You saved me, Pupper!".
+# "Pupper" is not a dictionary word, so its near neighbours are listed too.
+# Do NOT add the bare phrase "YOU SAVED ME": in testing it also fired on
+# "he saved me a slice of pizza" and "you shaved me".
+phrases:
+  - YOU SAVED ME PUPPER
+  - YOU SAVED ME PEPPER
+  - YOU SAVED ME PUPPY
+  - YOU SAVED ME PAPA
+  - SAVED ME PUPPER
+
+# boost: higher = accepts the phrase more readily (1.0 to 4.0 is the useful range).
+# threshold: lower = accepts less certain matches (0.04 to 0.25).
+# Loosen (boost up, threshold down) if the survivor has to repeat themselves;
+# tighten if it ever fires on something else.
+boost: 3.0
+threshold: 0.08
+
+# Audio input for the robot node and for tools/keyword_test.py --live.
+audio:
+  device: null        # null = system default; or part of a device name, e.g. "DJI"; or an index
+  channels: 1         # how many microphone channels to listen on (a hit on any one counts)
+  sample_rate: 48000  # what the device delivers; the detector resamples itself

@@ -1,0 +1,109 @@
+# Terrain agility parameters. Everything here is read by terrain/config.py; the nodes take
+# the path of this file as their only argument (default: this file).
+#
+# Items marked CALIBRATE are estimates until you run the tools listed in README.md.
+
+camera:
+  # Lens model: the course's double-sphere parameters (follow_me_pupper/robot/camera_params.yaml),
+  # valid for the 1400 x 1050 image the course launch publishes.
+  image_width: 1400
+  image_height: 1050
+  fx: 228.81030
+  fy: 228.81030
+  cx: 680.0
+  cy: 479.0
+  xi: -0.00092
+  alpha: 0.62007
+  # Where the lens is, in the default standing pose.            CALIBRATE (tools/calibrate_camera.py)
+  height: 0.250          # m above the floor
+  pitch_deg: 0.0         # + = looking down
+  roll_deg: 0.0
+  yaw_deg: 0.0
+  x_forward: 0.145       # m ahead of the body centre (measure with a ruler: lens to mid-way between hips)
+  y_left: 0.0
+  # Steepest look-down angle at which the camera still sees floor past the robot's own chin.
+  # CALIBRATE: tools/view_debug.py shows where the robot's body starts in the picture.
+  near_depression_deg: 60.0
+  topic: /camera/image_raw/compressed
+  # Fixed white balance [red gain, blue gain] (Lab 5's values). The colours below are only
+  # valid with the white balance they were learned under. The Gemini launch already sets
+  # these; robot/standalone.launch.py sets them from here.
+  white_balance: [1.4, 3.3]
+
+colors:                   # OpenCV HSV (H 0..179, S and V 0..255).  CALIBRATE (tools/learn_colors.py)
+  box_side: {h_lo: 100, h_hi: 125, s_min: 110, v_min: 50}                 # blue
+  box_top: {h_lo: 0, h_hi: 179, s_min: 0, s_max: 50, v_min: 185}          # white
+  ball: {h_lo: 30, h_hi: 52, s_min: 110, v_min: 110}                      # neon green
+  floor_file: floor_model.json     # written by tools/learn_colors.py, next to this file
+  adapt_floor: true                # keep learning the floor's colour from the patch just ahead
+
+scan:
+  rate_hz: 8.0
+  max_range: 2.5
+  tall_height: 0.080
+  min_run: 3
+  floor_gap: 3
+
+fsm:
+  corridor_half: 0.18
+  engage_range: 1.2
+  box_engage_range: 1.0
+  gauge_distance: 0.36      # m, body centre to the box's near face, where it stops to measure
+  approach_speed: 0.22
+  # squaring up to the box: short pulses of turning / sidestepping, then a fresh measurement
+  align_skew_deg: 4.0       # square enough
+  align_yaw_rate: 0.5       # rad/s during a turn pulse
+  align_side_speed: 0.22    # m/s during a sidestep pulse
+  align_min_pulse: 0.30     # s. If it overshoots back and forth, lower this or the rates.   CALIBRATE
+  enabled: true             # false: start switched off; turn on with  ros2 topic pub -1 /terrain/enable std_msgs/Bool "data: true"
+  # Whoever may be driving, in the mux's priority order (robot/terrain_mux.yaml). Terrain
+  # agility only acts while one of these is commanding a walk.
+  intent_topics: [/llm_cmd_vel, /survivor_cmd_vel, /nav_cmd_vel, /person_following_cmd_vel, /terrain_test_cmd_vel]
+  cmd_topic: /terrain_cmd_vel
+  level_tilt_deg: 8.0
+
+steer:
+  clearance: 0.22
+  look_ahead: 1.0
+  speed: 0.35
+  max_yaw_rate: 1.0
+  speed_scale: 1.0          # actual / commanded walking speed.          CALIBRATE (README, "walking speed")
+
+decision:
+  prefer_step_over: true
+  ignore_below: 0.010
+  height_cap: 0.030         # m: never step over anything taller than this
+  height_guard: 0.003
+  min_width: 0.40
+  max_skew_deg: 5.0
+
+crawl:
+  hip_height: 0.160
+  clearance: 0.015
+  clearance_top: 0.008
+  min_margin: 0.015
+  kp: 7.5
+  kd: 0.25
+  time_scale: 1.0           # > 1 slows the whole crossing down (use 1.5 for the first runs)
+  sag_gain: 1.0             # scales the load compensation; raise (1.2-1.5) if the body rides low on the real robot
+  mic_bars: true            # keep the legs inside the design-2 mic-bar-safe joint ranges
+  allow_search: false       # if no stored footstep pattern fits, search for one (slow) instead of giving up
+  # Hardware that is not in the robot model: [mass kg, x, y, z] in the body frame (x forward,
+  # z up, origin between the hips on the hip axis).                    CALIBRATE (weigh it)
+  extra_masses:
+    - [0.13, 0.055, 0.0, 0.13]     # camera plate + two cameras on the head (estimate)
+    - [0.065, -0.014, 0.0, 0.078]  # four mics (estimate)
+
+player:
+  tilt_limit_deg: 20.0
+  stance_error_limit: 0.15
+  swing_error_limit: 0.12
+  guard_error: 0.035
+
+stepover:
+  controllers: [terrain_position_controller, terrain_kp_controller, terrain_kd_controller]
+  walking_controller_types: [neural_controller/NeuralController]
+  rate_hz: 120.0
+  estop_kd: 0.1
+  request_topic: /terrain/step_over
+  status_topic: /terrain/crossing_status

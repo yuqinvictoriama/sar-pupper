@@ -1,0 +1,25 @@
+# cmd_vel_mux inputs with terrain agility in the chain. First = highest priority.
+#
+#   joystick  >  projectile dodge  >  terrain agility  >  Gemini  >  survivor approach  >
+#   route planner  >  person follower  >  terrain test driver
+#
+# The joystick always wins. The dodge reflex outranks terrain (a 0.5 s reflex must not wait
+# for a detour). Terrain outranks every "driver" so it can steer round an obstacle the driver
+# is walking into; it publishes nothing when there is no obstacle, so the mux hands control
+# straight back (a source that is silent for timeout_ms is dropped).
+#
+# Use this file for the mux in your own launch, or copy the `inputs` list into the
+# cmd_vel_mux section of gemini_pupper/robot/launch/gemini_pupper.yaml.
+cmd_vel_mux:
+  ros__parameters:
+    deadband: 0.05
+    timeout_ms: 500
+    inputs:
+      - /teleop_cmd_vel
+      - /dodge_cmd_vel
+      - /terrain_cmd_vel
+      - /llm_cmd_vel
+      - /survivor_cmd_vel
+      - /nav_cmd_vel
+      - /person_following_cmd_vel
+      - /terrain_test_cmd_vel

@@ -96,7 +96,7 @@ SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 
 ```bash
 python3 -m unittest discover -s tests     # expect: Ran 70 tests ... OK
-python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7    # simulated 2 m throws; takes about a minute on the Pi
+python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7 --elp-fps 30    # simulated 2 m throws, rear cameras at their 30 a second; about a minute on the Pi
 ```
 
 If the tests fail here, stop and fix that first: the rest will not work.
@@ -339,7 +339,7 @@ Each explains itself with `--help`. The defaults from the CAD are good enough to
 ## 6. Record throws and replay them (still nothing moves)
 
 ```bash
-python3 tools/record.py --seconds 30 --name rear-lobs-01     # someone lobs balls at the robot from 2 m meanwhile
+python3 tools/record.py --seconds 30 --name rear-lobs-01     # someone lobs balls at the robot meanwhile, from the places described at the top
 python3 tools/replay.py data/recordings/rear-lobs-01
 ```
 
@@ -411,7 +411,7 @@ the time from the robot's first movement until that foot reaches each mark
 
 ```bash
 python3 tools/step_response.py --vx 1.0 --vy 0.5 --timed 0.15:0.31 0.30:0.47 --write
-python3 tools/sim_report.py --dist 1.8 2.0 --rise 0.4 0.7 --lag <fitted lag>
+python3 tools/sim_report.py --dist 1.8 2.0 --rise 0.4 0.7 --elp-fps 30 --lag <fitted lag>
 ```
 
 The first line moves nothing: it fits the lag to your two timings and saves it.
@@ -552,8 +552,9 @@ ringed but too briefly or too late (look at where it first appears).
 each throw's panel press *dodged*, *hit*, *off target* or *not a throw*, and
 add a note. The summary above the list and `throws.csv` use these.
 
-**Disk space.** A throw takes roughly 30–60 MB. The page shows how much the
-throws use and how much is free; the node stops saving when less than 1.5 GB
+**Disk space.** A throw takes roughly 30–60 MB, so a session of 30–50 throws
+needs about 2 GB. `df -h ~` on the Pupper shows what is free; so does the page,
+under the list, with how much the throws use; the node stops saving when less than 1.5 GB
 is free. Copy what you want to keep to the Mac, then delete on the Pupper:
 
 ```bash
@@ -563,6 +564,23 @@ rm -r data/throws/20261126-*                                                    
 
 Each throw's panel also has a link that downloads its numbers (and videos, once
 made) as one .zip, without the raw pictures.
+
+**Load on the Pi.** The page is drawn by your browser; on the Pupper it is a
+small server that hands over saved files, at low priority. Idle, it should sit
+near 0 % in `top` (look for `dodging_view.py`). Two things are heavy: making
+video files (so do it between throws), and, once per recording, re-analysing
+recordings made before the recorder existed (`data/events/`). To run without
+it: `bash robot/start.sh --no-view`. To look at throws on the Mac instead, copy
+`data/throws` over (the `scp` line above) and run, in this folder on the Mac,
+`python3 tools/dodging_view.py --no-ros --dir ~/Desktop/CS123/throws`, then
+open `http://localhost:8077`. That needs Python with NumPy, OpenCV and PyYAML,
+and has no live status or record buttons.
+
+**If "Seen, no dodge" throws appear with nobody throwing,** something green
+moving in the room is being taken for a ball in flight, and each one costs
+disk space. Remove the object, or stop saving that kind: put
+`node: {record_undodged: false}` in a file such as `config/calib/recording.yaml`
+and restart.
 
 To get the numbers and videos without the page:
 `python3 tools/dodging_view.py --once` analyses every saved throw, writes the
@@ -587,6 +605,8 @@ robot idle.
 | Red boxes around the edge of the fisheye picture | Colour fringe at the lens rim | `python3 tools/fit_image_circle.py fisheye --write` (stage 4d) |
 | Range to a ball on the floor reads far too short and its box flickers | Colour range too wide: the blob is the ball plus the floor it lights up | `calibrate_color.py` for that camera (stage 5) |
 | No track although the ball is in view | Colour settings do not match this lighting, or the ball is in poor light | `view.py <camera> --mask`: the ball should be white. If not, 4c then the colour step again; add light if the colour step reports little margin |
+| The colour step reports a hue range that is not green (well outside 30–75) | It sampled something other than the ball, or the picture has a strong cast | `view.py <camera> --mask`: only the ball should be white. If the floor or skin is, redo the colour step with the ball filling the box, after stage 4c |
+| One camera's ranges are off and its `size_scale` in `config/calib/<camera>_color.yaml` is far from 1 (say above 1.2) | The size step measured at the wrong distances, or on a cut-off ball | Redo `calibrate_color.py <camera> --distance 0.5 1 1.5 2` with a tape measure |
 | Tracks appear with no ball | Something else in view is ball-coloured | Remove it and redo the colour step for that camera |
 | Range reads consistently wrong | Size calibration | `calibrate_color.py <cam> --distance ...`; check `ball.diameter_m` |
 | Dodges balls that would miss by a lot | Prediction too generous | Lower `threat.k_sigma` or `threat.sigma_cap_m` |
