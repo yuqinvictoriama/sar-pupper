@@ -231,6 +231,9 @@ class BallDetector:
         self.coarse_step = max(1, int(det.get("coarse_step", 2)))
         self.coarse_min_px = int(det.get("coarse_min_px", 60000))    # search areas smaller than this are done directly
         self.max_places = int(det.get("max_places", 60))             # places a coarse search hands on, most colour first
+        self.sparse_min_px = float(det.get("sparse_min_px", 600))    # a place whose box is at least this big ...
+        self.sparse_fill = float(det.get("sparse_fill", 0.2))        # ... and less than this full of colour is a scatter
+        self.max_per_window = int(det.get("max_per_window", 8))      # patches judged in one place, largest first
         self._coarse_off = 0       # whole-frame searches still to do directly, after one found colour all over
         self.ignore_mask = ignore_mask  # 0/255, same size as the frame; 255 = never a ball
         self._kernel = (cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.open_px, self.open_px))
@@ -380,6 +383,9 @@ class BallDetector:
         found, covered = [], 0
         for i in keep:
             bx, by, bw, bh = (int(v) for v in stats[i, :4])
+            if bw * bh * step * step >= self.sparse_min_px and counts[i - 1] < self.sparse_fill * bw * bh:
+                continue                              # a wide scatter of specks (a rack, a pattern, noise): a ball
+                                                      # fills its box, and measuring a scatter costs the most
             wx0, wy0 = max(x0, x0 + (bx - pad) * step), max(y0, y0 + (by - pad) * step)
             wx1, wy1 = min(x1, x0 + (bx + bw + pad) * step), min(y1, y0 + (by + bh + pad) * step)
             covered += (wx1 - wx0) * (wy1 - wy0)
@@ -401,7 +407,7 @@ class BallDetector:
         lx0, ly0, lx1, ly1 = limit
         blobs, cut = [], (False, False, False, False)
         for grow in (16, 48, 0):
-            blobs, cut = self._measure(bgr, wx0, wy0, wx1, wy1)
+            blobs, cut = self._measure(bgr, wx0, wy0, wx1, wy1, self.max_per_window)
             cut = (cut[0] and wx0 > lx0, cut[1] and wy0 > ly0, cut[2] and wx1 < lx1, cut[3] and wy1 < ly1)
             if not any(cut) or grow == 0:
                 break
@@ -423,7 +429,7 @@ class BallDetector:
                 break
         return blobs
 
-    def _measure(self, bgr: np.ndarray, x0: int, y0: int, x1: int, y1: int):
+    def _measure(self, bgr: np.ndarray, x0: int, y0: int, x1: int, y1: int, max_candidates: int = 0):
         """Full-resolution search of one part of the frame.
 
         Returns (blobs, cut): blobs largest first, and for each side of the part
@@ -448,7 +454,7 @@ class BallDetector:
         keep = np.nonzero((areas >= max(1.0, min_area * 0.5)) & (areas <= max_area))[0]
         # Every patch gets judged, largest first: a far ball is small, and must
         # not be crowded out by bigger patches that are not balls.
-        order = keep[np.argsort(-areas[keep])][: self.max_candidates] + 1
+        order = keep[np.argsort(-areas[keep])][: max_candidates or self.max_candidates] + 1
         blobs = []
         vh, vw = raw.shape[:2]
         for i in order:

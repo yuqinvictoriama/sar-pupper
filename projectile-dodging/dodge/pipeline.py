@@ -170,6 +170,7 @@ class FramePipeline:
         self.two_stage = bool(self.det_cfg.get("decode_small_first", True))
         self.brightness = -1.0       # mean grey level of a recent picture (0-255), -1 before the first
         self.hot_frames = int(self.det_cfg.get("full_decode_frames", 6))
+        self.max_measured = int(self.det_cfg.get("max_measured", 12))
         self._hot = 0                # pictures still to be decoded in full straight away
 
     def set_hint(self, hint) -> None:
@@ -240,7 +241,9 @@ class FramePipeline:
             blobs, n_still = self.still.filter(t, det.detect(full()))
         else:
             moving, n_still = self.still.filter(t, candidates)
-            blobs = det.measure_candidates(full(), moving) if moving else []
+            # Measuring a place at full size costs about a millisecond on the Pi. In a speckled picture
+            # only the places with most colour are measured: a ball near enough to matter is among them.
+            blobs = det.measure_candidates(full(), moving[: self.max_measured]) if moving else []
         if blobs:
             self._hot = self.hot_frames
         return blobs, n_still

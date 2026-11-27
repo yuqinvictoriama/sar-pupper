@@ -50,10 +50,10 @@ cameras:
     # tools/tune_exposure.py finds exposure, gain and white balance for the room and writes config/calib/exposure.yaml.
     # wb_temperature: a fixed colour temperature in kelvin, or auto. controls: any other v4l2-ctl control by name, e.g. {gamma: 120}.
     capture: {width: 1280, height: 720, fps: 120, exposure_100us: 30, gain: null, auto_exposure: false, wb_temperature: 4600, controls: {}}
-    # Frames looked at per second. Measured on the Pupper (2026-11-26): at 60 for both rear cameras the Pi could not
-    # keep up and every camera fell to about 4 a second. Raise it only while robot/watch.sh shows each camera
-    # reaching this rate with "cpu" well under the time between frames (33 ms at 30).
-    max_process_fps: 30
+    # Most frames looked at per second. The camera delivers about 43 a second on the Pupper (it is asked for more),
+    # and a limit of 30 then means every second frame, 21 a second. 45 takes every frame it delivers; the camera's
+    # process simply skips frames while it is busy, so a limit above what the Pi manages costs no delay.
+    max_process_fps: 45
     model: pinhole
     intrinsics: {hfov_deg: 120.0, width: 1280, height: 720}   # replaced by tools/calibrate_camera.py
     extrinsics: {x: 0.0450, y: 0.0315, z: 0.1521, yaw_deg: 122.5, pitch_deg: 0.0, roll_deg: 0.0}
@@ -70,7 +70,7 @@ cameras:
     source: v4l2
     device: ""
     capture: {width: 1280, height: 720, fps: 120, exposure_100us: 30, gain: null, auto_exposure: false, wb_temperature: 4600, controls: {}}
-    max_process_fps: 30
+    max_process_fps: 45
     model: pinhole
     intrinsics: {hfov_deg: 120.0, width: 1280, height: 720}
     extrinsics: {x: 0.0450, y: -0.0315, z: 0.1521, yaw_deg: -122.5, pitch_deg: 0.0, roll_deg: 0.0}
@@ -109,6 +109,10 @@ detector:
   coarse_step: 2
   coarse_min_px: 60000     # search areas smaller than this (the region around a tracked ball) are done directly
   max_places: 60           # a coarse search hands on at most this many places, the ones with most colour first
+  max_measured: 12         # ... of which, once the still ones are left out, at most this many are measured per picture
+  sparse_min_px: 600       # a place whose box covers at least this many pixels and is less than sparse_fill full of
+  sparse_fill: 0.2         # colour is a scatter of specks, not a ball, and is not looked at further
+  max_per_window: 8        # patches judged within one place, largest first
   decode_small_first: true # decode each JPEG at 1/coarse_step size first (a third of the cost) and decode the full
                            # picture only when that shows ball colour somewhere it has not been sitting all along
   full_decode_frames: 6    # ... and after a picture that showed something, decode this many in full straight away
