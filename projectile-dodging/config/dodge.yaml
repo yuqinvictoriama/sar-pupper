@@ -185,7 +185,11 @@ fsm:
 node:
   cmd_topic: /dodge_cmd_vel
   cmd_rate_hz: 100.0
-  opencv_threads: 1        # OpenCV worker threads; the cameras already run one thread each
+  camera_processes: true   # each camera is captured, decoded and searched in a process of its own (one core each),
+                           # so no camera waits for another or for the node. false = threads of the node, as before
+                           # 2026-11-26 (then the cameras queue behind each other: far slower on the Pupper)
+  opencv_threads: 1        # OpenCV worker threads per camera; the cameras already run one process each
+  imu_rate_hz: 100.0       # IMU samples used per second; the rest are let go on arrival (0 = use every one)
   imu_topic: /imu_sensor_broadcaster/imu
   estop_topic: /emergency_stop
   free_space_topic: /free_space      # std_msgs/Float32MultiArray: clearance (m) per equal sector, starting at straight ahead, counter-clockwise

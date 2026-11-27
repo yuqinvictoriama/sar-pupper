@@ -9,6 +9,10 @@ Cameras in, velocity commands out:
     two ELP USB cameras, opened directly                                  ├─> DodgeCore ─> /dodge_cmd_vel
     /imu_sensor_broadcaster/imu                                           ┘                (into cmd_vel_mux)
 
+Each camera is captured, decoded and searched for the ball in a process of its
+own (robot/camera_worker.py); this process gets only what they found, keeps the
+track and decides. So no camera waits for another, or for anything here.
+
 It also publishes /dodge/state (JSON, 5 Hz) and /dodge/event (JSON, one per
 dodge), offers /dodge/arm (std_srvs/SetBool), and keeps the throw recorder:
 every dodge, every throw it saw but did not dodge, and every manual mark (a
@@ -28,14 +32,12 @@ import sys
 import threading
 import time
 
-import cv2
-import numpy as np
 import rclpy
 from controller_manager_msgs.srv import ListControllers
 from geometry_msgs.msg import Twist
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from sensor_msgs.msg import CompressedImage, Imu
+from sensor_msgs.msg import Imu
 from std_msgs.msg import Empty, Float32MultiArray, String
 from std_srvs.srv import SetBool
 
@@ -46,9 +48,8 @@ sys.path.insert(0, HERE)
 
 from dodge.config import enabled_cameras, load_config  # noqa: E402
 from dodge.core import DodgeCore  # noqa: E402
-from dodge.detect import BallDetector  # noqa: E402
 from dodge.recording import RingRecorder  # noqa: E402
-from usb_camera import UsbCamera  # noqa: E402
+from camera_worker import CameraFarm  # noqa: E402
 
 
 def stamp_to_sec(stamp) -> float:
@@ -65,31 +66,14 @@ class DodgeNode(Node):
 
         self.cfg = load_config(self.get_parameter("config").value or None)
         ncfg = self.cfg["node"]
-        # Each camera already has a thread of its own. Left alone, OpenCV also splits every
-        # operation across all the cores, and three cameras' worth of that fight each other
-        # and the walking controller for the Pi's four cores.
-        cv2.setNumThreads(int(ncfg.get("opencv_threads", 1)))
         only = [c.strip() for c in str(self.get_parameter("cameras").value).split(",") if c.strip()]
         if only:
             for name, cam in self.cfg["cameras"].items():
                 cam["enabled"] = cam.get("enabled", True) and name in only
         self.cam_cfgs = enabled_cameras(self.cfg)
         self.core = DodgeCore(self.cfg, armed=bool(self.get_parameter("armed").value))
-        self.det_cfg = self.cfg["detector"]
-        self.detectors = {}
-        for name, cam in self.cam_cfgs.items():
-            mask = None
-            mask_file = cam.get("mask_file")
-            if mask_file:
-                path = mask_file if os.path.isabs(mask_file) else os.path.join(ROOT, mask_file)
-                mask = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-                if mask is None:
-                    self.get_logger().warning("%s: mask file %s could not be read" % (name, path))
-            self.detectors[name] = BallDetector.for_camera(cam, self.det_cfg, mask)
-        self.roi_tracking = bool(self.det_cfg.get("roi_tracking", True))
-        self.full_every = max(1, int(self.det_cfg.get("full_frame_every", 3)))
-        self.frame_no = {name: 0 for name in self.cam_cfgs}
-        self.cam_stats = {name: {"frames": 0, "blobs": 0, "latency": 0.0, "proc_ms": 0.0, "last": 0.0}
+        self.cam_stats = {name: {"frames": 0, "blobs": 0, "latency": 0.0, "proc_ms": 0.0, "decode_ms": 0.0,
+                                 "detect_ms": 0.0, "wait_ms": 0.0, "last": 0.0}
                           for name in self.cam_cfgs}
         self.stats_lock = threading.Lock()
 
@@ -121,6 +105,11 @@ class DodgeNode(Node):
         self.create_subscription(Float32MultiArray, ncfg.get("free_space_topic", "/free_space"), self.on_free_space, 5)
         self.free_space_time = 0.0
         self.imu_seen = 0.0
+        # The IMU can arrive several hundred times a second; the tracker needs the body's attitude at
+        # camera rate. Samples in between are let go before they cost anything.
+        imu_rate = float(ncfg.get("imu_rate_hz", 100.0) or 0.0)
+        self.imu_gap = 0.9 / imu_rate if imu_rate > 0 else 0.0
+        self.imu_used = 0.0
 
         self.walking = set(ncfg.get("walking_controllers", []))
         self.require_controller = bool(ncfg.get("require_active_controller", True))
@@ -130,30 +119,12 @@ class DodgeNode(Node):
             self.core.set_can_dodge(False, "controller state not known yet")
 
         # ---- cameras
-        self.usb = []
-        self.usb_by_name = {}
-        self.fisheye_name = None
-        self.fisheye_msg = None
-        self.fisheye_event = threading.Event()
         self.running = True
-        for name, cam in self.cam_cfgs.items():
-            src = cam.get("source")
-            if src == "v4l2":
-                if not cam.get("device"):
-                    self.get_logger().error(
-                        "%s has no device set: run tools/find_cameras.py and put the path in config/calib. Skipping it." % name)
-                    continue
-                cam_thread = UsbCamera(name, cam, self.on_usb_frame, log=lambda m: self.get_logger().info(m))
-                cam_thread.start()
-                self.usb.append(cam_thread)
-                self.usb_by_name[name] = cam_thread
-            elif src == "ros_compressed":
-                self.fisheye_name = name
-                self.create_subscription(CompressedImage, cam.get("topic", "/camera/image_raw/compressed"),
-                                         self.on_fisheye_msg, 1)
-                threading.Thread(target=self.fisheye_worker, daemon=True, name="fisheye").start()
-            else:
-                self.get_logger().error("%s: unknown source %r" % (name, src))
+        self.farm = CameraFarm(self.cfg, list(self.cam_cfgs), self.on_frame_result,
+                               log=lambda m: self.get_logger().info(str(m)), keep_jpeg=self.record_events,
+                               processes=bool(ncfg.get("camera_processes", True)), ros_node=self,
+                               opencv_threads=int(ncfg.get("opencv_threads", 1)))
+        self.farm.start()
 
         self.create_timer(1.0 / float(ncfg.get("cmd_rate_hz", 100.0)), self.on_cmd_timer)
         self.create_timer(0.2, self.on_status_timer)
@@ -162,37 +133,27 @@ class DodgeNode(Node):
             ", ".join(self.cam_cfgs), "ARMED - the robot will move" if self.core.armed else "not armed (dry run)"))
 
     # ------------------------------------------------------------------ frames
-    def process_frame(self, name: str, t_frame: float, bgr, jpeg) -> None:
-        t0 = time.time()
-        t_raw = t_frame                      # recordings keep the camera's own stamp
-        t_frame += float(self.cam_cfgs[name].get("time_offset_s", 0.0))
-        size = (bgr.shape[1], bgr.shape[0])
-        det = self.detectors[name]
-        self.frame_no[name] += 1
-        blobs = None
-        roi = False
-        if self.roi_tracking and self.frame_no[name] % self.full_every != 0:
-            pred = self.core.predicted_pixel(name, t_frame, size)
-            if pred is not None:
-                u, v, half = pred
-                blobs = det.detect(bgr, roi=(u - half, v - half, u + half, v + half))
-                roi = True
-                if not blobs:
-                    blobs = None          # not where expected: look everywhere
-                    roi = False
-        if blobs is None:
-            blobs = det.detect(bgr)
-        started = self.core.process_blobs(name, t_frame, blobs, time.time(), size)
+    def on_frame_result(self, res, jpeg) -> None:
+        """One picture has been searched (by its camera's process): feed what was found to the tracker.
+
+        Called from one thread per camera. res is a dodge.pipeline.FrameResult.
+        """
+        name = res.cam
+        t_in = time.time()
+        started = self.core.process_blobs(name, res.t, res.blobs, t_in, res.size)
         if started:
             self.publish_command()        # do not wait for the timer
+        self.farm.set_hint(self.core.track_hint())
         now = time.time()
+        core_ms = (now - t_in) * 1000.0
         if self.record_events:
-            rec = {"k": "f", "cam": name, "t": round(t_frame, 4), "raw": round(t_raw, 4), "done": round(now, 4),
-                   "ms": round((now - t0) * 1000.0, 1), "size": [size[0], size[1]]}
-            if roi:
+            rec = {"k": "f", "cam": name, "t": round(res.t, 4), "raw": round(res.raw, 4), "done": round(now, 4),
+                   "ms": round(res.detect_ms + core_ms, 1), "dec": round(res.decode_ms, 1),
+                   "start": round(res.start, 4), "size": [res.size[0], res.size[1]]}
+            if res.roi:
                 rec["roi"] = 1
-            if blobs:
-                rec["blobs"] = [[round(b.u, 1), round(b.v, 1), b.w, b.h] for b in blobs]
+            if res.blobs:
+                rec["blobs"] = [[round(b.u, 1), round(b.v, 1), b.w, b.h] for b in res.blobs]
             state = self.core.trace_state()
             if state is not None:
                 rec["core"] = state
@@ -200,43 +161,15 @@ class DodgeNode(Node):
         with self.stats_lock:
             s = self.cam_stats[name]
             s["frames"] += 1
-            s["blobs"] += len(blobs)
-            s["latency"] += 0.1 * ((now - t_frame) - s["latency"])
-            s["proc_ms"] += 0.1 * ((now - t0) * 1000.0 - s["proc_ms"])
+            s["blobs"] += len(res.blobs)
+            s["latency"] += 0.1 * ((now - res.t) - s["latency"])
+            s["proc_ms"] += 0.1 * (res.decode_ms + res.detect_ms + core_ms - s["proc_ms"])
+            s["decode_ms"] += 0.1 * (res.decode_ms - s["decode_ms"])
+            s["detect_ms"] += 0.1 * (res.detect_ms - s["detect_ms"])
+            s["wait_ms"] += 0.1 * ((t_in - res.done) * 1000.0 - s["wait_ms"])     # on its way from the camera's process
             s["last"] = now
         if self.record_events and jpeg is not None:
-            self.ring.add_frame(name, t_raw, jpeg)
-
-    def on_usb_frame(self, name: str, t_capture: float, jpeg, bgr) -> None:
-        try:
-            self.process_frame(name, t_capture, bgr, jpeg)
-        except Exception as exc:
-            self.get_logger().error("%s: frame processing failed: %r" % (name, exc), throttle_duration_sec=2.0)
-
-    def on_fisheye_msg(self, msg: CompressedImage) -> None:
-        self.fisheye_msg = (msg, time.time())      # keep only the newest; decoding happens in the worker
-        self.fisheye_event.set()
-
-    def fisheye_worker(self) -> None:
-        while self.running:
-            if not self.fisheye_event.wait(timeout=0.5):
-                continue
-            self.fisheye_event.clear()
-            item, self.fisheye_msg = self.fisheye_msg, None
-            if item is None:
-                continue
-            msg, t_rx = item
-            try:
-                data = np.frombuffer(msg.data, dtype=np.uint8)
-                bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
-                if bgr is None:
-                    continue
-                t = stamp_to_sec(msg.header.stamp)
-                if abs(t_rx - t) > 2.0:            # stamp missing or on another clock
-                    t = t_rx
-                self.process_frame(self.fisheye_name, t, bgr, data if self.record_events else None)
-            except Exception as exc:
-                self.get_logger().error("fisheye: frame processing failed: %r" % (exc,), throttle_duration_sec=2.0)
+            self.ring.add_frame(name, res.raw, jpeg)
 
     # ------------------------------------------------------------------ other inputs
     def on_imu(self, msg: Imu) -> None:
@@ -244,6 +177,10 @@ class DodgeNode(Node):
         now = time.time()
         if abs(now - t) > 2.0:
             t = now
+        if now - self.imu_used < self.imu_gap:
+            self.imu_seen = now
+            return
+        self.imu_used = now
         q, w, a = msg.orientation, msg.angular_velocity, msg.linear_acceleration
         quat, gyro = (q.w, q.x, q.y, q.z), (w.x, w.y, w.z)
         self.core.set_imu(t, quat, gyro)
@@ -392,13 +329,16 @@ class DodgeNode(Node):
             for name, s in self.cam_stats.items():
                 s["fps"] = s.get("fps", 0.0) + 0.3 * (s["frames"] / 0.2 - s.get("fps", 0.0))
                 cams[name] = {"fps": round(s["fps"], 1), "latency_ms": round(s["latency"] * 1000.0, 1),
-                              "proc_ms": round(s["proc_ms"], 1), "alive": (now - s["last"]) < 1.0,
-                              "blobs": s["blobs"]}
-                usb = self.usb_by_name.get(name)
-                if usb is not None:
-                    cams[name]["brightness"] = round(usb.brightness, 0)
-                    if usb.problem:
-                        cams[name]["problem"] = usb.problem
+                              "proc_ms": round(s["proc_ms"], 1), "decode_ms": round(s["decode_ms"], 1),
+                              "detect_ms": round(s["detect_ms"], 1), "wait_ms": round(s["wait_ms"], 1),
+                              "alive": (now - s["last"]) < 1.0, "blobs": s["blobs"]}
+                extra = self.farm.status(name)
+                if "brightness" in extra:
+                    cams[name]["brightness"] = extra["brightness"]
+                if extra.get("fps_in"):
+                    cams[name]["fps_in"] = extra["fps_in"]
+                if extra.get("problem"):
+                    cams[name]["problem"] = extra["problem"]
                 s["frames"] = 0
                 s["blobs"] = 0
         status["cameras"] = cams
@@ -408,10 +348,7 @@ class DodgeNode(Node):
 
     def shutdown(self) -> None:
         self.running = False
-        for cam in self.usb:
-            cam.stop()
-        for cam in self.usb:
-            cam.close(2.0)        # released before Python exits; exiting mid-capture aborts the process
+        self.farm.stop()          # cameras released before Python exits; exiting mid-capture aborts the process
 
 
 def main() -> None:

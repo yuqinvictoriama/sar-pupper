@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Optional replacement for the monorepo's cmd_vel_mux (plan decision D2).
+"""Replacement for the monorepo's cmd_vel_mux (plan decision D2). The default since 2026-11-26.
 
 Same rules as the original: inputs in priority order, the joystick counts only
 outside its deadband, a source that goes quiet for timeout_ms is dropped, the
@@ -7,9 +7,11 @@ highest-priority live source drives /cmd_vel. The one difference: a message
 from the active source is forwarded the moment it arrives instead of on the
 next 50 ms tick, which takes up to 50 ms off the dodge reaction time.
 
-Use it only after tools/measure_latency.py shows the 50 ms matters:
+Measured on the Pupper (2026-11-26, two armed throws): the monorepo mux passed
+the dodge command on 40 and 43 ms after it was sent, a third to a half of the
+whole delay between deciding and the body moving. To go back to the monorepo mux:
 
-    ros2 launch robot/sar_dodge.launch.py fast_mux:=true
+    ros2 launch robot/sar_dodge.launch.py fast_mux:=false      (robot/start.sh --slow-mux)
 """
 from __future__ import annotations
 

@@ -1,8 +1,8 @@
 """USB (V4L2) camera capture for the two ELP cameras.
 
-One thread per camera. It asks the camera for MJPG at the configured mode,
-fixes exposure and white balance (so the ball's colour does not drift), and
-hands every frame it is asked to process to a callback:
+It asks the camera for MJPG at the configured mode, fixes exposure and white
+balance (so the ball's colour does not drift), and hands the newest frame to a
+callback each time the callback is free (see UsbCamera for how it stays fresh):
 
     callback(name, t_capture, jpeg_bytes_or_None, bgr_frame)
 
@@ -315,6 +315,18 @@ def read_bgr(cap, raw: bool):
 
 
 class UsbCamera(threading.Thread):
+    """One USB camera. Two threads, so that the picture being looked at is always a fresh one:
+
+    - the capture thread (this one) takes every frame off the camera the moment it arrives, so
+      nothing waits in the camera's queue and goes stale;
+    - the work thread asks for "the next frame", decodes it and hands it to the callback.
+
+    While the callback is busy the frames that arrive are let go. The frame it gets next is the
+    first one captured after it came back, never one that had been waiting. (Before 2026-11-26
+    one thread did both: every frame that took long to process left a queue of old frames behind
+    it, and the node was always looking about one processing time into the past.)
+    """
+
     def __init__(self, name: str, cam_cfg: dict, callback, log=print):
         super().__init__(daemon=True, name="usb-" + name)
         self.cam_name = name
@@ -329,10 +341,17 @@ class UsbCamera(threading.Thread):
         self.size = (0, 0)
         self.fps_in = 0.0          # frames arriving from the camera per second
         self.fps_out = 0.0         # frames handed to the callback per second
+        self.decode_ms = 0.0       # time the latest frame took to decode
         self.brightness = -1.0     # mean grey level of the latest frame (0-255), -1 before the first
         self.connected = False
         self.problem = ""          # why it is not delivering, when it is not
         self._warned_dark = False
+        self._want = threading.Event()     # the work thread is free and wants the next frame
+        self._have = threading.Event()     # a frame is waiting in _slot
+        self._slot = None                  # (t_capture wall clock, buffer)
+        self._capturing = False
+        self._n_out = 0
+        self._frame = None                 # latest decoded frame, for the brightness check
 
     def stop(self) -> None:
         self.running = False
@@ -365,12 +384,22 @@ class UsbCamera(threading.Thread):
             self.log("%s: opened %s %dx%d @ %.0f fps (%s)" % (
                 self.cam_name, self.device, cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
                 cap.get(cv2.CAP_PROP_FPS), "camera JPEG passed through" if self.raw else "decoded by OpenCV"))
+            self._slot = None
+            self._have.clear()
+            self._want.clear()
+            self._capturing = True
+            worker = threading.Thread(target=self._work, daemon=True, name="usb-work-" + self.cam_name)
+            worker.start()
             try:
                 self._loop(cap)
             except Exception as exc:  # a camera glitch must not take the node down
                 self.problem = "capture error: %r" % (exc,)
                 self.log("%s: %s" % (self.cam_name, self.problem))
             finally:
+                self._capturing = False
+                self._have.set()                 # wake the work thread so it can finish
+                if threading.current_thread() is not worker:
+                    worker.join(3.0)
                 cap.release()
                 self.connected = False
             if self.running:
@@ -382,12 +411,12 @@ class UsbCamera(threading.Thread):
             time.sleep(0.05)
 
     def _loop(self, cap) -> None:
+        """Capture thread: take every frame off the camera at once; keep one only when the work thread wants it."""
         mono_to_wall = time.time() - time.monotonic()
         last_out = 0.0
         fails = 0
-        n_in = n_out = 0
+        n_in = 0
         window = time.monotonic()
-        frame = None
         while self.running:
             if not cap.grab():
                 fails += 1
@@ -402,29 +431,54 @@ class UsbCamera(threading.Thread):
             t_cap = stamp if (0.0 <= now_mono - stamp < 0.5) else now_mono
             n_in += 1
             due = self.max_fps <= 0 or (t_cap - last_out) >= (1.0 / self.max_fps) * 0.9
-            if due:
+            if due and self._want.is_set():
                 ok, buf = cap.retrieve()
                 if ok and buf is not None:
-                    jpeg = None
-                    if self.raw:
-                        jpeg = buf.reshape(-1)
-                        frame = cv2.imdecode(jpeg, cv2.IMREAD_COLOR)
-                    else:
-                        frame = buf
-                    if frame is not None and frame.ndim == 3:
-                        last_out = t_cap
-                        n_out += 1
-                        self.size = (frame.shape[1], frame.shape[0])
-                        self.callback(self.cam_name, t_cap + mono_to_wall, jpeg, frame)
+                    last_out = t_cap
+                    self._slot = (t_cap + mono_to_wall, buf)
+                    self._want.clear()
+                    self._have.set()
             if now_mono - window >= 1.0:
                 self.fps_in = n_in / (now_mono - window)
-                self.fps_out = n_out / (now_mono - window)
-                n_in = n_out = 0
+                self.fps_out = self._n_out / (now_mono - window)
+                n_in = self._n_out = 0
                 window = now_mono
                 mono_to_wall = time.time() - time.monotonic()
+                frame = self._frame
                 if frame is not None and frame.ndim == 3:
                     self.brightness = float(frame[::16, ::16].mean())
                     if self.brightness < DARK_MEAN and not self._warned_dark:
                         self._warned_dark = True
                         self.log("%s: the picture is very dark (average %.0f of 255): the ball will not be found. "
                                  "Run  python3 tools/tune_exposure.py %s" % (self.cam_name, self.brightness, self.cam_name))
+
+    def _work(self) -> None:
+        """Work thread: ask for the next frame, decode it, hand it to the callback."""
+        while self.running and self._capturing:
+            self._want.set()
+            if not self._have.wait(0.2):
+                continue
+            self._have.clear()
+            item, self._slot = self._slot, None
+            if item is None:
+                continue
+            t_wall, buf = item
+            try:
+                jpeg = None
+                if self.raw:
+                    t0 = time.monotonic()
+                    jpeg = buf.reshape(-1)
+                    frame = cv2.imdecode(jpeg, cv2.IMREAD_COLOR)
+                    self.decode_ms = (time.monotonic() - t0) * 1000.0
+                else:
+                    frame = buf
+                if frame is None or frame.ndim != 3:
+                    continue
+                self._frame = frame
+                self._n_out += 1
+                self.size = (frame.shape[1], frame.shape[0])
+                self.callback(self.cam_name, t_wall, jpeg, frame)
+            except Exception as exc:      # one bad frame must not end the camera
+                self.problem = "frame error: %r" % (exc,)
+                self.log("%s: %s" % (self.cam_name, self.problem))
+                time.sleep(0.2)

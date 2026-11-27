@@ -16,9 +16,10 @@ server (robot/start.sh here does both for you).
 Arguments:
     armed:=false          let the dodge node move the robot
     gemini_dir:=~/gemini_pupper
-    follower:=true        start the person follower (set false to leave the Hailo free)
-    fast_mux:=false       use robot/fast_mux.py instead of the monorepo mux
+    follower:=false       start the person follower too (it also reads and decodes the fisheye pictures)
+    fast_mux:=true        robot/fast_mux.py (passes a command on at once); false = the monorepo mux (50 ms tick)
     fisheye_fps:=0        ask the fisheye for this frame rate (0 = leave it alone)
+    fisheye_jpeg_quality:=85  JPEG quality of the fisheye pictures (the camera node's own is 95; 0 = leave it alone)
     fisheye_exposure_us:=0  fix the fisheye exposure (0 = automatic)
     config:=''            another dodge.yaml
     dodge:=true           false = everything except the dodge node (frees the USB cameras for the tools)
@@ -69,6 +70,10 @@ def fisheye_settings(context):
     if fps > 0:
         us = int(round(1e6 / fps))
         cmds.append("ros2 param set /camera FrameDurationLimits '[%d, %d]'" % (us, us))
+    quality = int(float(LaunchConfiguration("fisheye_jpeg_quality").perform(context) or 0))
+    if quality > 0:
+        # Smaller pictures: less to encode in the camera node, to send, and to decode in the dodge node.
+        cmds.append("ros2 param set /camera jpeg_quality %d" % max(40, min(100, quality)))
     exposure = int(float(LaunchConfiguration("fisheye_exposure_us").perform(context) or 0))
     if exposure > 0:
         cmds.append("ros2 param set /camera AeEnable false")
@@ -127,8 +132,9 @@ def generate_launch_description():
         DeclareLaunchArgument("armed", default_value="false",
                               description="true lets the dodge node move the robot; false is a dry run"),
         DeclareLaunchArgument("gemini_dir", default_value=os.environ.get("GEMINI_PUPPER_DIR", "~/gemini_pupper")),
-        DeclareLaunchArgument("follower", default_value="true"),
-        DeclareLaunchArgument("fast_mux", default_value="false"),
+        DeclareLaunchArgument("follower", default_value="false"),
+        DeclareLaunchArgument("fast_mux", default_value="true"),
+        DeclareLaunchArgument("fisheye_jpeg_quality", default_value="85"),
         DeclareLaunchArgument("fisheye_fps", default_value="0"),
         DeclareLaunchArgument("fisheye_exposure_us", default_value="0"),
         DeclareLaunchArgument("config", default_value=""),

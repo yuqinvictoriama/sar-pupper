@@ -194,6 +194,7 @@ class BallDetector:
         self.image_circle = dict(image_circle) if image_circle else None
         self.ref_size = tuple(ref_size) if ref_size else None
         self._ignore_cache = {}
+        self._box_cache = {}
         self.min_area = float(det.get("min_area_px", 10))
         # far_ball_px: how wide the ball is (in a ref_size frame) at the greatest
         # range it can be thrown from. Patches clearly smaller than that cannot
@@ -245,6 +246,19 @@ class BallDetector:
             self._ignore_cache[key] = m
         return self._ignore_cache[key]
 
+    def search_box(self, width: int, height: int):
+        """(x0, y0, x1, y1): the part of a frame of this size worth searching (the lens's usable disc, or all of it)."""
+        key = (width, height)
+        if key not in self._box_cache:
+            c = circle_params(self.image_circle, self.ref_size, width, height)
+            if c is None:
+                self._box_cache[key] = (0, 0, width, height)
+            else:
+                cx, cy, r = c
+                self._box_cache[key] = (max(0, int(cx - r) - 1), max(0, int(cy - r) - 1),
+                                        min(width, int(cx + r) + 2), min(height, int(cy + r) + 2))
+        return self._box_cache[key]
+
     def cover(self, bgr: np.ndarray) -> float:
         """Share of the picture that counts as ball-coloured once speckle is removed."""
         m = self.mask(bgr)
@@ -267,10 +281,11 @@ class BallDetector:
     def detect(self, bgr: np.ndarray, roi=None) -> list:
         """Blobs in the frame, largest first. roi = (x0, y0, x1, y1) limits the search."""
         full_h, full_w = bgr.shape[:2]
-        x0, y0, x1, y1 = 0, 0, full_w, full_h
+        # A fisheye lights only a disc in the middle of its frame: the dark corners are never searched.
+        x0, y0, x1, y1 = self.search_box(full_w, full_h)
         if roi is not None:
-            x0, y0 = max(0, int(roi[0])), max(0, int(roi[1]))
-            x1, y1 = min(full_w, int(roi[2])), min(full_h, int(roi[3]))
+            x0, y0 = max(x0, int(roi[0])), max(y0, int(roi[1]))
+            x1, y1 = min(x1, int(roi[2])), min(y1, int(roi[3]))
             if x1 - x0 < 4 or y1 - y0 < 4:
                 return []
         self.balance.update(bgr)

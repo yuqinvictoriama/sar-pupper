@@ -23,7 +23,7 @@ from .camera_models import build_cameras
 from .escape import EscapePlanner, FreeSpace
 from .measure import measure_blobs
 from .threat import ThreatAssessor
-from .track import Tracker
+from .track import Tracker, accel
 
 
 class State(Enum):
@@ -43,6 +43,30 @@ def quat_to_rot(w: float, x: float, y: float, z: float) -> np.ndarray:
     return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
                      [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
                      [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def predict_pixel(camera, hint, t: float, det_cfg: dict):
+    """(u, v, half_size_px): where a tracked ball should appear in one camera's picture taken at time t.
+
+    hint is DodgeCore.track_hint(). The ball is flown along its arc from the time of the hint to t.
+    None when there is no hint or the ball is outside this camera's view.
+    """
+    if hint is None:
+        return None
+    x, t_track, R, drag_k = hint
+    dt = t - t_track
+    v = x[3:]
+    p_w = x[:3] + v * dt + 0.5 * accel(v, drag_k) * dt * dt
+    p_b = R.T @ p_w
+    uv, ok, _ = camera.project_base(p_b[None, :])
+    if not ok[0]:
+        return None
+    sr = camera.model.solid_angle_per_px(float(uv[0, 0]), float(uv[0, 1]))
+    if not (sr > 0):
+        return None
+    px_per_rad = 1.0 / math.sqrt(sr)
+    half = max(float(det_cfg.get("roi_min_px", 96)), math.radians(float(det_cfg.get("roi_half_deg", 14.0))) * px_per_rad)
+    return float(uv[0, 0]), float(uv[0, 1]), half
 
 
 class DodgeCore:
@@ -291,27 +315,20 @@ class DodgeCore:
             return out
 
     # ------------------------------------------------------------------ helpers for the node
-    def predicted_pixel(self, cam: str, t: float, size=None):
-        """(u, v, half_size_px) where the most urgent tracked ball should appear in this camera, or None."""
+    def track_hint(self):
+        """Where the most urgent tracked ball is, in a form any camera can turn into "look here" for its next
+        picture: (state, time of the state, body-to-world rotation, drag constant), or None when nothing
+        that is closing in is tracked. See predict_pixel."""
         with self.lock:
             tracks = [tr for tr in self.tracker.confirmed() if tr.closing_speed > 0.5]
             if not tracks:
                 return None
             tr = max(tracks, key=lambda k: k.closing_speed)
-            x, _P = self.tracker.predict_state(tr.x, tr.P, t - tr.t)
-            R = self.orientation(t)
-        camera = self.camera_for(cam, size)
-        p_b = R.T @ x[:3]
-        uv, ok, _ = camera.project_base(p_b[None, :])
-        if not ok[0]:
-            return None
-        det = self.cfg["detector"]
-        sr = camera.model.solid_angle_per_px(float(uv[0, 0]), float(uv[0, 1]))
-        if not (sr > 0):
-            return None
-        px_per_rad = 1.0 / math.sqrt(sr)
-        half = max(float(det.get("roi_min_px", 96)), math.radians(float(det.get("roi_half_deg", 14.0))) * px_per_rad)
-        return float(uv[0, 0]), float(uv[0, 1]), half
+            return tr.x.copy(), float(tr.t), self.orientation(None).copy(), float(self.tracker.drag_k)
+
+    def predicted_pixel(self, cam: str, t: float, size=None):
+        """(u, v, half_size_px) where the most urgent tracked ball should appear in this camera, or None."""
+        return predict_pixel(self.camera_for(cam, size), self.track_hint(), t, self.cfg["detector"])
 
     def trace_state(self):
         """What the core holds right now, for the throw recorder: None while nothing is tracked."""
