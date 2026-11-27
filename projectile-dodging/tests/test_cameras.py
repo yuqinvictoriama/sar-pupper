@@ -6,6 +6,7 @@ camera's capture and ball search running in a process of its own.
 from __future__ import annotations
 
 import copy
+import math
 import os
 import sys
 import tempfile
@@ -356,6 +357,49 @@ class ClutterTests(unittest.TestCase):
             self.assertEqual(cfg["cameras"]["fisheye"]["color"], CFG["cameras"]["fisheye"]["color"])
             self.assertEqual(cfg["cameras"]["fisheye"]["size_scale"], 1.05)
             self.assertEqual(cfg["cameras"]["elp_left"]["color"]["h_min"], 33)
+
+
+class LensModelTests(unittest.TestCase):
+    """The rear cameras' lens model, once tools/calibrate_camera.py has measured it."""
+
+    def test_pixels_out_to_the_edge_of_a_wide_lens_turn_into_the_right_rays(self):
+        from dodge.camera_models import Pinhole
+        f = 640.0 / math.tan(math.radians(60.0)) * 0.85
+        for dist in ([-0.05, 0, 0, 0, 0], [-0.25, 0.06, 0.001, -0.001, -0.006], [-0.3, 0.1, 0, 0, -0.015]):
+            m = Pinhole(f, f, 640, 360, 1280, 720, dist)
+            g = np.stack(np.meshgrid(np.linspace(0, 1279, 33), np.linspace(0, 719, 19)), -1).reshape(-1, 2)
+            rays, ok = m.unproject(g)
+            self.assertTrue(np.isfinite(rays).all())
+            self.assertGreater(ok.sum(), 0)
+            back, _ = m.project(rays[ok])
+            self.assertLess(float(np.abs(back - g[ok]).max()), 0.01, dist)
+
+    def test_beyond_where_the_fitted_polynomial_turns_back_nothing_is_trusted(self):
+        from dodge.camera_models import Pinhole
+        f = 640.0 / math.tan(math.radians(60.0))
+        m = Pinhole(f, f, 640, 360, 1280, 720, [-0.05, 0, 0, 0, 0])      # turns back at 2.58: inside the corners
+        _rays, ok = m.unproject(np.array([[640.0, 360.0], [2.0, 2.0]]))
+        self.assertEqual(ok.tolist(), [True, False])
+        _uv, ok = m.project(np.array([[3.0, 0.0, 1.0]]))
+        self.assertFalse(ok[0])
+
+    def test_the_calibration_tool_refuses_a_lens_fit_that_turns_back_inside_the_picture(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+        import calibrate_camera
+        f = 640.0 / math.tan(math.radians(60.0))
+        K = np.array([[f, 0, 640], [0, f, 360], [0, 0, 1]])
+        self.assertTrue(calibrate_camera.lens_folds(K, [-0.05, 0, 0, 0, 0], (1280, 720)))
+        self.assertFalse(calibrate_camera.lens_folds(K * np.array([[0.85], [0.85], [1]]), [-0.1, 0.01, 0, 0, 0], (1280, 720)))
+
+    def test_the_board_it_draws_is_one_opencv_finds(self):
+        import tempfile
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+        import calibrate_camera
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "board.png")
+            calibrate_camera.make_board(path, 9, 6)
+            found, _c = cv2.findChessboardCorners(cv2.imread(path, cv2.IMREAD_GRAYSCALE), (9, 6))
+        self.assertTrue(found)
 
 
 if __name__ == "__main__":

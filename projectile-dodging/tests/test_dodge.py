@@ -811,5 +811,124 @@ class BearingTests(unittest.TestCase):
         self.assertLess(abs(off.tau - good.tau), 0.2)
 
 
+class RearPairTests(unittest.TestCase):
+    """Straight behind, both rear cameras see the ball at the outer edge of their pictures, for a tenth of a
+    second or so. Their looks must come together as one ball (2026-11-27)."""
+
+    LEFT = np.array([0.045, 0.0315, 0.152])
+    RIGHT = np.array([0.045, -0.0315, 0.152])
+
+    def path(self, p0, v0, t):
+        return np.asarray(p0, float) + np.asarray(v0, float) * t + np.array([0.0, 0.0, -0.5 * 9.81 * t * t])
+
+    def meas(self, cam, p, range_factor=1.0, yaw_err_deg=0.0, top=False):
+        from dodge.measure import Measurement
+        lens = self.LEFT if cam == "elp_left" else self.RIGHT
+        d = p - lens
+        r = float(np.linalg.norm(d))
+        ray = d / r
+        if yaw_err_deg:
+            c, s_ = math.cos(math.radians(yaw_err_deg)), math.sin(math.radians(yaw_err_deg))
+            ray = np.array([c * ray[0] - s_ * ray[1], s_ * ray[0] + c * ray[1], ray[2]])
+        rm = r * range_factor
+        return Measurement(cam, lens.copy(), ray, 0.074 / rm, rm, 0.01, 0.02 * rm, False, near_top=top)
+
+    def test_a_lob_from_straight_behind_seen_by_both_cameras_in_turn_is_dodged(self):
+        # The cameras are not in step (their first looks 5 ms apart), and elp_right reads every range 25 %
+        # short (its own size calibration). Before 2026-11-27 these made two tracks, each too short to judge.
+        from dodge.core import DodgeCore
+        p0, v0 = BearingTests.lob(2.4, 179.0, 1.0)
+        core = DodgeCore(CFG, armed=True)
+        core.set_can_dodge(True)
+        looks = [(0.000, "elp_left"), (0.005, "elp_right"), (0.059, "elp_left"), (0.064, "elp_right")]
+        t0, fired = 50.0, None
+        for i, (dt, cam) in enumerate(looks):
+            m = self.meas(cam, self.path(p0, v0, dt), 0.75 if cam == "elp_right" else 1.0, top=i >= 2)
+            core.process_measurements(cam, t0 + dt, [m], t0 + dt)
+        for k in range(1, 30):
+            now = t0 + 0.064 + 0.016 * k
+            if core.process_measurements("fisheye", now, [], now) and fired is None:
+                fired = now - t0
+        tracks = [tr for tr in core.tracker.tracks if tr.hits >= 2]
+        self.assertEqual(len(tracks), 1, "both cameras' looks in one track")
+        self.assertEqual(tracks[0].cams, {"elp_left", "elp_right"})
+        self.assertIsNotNone(fired, "no dodge")
+        self.assertLess(fired, 0.3)
+
+    def test_the_gap_between_the_two_lenses_is_not_taken_for_sideways_motion(self):
+        # The lenses are 63 mm apart: at 1.5-2.4 m the same ball reads 1.5-2.4 degrees apart in azimuth.
+        from dodge.track import Track
+        p0, v0 = BearingTests.lob(2.4, 180.0, 1.0)
+        tr = None
+        for i, dt in enumerate((0.0, 0.03, 0.06, 0.09)):
+            cam = "elp_left" if i % 2 == 0 else "elp_right"
+            m = self.meas(cam, self.path(p0, v0, dt))
+            if tr is None:
+                tr = Track(10.0, m.point, np.eye(3) * 0.01, 7.0, cam, ray=m.ray, origin=m.origin, range_m=m.range_m)
+            else:
+                tr.remember(10.0 + dt, m.point, cam, ray=m.ray, origin=m.origin, range_m=m.range_m)
+        pooled = tr.hit_course(3, 0.04, pool=(("elp_left", "elp_right"),), offsets=False)
+        self.assertIsNotNone(pooled)
+        self.assertLess(abs(pooled["az_dot"]), 0.03)
+        self.assertAlmostEqual(9.81 / (2.0 * pooled["q_dot"]), 2.4, delta=0.3)
+
+    def test_a_degree_and_a_half_between_the_two_cameras_does_not_read_as_a_miss(self):
+        # Each lens has its own error, largest at the edge of its picture, where both see a ball straight
+        # behind. With two looks or more from a camera, the motion is read within each camera.
+        from dodge.track import Track
+        from dodge.threat import ThreatAssessor
+        p0, v0 = BearingTests.lob(2.4, 180.0, 1.0)
+        tr = None
+        for i, dt in enumerate((0.0, 0.02, 0.05, 0.07)):
+            cam = "elp_left" if i % 2 == 0 else "elp_right"
+            m = self.meas(cam, self.path(p0, v0, dt), yaw_err_deg=1.5 if cam == "elp_right" else 0.0)
+            if tr is None:
+                tr = Track(10.0, m.point, np.eye(3) * 0.01, 7.0, cam, ray=m.ray, origin=m.origin, range_m=m.range_m)
+            else:
+                tr.remember(10.0 + dt, m.point, cam, ray=m.ray, origin=m.origin, range_m=m.range_m)
+                tr.hits += 1
+                tr.t_last = 10.0 + dt
+        tr.confirmed = True
+        tr.climber = True
+        plain = tr.hit_course(3, 0.04, pool=(("elp_left", "elp_right"),), offsets=False)
+        within = tr.hit_course(3, 0.04, pool=(("elp_left", "elp_right"),))
+        self.assertGreater(abs(plain["az_dot"]), 0.15, "put together as they are, the offset looks like a turn")
+        self.assertLess(abs(within["az_dot"]), 0.03)
+
+        class Rear:
+            climber_cams = {"elp_left", "elp_right"}
+        th = ThreatAssessor(CFG["threat"], CFG["robot"], CFG["ball"]).assess(tr, 10.07, Rear())
+        self.assertTrue(th.is_threat, th.reason)
+
+    def test_only_the_rear_pair_gets_slack_in_range_when_matching(self):
+        from dodge.measure import Measurement
+        from dodge.track import Tracker
+        ray = np.array([-0.97, 0.05, 0.25]) / np.linalg.norm([-0.97, 0.05, 0.25])
+        tracker = Tracker(CFG["tracker"], CFG["ball"])
+        tracker.update(10.0, [Measurement("elp_left", self.LEFT.copy(), ray, 0.03, 2.4, 0.01, 0.05, False)])
+        tracker.update(10.03, [Measurement("elp_right", self.RIGHT.copy(), ray, 0.03, 1.8, 0.01, 0.04, False)])
+        self.assertEqual(len(tracker.tracks), 1, "the other rear camera's look, 25 % short, is the same ball")
+        tr = tracker.tracks[0]
+        self.assertFalse(tracker._crosses(tr, "elp_right"), "a camera the track already has: no slack")
+        tr.cams = {"fisheye"}
+        self.assertFalse(tracker._crosses(tr, "elp_left"), "fisheye and a rear camera: no slack")
+        tr.cams = {"elp_left"}
+        self.assertFalse(tracker._crosses(tr, "fisheye"))
+        self.assertTrue(tracker._crosses(tr, "elp_right"))
+
+    def test_leaving_the_top_of_a_rear_picture_counts_only_where_the_fisheye_cannot_see(self):
+        from dodge.track import Track
+        from dodge.threat import ThreatAssessor
+        assessor = ThreatAssessor(CFG["threat"], CFG["robot"], CFG["ball"])
+        for bearing, expect in ((95.0, False), (170.0, True)):
+            b = math.radians(bearing)
+            ray = np.array([math.cos(b), math.sin(b), 0.55])
+            ray /= np.linalg.norm(ray)
+            tr = Track(10.0, self.LEFT + 2.0 * ray, np.eye(3) * 0.01, 7.0, "elp_left", ray=ray, origin=self.LEFT,
+                       range_m=2.0, near_top=True)
+            th = assessor.assess(tr, 10.2, None)
+            self.assertEqual(th.left_view, expect, bearing)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -70,6 +70,7 @@ class ThreatAssessor:
         self.min_climb = float(cfg.get("min_climb", 0.02))
         self.min_span = float(cfg.get("min_span_s", 0.045))
         self.two_look_wait = float(cfg.get("two_look_wait_s", 0.07))
+        self.unseen_min_bearing = float(cfg.get("unseen_fire_min_bearing_deg", 110.0))
         self.pool = tuple(tuple(g) for g in cfg.get("bearing_pool", []))
         self.bearing_max_closing = float(cfg.get("bearing_max_closing_speed", 7.0))
         self.aim_z = 0.0          # height the ball is taken to be aimed at: the middle of the body (base_link origin)
@@ -101,26 +102,41 @@ class ThreatAssessor:
             R_wb = np.eye(3)
         th.unseen_s = t_now - track.t_last
         th.left_view = bool(getattr(track, "left_through_top", False))
+        if th.left_view and track.history:
+            # Only where no other camera sees above the rear cameras' ceiling: up to about 100 degrees
+            # either side of the nose the fisheye does, and a ball that is really coming stays in its
+            # picture. (A ball at 95 degrees leaving the top of elp_left set off a dodge in replay.)
+            ray_b = R_wb.T @ track.history[-1][4]
+            th.left_view = abs(math.degrees(math.atan2(ray_b[1], ray_b[0]))) >= self.unseen_min_bearing
         # A ball the rear cameras saw twice, climbing, and then not again went up out of their sight
         # (see Tracker._climbs): it is judged on those two looks once a third is overdue.
-        two = bool(getattr(track, "climber", False)) and track.hits == 2 and th.unseen_s >= self.two_look_wait
-        if not two and (not track.confirmed or track.hits < self.min_hits):
+        # Straight behind, the two rear cameras' looks at such a ball are put together: each camera alone
+        # often has only one or two before the ball is out of sight.
+        climber = bool(getattr(track, "climber", False))
+        pool = self.pool
+        rear = tuple(sorted(getattr(tracker, "climber_cams", ()) or ()))
+        if climber and rear and rear not in pool:
+            pool = pool + (rear,)
+        full = track.confirmed and track.hits >= self.min_hits
+        two = climber and th.unseen_s >= self.two_look_wait
+        if not full and not two:
             th.reason = "too few detections"
             return th
-        if track.age < (0.02 if two else self.min_age):
-            th.reason = "too new"
-            return th
-        looks = 2 if two else 3
-        span = 0.02 if two else self.min_span
-        hc = track.hit_course(min_looks=looks, min_span=span, pool=self.pool)
+        hc = None
+        looks, span = 3, self.min_span
+        if full and track.age >= self.min_age:
+            hc = track.hit_course(min_looks=looks, min_span=span, pool=pool)
+        if hc is None and two and track.age >= 0.02:
+            looks, span = 2, 0.02
+            hc = track.hit_course(min_looks=looks, min_span=span, pool=pool)
         if hc is None:
-            th.reason = "not yet seen three times by one camera"
+            th.reason = "too new" if track.age < (0.02 if two else self.min_age) else "not yet seen three times by one camera"
             return th
         drop = max(0.0, float(hc["origin"][2]) - self.aim_z)
         if drop > 0.0 and hc["q_dot"] >= G / (4.0 * self.bearing_max_closing) and hc["q_dot"] * hc["span"] >= 0.5 * self.min_climb:
             # second pass: the same looks, as seen from the point on the body the ball is taken to be aimed at
             v0 = G / (2.0 * hc["q_dot"])
-            hc = track.hit_course(min_looks=looks, min_span=span, pool=self.pool, drop=drop, arrive=(v0, float(np.median(hc["ts"] + hc["r_h"] / v0))))
+            hc = track.hit_course(min_looks=looks, min_span=span, pool=pool, drop=drop, arrive=(v0, float(np.median(hc["ts"] + hc["r_h"] / v0))))
         q_dot, az_dot = hc["q_dot"], hc["az_dot"]
         r_mid = float(np.median(hc["r_h"]))
         th.range_m = r_mid * math.sqrt(1.0 + hc["q"] ** 2)

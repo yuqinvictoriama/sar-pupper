@@ -94,11 +94,29 @@ class Pinhole(CameraModel):
         d = list(dist or [])
         d = d + [0.0] * (5 - len(d))
         self.dist = [float(v) for v in d[:5]]
+        self.r_lim, self.rd_lim = self._fold()
 
     @classmethod
     def from_hfov(cls, hfov_deg, width, height):
         f = (width / 2.0) / math.tan(math.radians(hfov_deg) / 2.0)
         return cls(f, f, (width - 1) / 2.0, (height - 1) / 2.0, width, height)
+
+    def _radial(self, r2):
+        k1, k2, _p1, _p2, k3 = self.dist
+        return 1.0 + r2 * (k1 + r2 * (k2 + r2 * k3))
+
+    def _fold(self, r_max: float = 6.0):
+        """How far from the axis (undistorted, and as distorted) the distortion polynomial still maps
+        farther-out rays to farther-out pixels. A wide lens's fitted polynomial bends back beyond the
+        part of the picture the calibration saw; past that point it means nothing."""
+        k1, k2, _p1, _p2, k3 = self.dist
+        if not (k1 or k2 or k3):
+            return float("inf"), float("inf")
+        r = np.linspace(0.0, r_max, 6001)
+        rd = r * self._radial(r * r)
+        bad = np.nonzero(np.diff(rd) <= 0.0)[0]
+        i = int(bad[0]) if len(bad) else len(r) - 1
+        return float(r[i]), float(rd[i])
 
     def _distort(self, x, y):
         k1, k2, p1, p2, k3 = self.dist
@@ -113,25 +131,58 @@ class Pinhole(CameraModel):
         z = pts[:, 2]
         valid = z > 1e-3
         zs = np.where(valid, z, 1.0)
-        xd, yd = self._distort(pts[:, 0] / zs, pts[:, 1] / zs)
+        x, y = pts[:, 0] / zs, pts[:, 1] / zs
+        valid &= np.hypot(x, y) <= self.r_lim          # beyond the fold the polynomial means nothing
+        x, y = np.where(valid, x, 0.0), np.where(valid, y, 0.0)
+        xd, yd = self._distort(x, y)
         u = self.fx * xd + self.cx
         v = self.fy * yd + self.cy
         valid &= (u >= 0) & (u <= self.width - 1) & (v >= 0) & (v <= self.height - 1)
         return np.stack([u, v], axis=1), valid
 
     def unproject(self, uv):
+        """Pixels to rays. The radial part is inverted by bisection on the stretch where the polynomial
+        rises, then the small tangential part by a few Newton steps. (A plain fixed-point iteration,
+        used before 2026-11-27, ran off to infinity near the edges of a 120 degree lens with ordinary
+        barrel distortion: that is where the rear cameras see a ball straight behind.)"""
         uv = np.atleast_2d(np.asarray(uv, dtype=np.float64))
         xd = (uv[:, 0] - self.cx) / self.fx
         yd = (uv[:, 1] - self.cy) / self.fy
+        ok = np.ones(len(uv), dtype=bool)
         x, y = xd.copy(), yd.copy()
         if any(self.dist):
-            for _ in range(10):  # fixed-point inversion of the distortion
-                x2, y2 = self._distort(x, y)
-                x += xd - x2
-                y += yd - y2
+            rd = np.hypot(xd, yd)
+            ok = rd <= self.rd_lim * (1.0 + 1e-9)
+            target = np.minimum(rd, self.rd_lim)
+            lo = np.zeros_like(rd)
+            hi = np.full_like(rd, min(self.r_lim, 6.0))
+            for _ in range(48):
+                mid = 0.5 * (lo + hi)
+                above = mid * self._radial(mid * mid) > target
+                hi = np.where(above, mid, hi)
+                lo = np.where(above, lo, mid)
+            r = 0.5 * (lo + hi)
+            scale = np.where(rd > 1e-12, r / np.maximum(rd, 1e-12), 1.0)
+            x, y = xd * scale, yd * scale
+            if self.dist[2] or self.dist[3]:
+                eps = 1e-6
+                for _ in range(5):
+                    fx_, fy_ = self._distort(x, y)
+                    ex, ey = fx_ - xd, fy_ - yd
+                    ax, ay = self._distort(x + eps, y)
+                    bx, by = self._distort(x, y + eps)
+                    j11, j21 = (ax - fx_) / eps, (ay - fy_) / eps
+                    j12, j22 = (bx - fx_) / eps, (by - fy_) / eps
+                    det = j11 * j22 - j12 * j21
+                    det = np.where(np.abs(det) > 1e-12, det, 1e-12)
+                    x = x - (j22 * ex - j12 * ey) / det
+                    y = y - (-j21 * ex + j11 * ey) / det
+            # a pixel the polynomial cannot reach from inside its rising stretch is not trusted
+            fx_, fy_ = self._distort(x, y)
+            ok &= (np.hypot(x, y) <= self.r_lim) & (np.hypot(fx_ - xd, fy_ - yd) < 1e-6)
         rays = np.stack([x, y, np.ones_like(x)], axis=1)
         rays /= np.linalg.norm(rays, axis=1, keepdims=True)
-        return rays, np.ones(len(uv), dtype=bool)
+        return rays, ok
 
     def scaled(self, width, height):
         sx, sy = width / self.width, height / self.height

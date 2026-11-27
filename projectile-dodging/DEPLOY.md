@@ -16,7 +16,7 @@ joystick, the robot on open floor with 1.5 m clear around it, and nothing it
 could fall off. The dodge node starts in **dry run**: it reports the dodge it
 would make and never moves the robot until you arm it in step G.
 
-## Where things stand (26 November 2026)
+## Where things stand (27 November 2026)
 
 | | |
 |---|---|
@@ -27,7 +27,8 @@ would make and never moves the robot until you arm it in step G.
 | **Also fixed that night** | Balls being handled beside the robot, and balls lying still, set off about ten dry-run "dodges" in four minutes. Five recordings were replayed on the Mac: none dodges any more, the recorded real throw still does. Not yet run on the robot. |
 | **After the first armed lobs (21:36–21:40)** | Three faults read from the 22 recordings: dodges of still patches (one ended in the fall), real dodges 0.12–0.18 s before the ball, and straight behind weak. Cause of the first two: the ball's speed was read from how fast it grows in the picture, which at 2.5 m is a matter of one pixel. It is now read from how the ball's direction moves. In simulation every direction is as good or better (rear cone 70 → 80 %, front 67 → 77 %), and the false dodges in the recordings are gone. The dodge now eases to a stop instead of stopping dead. **Not yet run on the robot.** |
 | **Straight behind** | The rear cameras see only 30° above the horizontal there, so a lob is out of sight 0.1 s after release, and they cannot be tilted. The node now pools both rear cameras' looks, judges a climbing ball on two looks when no third comes, and does not wait on a ball it can no longer see. Simulated straight behind: high lobs from 2–2.5 m 60 → 85 %, shoulder-height 62 → 72 %; all directions together, the rear cone is at 90 %. Not yet run on the robot. |
-| **Open** | Both rear cameras share one USB controller and deliver about 43 pictures a second instead of 90 (step B). |
+| **Accuracy check, 27 Nov (on the Mac)** | Every direction scored in simulation at the rates the cameras really ran at during the armed lobs (15–21 pictures a second each, 50–70 ms from picture to decision; the old figures assumed 43). Straight behind was the weak spot, for three reasons now fixed: the two rear cameras' looks were not combined when the ball crossed from one to the other, the 63 mm between their lenses read as sideways motion, and their size calibrations disagree by 25 % on range. Straight behind went 90 → 97 % (lobs from 2–3 m), 93 → 100 % (3–4 m), 80 → 87 % (shoulder height); no other direction got worse, and no new false dodges in simulation or in the 339 recordings. Figures per direction are under [The room and the throw](#the-room-and-the-throw). Also found: **the rear lenses have never been measured**, and a lens a few degrees off at the edge undoes most of the straight-behind gain, so measuring them is now step C4. **Not yet run on the robot.** |
+| **Open** | Both rear cameras share one USB controller and deliver about 43 pictures a second instead of 90 (step B). With the node running, the Pi's four cores are full and each camera gets 15–21: the camera rate is now what limits dodging most. |
 
 ## What to do next
 
@@ -44,7 +45,7 @@ cd ~/sar-pupper && git pull && cd projectile-dodging
 python3 -m unittest discover -s tests
 ```
 
-- [ ] It ends with `OK` after about 110 tests. If not, stop and send me the output.
+- [ ] It ends with `OK` after about 120 tests. If not, stop and send me the output.
 
 The line `note: the colour calibration in ... fisheye_color.yaml is for hue 9-28 ... is being ignored`
 is expected until step C.
@@ -74,7 +75,7 @@ python3 tools/find_cameras.py --assign
 
 Detail: [stage 4a and 4b](#4-find-the-rear-cameras-set-their-exposure-look-through-each).
 
-### C. Calibrate the three cameras with the ball (20–30 min)
+### C. Calibrate the three cameras with the ball, and the rear lenses (30–40 min)
 
 Do this in the room and the light you will throw in, with the robot where it
 will stand. **Do it again in the demo room.** The dodge node must not be
@@ -146,6 +147,32 @@ python3 tools/view.py elp_left
 
 - [ ] The ball gets a red box, its range reads within about 10 % of the tape, and nothing else in the room gets a box. Same for `elp_right` and `fisheye`.
 - [ ] Ball held behind and to the robot's left reads a bearing near +135°; straight ahead (fisheye) near 0°.
+
+**C4. Measure the two rear lenses** (about 5 min each; once, not per room).
+Straight behind, the ball is at the outer edge of both rear pictures, where an
+unmeasured lens is furthest off. In simulation a lens 4° off at the edge cut
+straight-behind dodges from 97 % to 60 %. You need a checkerboard on a screen:
+on the Mac, open `projectile-dodging/tools/checkerboard_9x6.png` full screen
+on a laptop or tablet, brightness up. Then on the Pupper:
+
+```bash
+python3 tools/calibrate_camera.py elp_left
+```
+
+```bash
+python3 tools/calibrate_camera.py elp_right
+```
+
+- Hold the screen 0.4–1 m from that camera, still for a moment at each place;
+  it takes a view whenever the board has moved (25 in all).
+- **Spend at least a third of the views at the outer edge and the top
+  corners**: the robot's-left edge of `elp_left`'s picture, the robot's-right
+  edge of `elp_right`'s, tilting the screen a little each time. Whole board in
+  the picture each time.
+- [ ] Each ends with `reprojection error` under 1 px and `written to config/calib/elp_..._intrinsics.yaml`.
+- [ ] No `NOTE: the board never came near the ...` line. If there is one, run it again and cover that part.
+- If it says the fit `bends back inside the picture`, it has not written
+  anything: run it again with more views at the edges.
 
 **Then tell me "calibrated".** I will copy the new files in `config/calib/` off
 the Pupper, check the limits and commit them, so they are not lost.
@@ -327,44 +354,53 @@ Every calibration distance below fits in 2 m.
 - **Stand at least 2 m away.** From 1–1.5 m a lob is in the air 0.4–0.5 s and
   the robot needs 0.6 s. Keep the basket of spare balls behind you, not in your
   hand in front of the cameras.
-- **Straight behind is the weak direction, and the cameras cannot be tilted.**
-  The rear cameras overlap there, but only up to 30° above the horizontal
-  (38° at 15° to one side, 46° at the rear diagonals), and a lob from 2.5 m is
-  above that 0.1 s after release. So the node makes the most of that tenth of
-  a second: a ball seen only twice, climbing out of the top of a rear picture
-  within 30° of straight behind, is judged on those two looks, and a ball that
-  left the picture that way is dodged without waiting for a better look that
-  cannot come.
-  Simulated, straight behind (within 15°), 40 throws each, at the measured
-  rates:
-
-  | From behind | 2–2.5 m | 2.5–3.5 m |
-  |---|---|---|
-  | High lob (peaks 0.8–1.2 m above the hand) | 82 % | 92 % |
-  | Shoulder-height lob | 70 % | 70 % |
-  | Flat, chest-high | – | 0 % |
-
-  **From behind, throw high.** A flat throw from behind arrives in about 0.55 s
-  and Pupper can only sidestep from it, at 0.5 m/s, which takes longer. Of the
-  shoulder-height ones that fail, most were reacted to but not cleared in time.
-- The node now judges a ball by how its direction moves, so it reacts to a ball
+- **Straight behind, the cameras cannot be tilted.** The rear cameras overlap
+  there, but only up to 30° above the horizontal (38° at 15° to one side, 46°
+  at the rear diagonals), and a lob from 2.5 m is above that 0.1 s after
+  release. So the node makes the most of that tenth of a second: it combines
+  both rear cameras' looks (allowing for the 63 mm between their lenses and
+  for their disagreeing on range), judges a ball seen only twice when it is
+  climbing out of the top of a rear picture, and does not wait for a better
+  look that cannot come. **This only works once the rear lenses are measured
+  (step C4).**
+- The node judges a ball by how its direction moves, so it reacts to a ball
   that will sail over the robot as well as one that will hit, and to nothing
   that is not climbing in the picture the way an incoming ball does.
 
-Simulated with the shipped numbers, 40 throws per row and direction (a
-simulation, not a measurement on the robot):
+Simulated on the Mac on 27 Nov, every direction, 24 throws per cell, at the
+camera rates measured during the armed lobs (15–21 pictures a second each).
+A simulation, not a measurement on the robot:
 
-| Throw comes from | Shoulder-height lob | High lob |
-|---|---|---|
-| Sides, 2 m | about 95 % | about 80 % |
-| Behind, 2.5–3.5 m | 100 % | about 99 % |
-| Rear diagonals, 2–2.5 m | 100 % | about 99 % |
-| Front diagonals, 2–2.5 m | about 98 % | 100 % |
-| Straight ahead, 2.5–3.5 m | about 80 % | about 98 % |
+| Throw comes from | High lob, 2–3 m | High lob, 3–4 m | Shoulder-height lob, 2–3.5 m |
+|---|---|---|---|
+| Straight ahead | 96 % | 88 % | 46 % |
+| Front diagonals (±30°) | 98 % | 82 % | 69 % |
+| Front quarters (±60°) | 92 % | 92 % | 62 % |
+| Sides (±90°) | 98 % | 100 % | 98 % |
+| Rear quarters (±120°) | 100 % | 100 % | 88 % |
+| Rear diagonals (±150°) | 98 % | 100 % | 88 % |
+| Straight behind | 100 % | 100 % | 88 % |
+| **All directions** | **97 %** | **94 %** | **78 %** |
 
-These assume the robot gets up to speed as fast as the config says. With a
-robot a third slower, the straight-ahead shoulder-height lob drops to about
-40 % and the high one to about 85 %.
+"High lob" peaks 0.5–1 m above the hand; "shoulder-height" 0.2–0.5 m. Throws
+aimed 0.7–1.5 m wide of the robot: 0 of 40 dodged; a ball lying on the floor
+in view: 0 of 20.
+
+- **From the front, throw high from 2–3 m.** A low throw from the front or
+  front quarters is in the air about 0.7 s and Pupper can only sidestep from
+  it, at 0.5 m/s; it sees and decides about 0.2 s after release, which leaves
+  too little time. That is a speed limit, not a sight limit, and the speed
+  limits stay where they are.
+- **The cameras' rate is what limits this most.** In simulation, the cameras
+  at the rates they reach when the Pi is not busy (rear 43 pictures a second,
+  fisheye 22, instead of 17 and 19) take shoulder-height lobs from 78 % to
+  93 %. Step B and anything else that frees the Pi's cores help.
+- Without step C4: a rear lens 4° off at its edge (ordinary for a 120° lens)
+  takes straight-behind lobs from 97 % to about 60 %.
+
+These assume the robot gets up to speed as fast as the config says (step F
+measures it). A slower robot loses most from the front, where it can only
+sidestep.
 
 On a smooth floor (hardwood, tile) the robot's feet slip when it sets off
 fast. If it trips while dodging, put it on a rug, a yoga mat or foam tiles
@@ -657,9 +693,10 @@ on its stand (lying on the floor it cannot move), with the camera looking at
 something lit and detailed. If the knocks reach the IMU but not the picture,
 the tool prints how far the picture moved and how far it needed to.
 
-Optional, for better accuracy later: `tools/calibrate_camera.py` (lens, with a
-printed checkerboard) and `tools/calibrate_extrinsics.py` (exact camera angles).
-Each explains itself with `--help`. The defaults from the CAD are good enough to start.
+The rear lenses: `tools/calibrate_camera.py`, step C4 (not optional any more:
+straight behind depends on it). Optional, for better accuracy later:
+`tools/calibrate_extrinsics.py` (exact camera angles), which explains itself
+with `--help`. The camera angles from the CAD are good enough to start.
 
 ## 6. Record throws and replay them (still nothing moves)
 

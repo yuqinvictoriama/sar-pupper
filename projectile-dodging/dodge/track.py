@@ -110,7 +110,8 @@ class Track:
         self.history.append(self._look(t, z, cam, good, ray, origin, range_m, near_top))
         self.history = [h for h in self.history if h[0] >= t - window][-24:]
 
-    def hit_course(self, min_looks: int = 3, min_span: float = 0.06, drop: float = 0.0, arrive=None, pool=()):
+    def hit_course(self, min_looks: int = 3, min_span: float = 0.06, drop: float = 0.0, arrive=None, pool=(),
+                   offsets: bool = True):
         """How the ball's BEARING has moved in the one camera that has seen it most, or None if no camera
         has seen it min_looks times yet.
 
@@ -150,6 +151,23 @@ class Track:
         looks = best[1][-8:]
         ts = np.array([h[0] for h in looks])
         rays = np.stack([h[4] for h in looks])
+        good = [i for i, h in enumerate(looks) if h[3]]
+        cams = {h[2] for h in looks}
+        main = None
+        if len(cams) > 1:
+            # Pooled. Each camera's rays start at its own lens, and the two rear lenses are 63 mm apart:
+            # at 1.5 m the same ball reads 2.4 degrees apart in azimuth, which taken as motion is a ball
+            # turning past the robot at a metre a second. So the other cameras' looks are taken as seen
+            # from the main camera's lens, through where each look put the ball (its range is only
+            # needed to 15 %: that leaves a third of a degree).
+            main = max(cams, key=lambda c: (sum(1 for i in good if looks[i][2] == c), sum(1 for h in looks if h[2] == c)))
+            ref = next(h[6] for h in reversed(looks) if h[2] == main)
+            for i, h in enumerate(looks):
+                if h[2] != main:
+                    d = np.asarray(h[1], dtype=float) - ref
+                    n = float(np.linalg.norm(d))
+                    if n > 1e-6:
+                        rays[i] = d / n
         flat = np.hypot(rays[:, 0], rays[:, 1])
         if float(flat.min()) < 0.1:
             return None                                # almost straight overhead: azimuth means nothing there
@@ -160,26 +178,54 @@ class Track:
             q = q + drop / np.maximum(v_c * (T - ts), 0.3)
         tc = ts - ts.mean()
         S = float((tc * tc).sum())
-        az_dot = float((tc * (az - az.mean())).sum() / S)
-        q_dot = float((tc * (q - q.mean())).sum() / S)
-        rms_az = float(np.sqrt(np.mean((az - az.mean() - az_dot * tc) ** 2)))
-        rms_q = float(np.sqrt(np.mean((q - q.mean() - q_dot * tc) ** 2)))
-        good = [i for i, h in enumerate(looks) if h[3]]
-        cams = {h[2] for h in looks}
-        if len(cams) > 1:                              # pooled: ranges from one camera only
-            main = max(cams, key=lambda c: (sum(1 for i in good if looks[i][2] == c), sum(1 for h in looks if h[2] == c)))
+        az0, q0 = float(az.mean()), float(q.mean())    # the fit's values at the middle time
+        within = None
+        if main is not None and offsets:
+            # Two cameras seldom agree to the degree about the same ball: each lens has its own error,
+            # largest at the edges of its picture, which is where both rear cameras see a ball straight
+            # behind. Put together as they are, a few degrees between them read as the ball turning past
+            # the robot or not climbing. So when a camera has two looks or more, how the ball MOVES is
+            # taken from the changes within each camera (each camera's own offset left out), and where it
+            # is from the main camera. Only when each camera has a single look are they compared directly.
+            idx = {c: [i for i, h in enumerate(looks) if h[2] == c] for c in cams}
+            tw = np.zeros(len(looks))
+            for c, ii in idx.items():
+                tw[ii] = ts[ii] - ts[ii].mean()
+            Sw = float((tw * tw).sum())
+            if Sw >= 0.015 ** 2:
+                within = (idx, tw, Sw)
+        if within is None:
+            az_dot = float((tc * (az - az.mean())).sum() / S)
+            q_dot = float((tc * (q - q.mean())).sum() / S)
+            rms_az = float(np.sqrt(np.mean((az - az.mean() - az_dot * tc) ** 2)))
+            rms_q = float(np.sqrt(np.mean((q - q.mean() - q_dot * tc) ** 2)))
+        else:
+            idx, tw, S = within
+            dev_az, dev_q = np.zeros(len(looks)), np.zeros(len(looks))
+            for c, ii in idx.items():
+                dev_az[ii] = az[ii] - az[ii].mean()
+                dev_q[ii] = q[ii] - q[ii].mean()
+            az_dot = float((tw * dev_az).sum() / S)
+            q_dot = float((tw * dev_q).sum() / S)
+            rms_az = float(np.sqrt(np.mean((dev_az - az_dot * tw) ** 2)))
+            rms_q = float(np.sqrt(np.mean((dev_q - q_dot * tw) ** 2)))
+            im = idx[main]
+            t_mid = float(ts.mean())
+            az0 = float(az[im].mean() + az_dot * (t_mid - ts[im].mean()))
+            q0 = float(q[im].mean() + q_dot * (t_mid - ts[im].mean()))
+        if main is not None:                           # pooled: ranges from one camera only
             good = [i for i in good if looks[i][2] == main]
             rest = [i for i, h in enumerate(looks) if h[2] == main]
         else:
             rest = list(range(len(looks)))
         use = good if len(good) >= 2 else rest
         return {"cam": "+".join(sorted(cams)), "n": len(looks), "span": float(ts[-1] - ts[0]), "t": float(ts[-1]),
-                "az": float(az.mean() + az_dot * tc[-1]), "q": float(q.mean() + q_dot * tc[-1]),
-                "t_mid": float(ts.mean()), "az_mid": float(az.mean()), "q_mid": float(q.mean()),
+                "az": az0 + az_dot * float(tc[-1]), "q": q0 + q_dot * float(tc[-1]),
+                "t_mid": float(ts.mean()), "az_mid": az0, "q_mid": q0,
                 "az_dot": az_dot, "q_dot": q_dot, "rms_az": rms_az, "rms_q": rms_q,
                 "sig_az_dot": max(rms_az, 0.004) / math.sqrt(S), "sig_q_dot": max(rms_q, 0.004) / math.sqrt(S),
                 "ts": ts[use], "r_h": np.array([looks[i][5] * flat[i] for i in use]), "ranges_good": len(good) >= 2,
-                "origin": looks[-1][6]}
+                "origin": looks[-1][6] if main is None else ref}
 
     def one_camera(self, need: int, min_span: float = 0.03):
         """The recent measurements of the single camera that has seen the ball most, or None.
@@ -276,7 +322,9 @@ class Tracker:
         self.climber_coast = float(cfg.get("two_look_coast_s", 0.35))
         self.climber_bearing = float(cfg.get("two_look_min_bearing_deg", 150.0))
         self.climber_min = math.tan(math.radians(float(cfg.get("two_look_min_climb_deg", 3.0))))
+        self.climber_max_hits = int(cfg.get("two_look_max_hits", 4))   # the rule is tried at each of a track's first few looks
         self.max_range = float(cfg.get("max_range_m", 8.0))
+        self.cross_range = float(cfg.get("cross_camera_range_frac", 0.35))
         self.drag_k = drag_coefficient(ball) if cfg.get("use_drag", True) else 0.0
         self.tracks: list = []
 
@@ -298,6 +346,15 @@ class Tracker:
         Q[:3, 3:] = Q[3:, :3] = np.eye(3) * (qa2 * h ** 3 / 2.0)
         Q[3:, 3:] = np.eye(3) * (qa2 * h * h)
         return xn, F @ P @ F.T + Q
+
+    def _crosses(self, tr: Track, cam: str) -> bool:
+        """A look from the other rear camera than the one(s) that have followed this track. Only the rear
+        pair: straight behind both see the same ball and their looks must come together (Track.hit_course)."""
+        return cam in self.climber_cams and cam not in tr.cams and bool(tr.cams & self.climber_cams)
+
+    def _cross_cov(self, item) -> np.ndarray:
+        m, _z, _R, ray = item[:4]
+        return (self.cross_range * m.range_m) ** 2 * np.outer(ray, ray)
 
     @staticmethod
     def meas_cov(ray: np.ndarray, sigma_t: float, sigma_r: float) -> np.ndarray:
@@ -329,6 +386,12 @@ class Tracker:
             Rs = np.stack([it[2] for it in items])                         # (M, 3, 3)
             y = zs[None, :, :] - xs[:, None, :]                            # (T, M, 3)
             S = Ps[:, None, :, :] + Rs[None, :, :, :]                      # (T, M, 3, 3)
+            if self.cross_range > 0.0:
+                # The other rear camera reads the range with a size error of its own: the two read one
+                # ball 25 % apart (their size calibrations differ), and a range that tight kept them in
+                # two tracks straight behind, each too short to judge.
+                new_cam = np.array([[self._crosses(tr, it[0].cam) for it in items] for tr in self.tracks], dtype=float)
+                S = S + new_cam[:, :, None, None] * np.stack([self._cross_cov(it) for it in items])[None]
             try:
                 d2 = np.einsum("tmi,tmi->tm", y, np.linalg.solve(S, y[..., None])[..., 0])
             except np.linalg.LinAlgError:
@@ -358,6 +421,8 @@ class Tracker:
             used_t.add(ti)
             used_m.add(mi)
             m, z, Rm = items[mi][:3]
+            if self.cross_range > 0.0 and self._crosses(self.tracks[ti], m.cam):
+                Rm = Rm + self._cross_cov(items[mi])
             xp, Pp = pred[ti]
             S = Pp[:3, :3] + Rm
             K = Pp[:, :3] @ np.linalg.inv(S)
@@ -374,7 +439,7 @@ class Tracker:
             tr.remember(t, z, m.cam, not (getattr(m, "truncated", False) or getattr(m, "vague", False)),
                         ray=items[mi][3], origin=items[mi][4], range_m=m.range_m,
                         near_top=getattr(m, "near_top", False))
-            if tr.hits == 2 and self.climber_cams:
+            if self.climber_cams and not tr.climber and tr.hits <= self.climber_max_hits:
                 tr.climber = self._climbs(tr, R_wb)
             if tr.hits >= self.confirm_hits:
                 tr.confirmed = True
@@ -406,20 +471,34 @@ class Tracker:
         recordings of 2026-11-26, found by the overnight replay)."""
         if len(tr.history) < 2:
             return False        # the first look was long ago and has been let go (a gap in the pictures): no pair to judge
-        a, b = tr.history[-2], tr.history[-1]
-        if not (a[2] in self.climber_cams and b[2] in self.climber_cams and a[3] and b[3]) or b[0] - a[0] < 0.02:
+        b = tr.history[-1]
+        # The latest look and one before it at least 20 ms older. Straight behind, both rear cameras see
+        # the ball and their pictures are not in step: their first looks can come 5 ms apart, too close
+        # to show a climb, and the pair worth judging is then a later one.
+        # A pair from the same camera is preferred: each lens's own error then cancels.
+        a = next((h for h in reversed(tr.history[:-1]) if h[2] == b[2] and 0.02 <= b[0] - h[0] <= 0.15), None) \
+            or next((h for h in reversed(tr.history[:-1]) if b[0] - h[0] >= 0.02), None)
+        # A look in the top strip whose ball is cut off by the top of the picture still gives its direction
+        # (its centre is pulled a little down, which only makes the climb look smaller); its size does not count.
+        if a is None or not (a[2] in self.climber_cams and b[2] in self.climber_cams and (a[3] or a[7]) and (b[3] or b[7])):
             return False
-        fa, fb = float(np.hypot(a[4][0], a[4][1])), float(np.hypot(b[4][0], b[4][1]))
+        ra = a[4]
+        if a[2] != b[2]:                     # the other rear camera: its look as seen from this one's lens (Track.hit_course)
+            d = np.asarray(a[1], dtype=float) - b[6]
+            n = float(np.linalg.norm(d))
+            if n > 1e-6:
+                ra = d / n
+        fa, fb = float(np.hypot(ra[0], ra[1])), float(np.hypot(b[4][0], b[4][1]))
         if min(fa, fb) < 0.1 or not b[7]:
             return False
         ray_b = b[4] if R_wb is None else R_wb.T @ b[4]              # in the robot's own frame: where it is relative to the nose
         if abs(math.degrees(math.atan2(ray_b[1], ray_b[0]))) < self.climber_bearing:
             return False
-        climb = b[4][2] / fb - a[4][2] / fa
-        turn = abs(math.atan2(a[4][0] * b[4][1] - a[4][1] * b[4][0], a[4][0] * b[4][0] + a[4][1] * b[4][1]))
+        climb = b[4][2] / fb - ra[2] / fa
+        turn = abs(math.atan2(ra[0] * b[4][1] - ra[1] * b[4][0], ra[0] * b[4][0] + ra[1] * b[4][1]))
         same_cam = a[2] == b[2]
         return bool(climb >= self.climber_min and turn <= 0.5 * climb + 0.01
-                    and (not same_cam or 0.75 <= b[5] / max(a[5], 1e-6) <= 1.2))
+                    and (not (same_cam and a[3] and b[3]) or 0.75 <= b[5] / max(a[5], 1e-6) <= 1.2))
 
     def _make_room(self, t: float) -> bool:
         """With every slot taken, drop the track least likely to be a ball in flight. False if none may go.

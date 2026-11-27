@@ -138,6 +138,7 @@ tracker:
   init_speed_sigma: 7.0    # m/s, prior on the unknown velocity of a new track
   gate_chi2: 20.0
   gate_angle_deg: 45.0     # ... and a blob only matches a track it lies within this angle of, as its camera sees it
+  cross_camera_range_frac: 0.35  # a camera new to a track may read its range this much off (each camera's size error is its own)
   confirm_hits: 3
   max_coast_s: 0.25        # drop a confirmed track after this long unseen
   flight_coast_s: 0.6      # ... but keep following a ball seen in flight this long: a lob leaves the top of a
@@ -186,6 +187,7 @@ threat:
   unseen_fire_s: 0.12      # a threatening ball that climbed out of the top of a rear picture and has been out of sight
                            # this long is dodged without waiting for a surer estimate. (Only then: a ball that just
                            # stops being seen mid-picture was hidden by a hand, and the estimate is waited for.)
+  unseen_fire_min_bearing_deg: 110.0  # ... only that far round from the nose: nearer the front the fisheye sees above the rear cameras
   min_span_s: 0.045        # the three looks must span at least this long
   min_climb: 0.02          # tan(elevation) must have risen at least this much over the looks (about 1.1 degrees)
   loom_min: 0.15           # where the ball should have come nearer by this share of its range between the looks ...
