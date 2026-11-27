@@ -130,7 +130,7 @@ class CameraFarmTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             make_recording(d, "elp_left")
             cfg = copy.deepcopy(CFG)
-            cfg["cameras"] = {"elp_left": dict(cfg["cameras"]["elp_left"], source="recording", path=d, speed=1.0)}
+            cfg["cameras"] = {"elp_left": dict(cfg["cameras"]["elp_left"], source="recording", path=d, speed=0)}   # every frame, however slow the computer
             got, logs, lock = [], [], threading.Lock()
 
             def on_result(res, jpeg):
