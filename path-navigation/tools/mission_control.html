@@ -318,6 +318,7 @@ function drawCompass(s) {
   $("sounddl").innerHTML = row("Last bearing", last ? fmt(last.deg, 0) + "° " + (last.deg >= 0 ? "left" : "right") + (last.used ? "" : " (not used)") : "none yet") +
     row("Fix", nav.fix ? `${fmt(nav.fix.deg, 0)}° from ${nav.fix.count} of ${s.limits.min_bearings} · spread ${fmt(nav.fix.spread_deg, 1)}°` + (nav.fix.rejected ? ` · ${nav.fix.rejected} echo` : "") : (nav.has_line ? "line set" : "–")) +
     row("Margin", "±" + fmt(s.limits.moe_deg, 0) + "° assumed") + row("Heard", used + " used of " + nav.bearings.length) +
+    soundModule(s.sound) +
     row("Phrase", s.keyword.heard_age != null ? "heard " + fmt(s.keyword.heard_age, 0) + " s ago" : "not heard") +
     (nav.keyword_ignored ? row("Ignored", nav.keyword_ignored + " (too early)") : "");
   const f = $("heardflash"), fresh = s.keyword.heard_age != null && s.keyword.heard_age < 3;
@@ -326,6 +327,16 @@ function drawCompass(s) {
   $("levels").innerHTML = lv.map(v => `<i style="height:${Math.max(2, Math.min(22, (v + 70) / 60 * 22))}px"></i>`).join("");
 }
 const row = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`;
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+/* robot/sound_node.py's heartbeat: the partner's localize_angle.py, its device, and the bridge's last check */
+function soundModule(snd) {
+  const st = (snd && snd.status) || {};
+  if (!st.module) return "";
+  if (!st.alive) return row("Module", `<span style="color:var(--stop)">not listening</span> · ${esc(st.last_message || "starting")}`);
+  const last = st.last_check ? ` · last ${esc(st.last_check)}` + (st.last_fit != null ? `, fit ${fmt(st.last_fit, 2)}` : "") : "";
+  const odd = (st.inconsistent || 0) + (st.fit_caution || 0) + (st.uncertain || 0);
+  return row("Module", `${esc(st.device || "?")}${last}` + (odd ? ` · ${odd} of ${st.bearings + (st.uncertain || 0)} flagged` : ""));
+}
 
 /* ---------------------------------------------------------------- terrain */
 function drawFan(s) {

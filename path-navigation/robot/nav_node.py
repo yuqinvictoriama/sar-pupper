@@ -104,7 +104,8 @@ class NavNode(Node):
         self.pub_mode = self.create_publisher(String, "/terrain/mode", 10)
 
         self.create_subscription(self.adapter.message_type(), topics.sound, self._on_sound, 20)
-        self.create_subscription(String, topics.sound_status, lambda m: self.board.sound_alive(self.now(), self._json(m)), 5)
+        self.create_subscription(String, topics.sound_status, self._on_sound_status, 5)
+        self.sound_heartbeat = False        # once a heartbeat arrives, only the heartbeat says whether it is alive
         self.create_subscription(String, "/keyword/detected", self._on_keyword, 10)
         self.create_subscription(String, "/keyword/status", lambda m: self.board.keyword_alive(self.now(), self._json(m)), 5)
         self.create_subscription(Imu, "/imu_sensor_broadcaster/imu", self._on_imu, 20)
@@ -136,6 +137,10 @@ class NavNode(Node):
         except ValueError:
             return {"text": str(msg.data)}
         return data if isinstance(data, dict) else {"value": data}
+
+    def _on_sound_status(self, msg) -> None:
+        self.sound_heartbeat = True
+        self.board.sound_alive(self.now(), self._json(msg))
 
     def _on_sound(self, msg) -> None:
         got = self.adapter.parse(msg)
@@ -240,7 +245,7 @@ class NavNode(Node):
             self.pub_telemetry.publish(String(data=json.dumps(self.board.snapshot(now, self.mission, mode="robot"))))
 
     def _each_second(self, now: float) -> None:
-        if self.count_publishers(self.sound_topic) > 0:
+        if not self.sound_heartbeat and self.count_publishers(self.sound_topic) > 0:
             self.board.sound_alive(now, dict(self.board.sound_status, publishers=True))
         if self.list_client.service_is_ready() and not self.list_pending:
             self.list_pending = True

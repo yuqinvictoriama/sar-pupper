@@ -4,7 +4,7 @@ Written 2026-11-26. This is the module that runs the demo from start to finish: 
 
 **This file is the why. `README.md` is the how: it holds "Demo instructions" (materials, course, script, both calls), how to start a run, and what has been verified.**
 
-**Status (v3, 2026-11-26, evening).** The module is built: the mission state machine (`nav/`), the robot node (`robot/nav_node.py`), the launch and start scripts, a simulator of the whole run (`sim/course_sim.py`) and Pupper Mission Control (`tools/mission_control.py`), a page that shows the run and starts it with one click. 46 tests pass off the robot, and the simulated run ends in front of the cover (figures in the README). **None of it has run on the robot**, and the sound module has still not been seen: its topic and sign convention are settings in `config/demo.yaml`.
+**Status (v3, 2026-11-26, evening).** The module is built: the mission state machine (`nav/`), the robot node (`robot/nav_node.py`), the launch and start scripts, a simulator of the whole run (`sim/course_sim.py`) and Pupper Mission Control (`tools/mission_control.py`), a page that shows the run and starts it with one click. 46 tests pass off the robot, and the simulated run ends in front of the cover (figures in the README). **None of it has run on the robot.** 2026-11-27: the partner's sound module arrived (`sound-localization/`, commit ca06155) and is run unchanged by `robot/sound_node.py`; `SOUND_INTEGRATION.md` has the details. The "proposal" notes about its topics below are out of date.
 
 **Changed in v3 – where the build departs from the text below:**
 

@@ -27,11 +27,30 @@ sound:
   moe_deg: 5.0                    # its margin of error, as given: about +-5 degrees
   min_bearings: 3                 # bearings that must agree before a fix is believed
   spread_deg: 8.0                 # they agree if they are within this of their median
-  window_s: 14.0                  # bearings older than this are forgotten
-  min_confidence: 0.0             # bearings reported with less confidence are ignored
+  window_s: 20.0                  # bearings older than this are forgotten (one bearing per call: SOUND_INTEGRATION.md)
+  min_confidence: 0.5             # bearings reported with less confidence are logged, not used (see dji)
   still_s: 0.6                    # Pupper must have stood still this long for a bearing to count
   no_sound_after_s: 20.0          # say "I can't hear anyone yet"
   turn_after_s: 60.0              # then turn a quarter and listen again
+
+# The partner's four-microphone script (sound-localization/localize_angle.py), as robot/sound_node.py runs it.
+# Each value goes on its command line unchanged; these are his script's own defaults.
+dji:
+  script: sound-localization/localize_angle.py   # relative to path-navigation/
+  python: python3                 # on the Pupper: system python3 (has numpy and sounddevice 0.5.2)
+  device: ""                      # "" = his auto-select ("DJI" or "Wireless Mic Rx" in the name); or an index or name part
+  rate: 48000
+  width_mm: 120.0                 # transmitters' left/right spacing (CH1-CH2, CH3-CH4)
+  height_mm: 234.0                # front/back spacing (CH1-CH3, CH2-CH4)
+  threshold: 0.01                 # RMS a sound must reach to be located. Tune in the room (SOUND_INTEGRATION.md)
+  frame_seconds: 0.35
+  deadband_samples: 1.5
+  # Checks on his numbers, made in robot/dji_bearing.py. A bearing that fails one is logged, not used.
+  fit_low: 0.5                    # fit magnitude is cos(elevation); below this the delays are wrong (his warning: 0.15)
+  fit_high: 1.25                  # his script's own limit
+  caution_confidence: 0.3         # confidence of a bearing whose fit is outside fit_low..fit_high
+  max_residual_samples: 3.0       # |CH4 - (CH2 + CH3)| above this: one pair locked onto a wrong peak, confidence 0
+  restart_s: 3.0                  # his script exits if the receiver is unplugged: start it again after this
 
 # Turning to the cry, and the second look once Pupper faces it.
 orient:
@@ -113,13 +132,14 @@ safety:
   joystick_release_s: 1.0         # carry on this long after the joystick lets go
   require: [imu, walking, sound, keyword, terrain, dodge]
 
-# ROS names. The sound module's are a PROPOSAL until its code is seen: set them to what it really publishes.
+# ROS names. /sound/bearing and /sound/status come from robot/sound_node.py, which runs the partner's
+# localize_angle.py and passes its bearing on unchanged: degrees, 0 = nose, positive to the RIGHT.
 topics:
   cmd: /nav_cmd_vel
   sound: /sound/bearing
   sound_type: json                # json | float32 | float64 | vector3
   sound_units: deg                # deg | rad
-  sound_positive: left            # left (ROS) | right (compass)
+  sound_positive: right           # left (ROS) | right (compass). localize_angle.py: positive to the right
   sound_zero_deg: 0.0             # where the module's zero points, measured from the nose, left positive
   sound_json_key: bearing
   sound_status: /sound/status

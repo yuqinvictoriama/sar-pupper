@@ -44,11 +44,34 @@ class Sound:
     moe_deg: float = 5.0            # its margin of error, as given: about +-5 degrees
     min_bearings: int = 3           # bearings that must agree before a fix is believed
     spread_deg: float = 8.0         # they agree if they are within this of their median
-    window_s: float = 14.0          # bearings older than this are forgotten
-    min_confidence: float = 0.0     # bearings reported with less confidence are ignored
+    window_s: float = 20.0          # bearings older than this are forgotten (one bearing per call: SOUND_INTEGRATION.md)
+    min_confidence: float = 0.5     # bearings reported with less confidence are logged, not used (dji checks)
     still_s: float = 0.6            # Pupper must have stood still this long for a bearing to count
     no_sound_after_s: float = 20.0  # say "I can't hear anyone yet"
     turn_after_s: float = 60.0      # then turn a quarter and listen again
+
+
+@dataclass
+class Dji:
+    """How robot/sound_node.py starts the partner's script, sound-localization/localize_angle.py.
+
+    Every value is passed to it on its command line; the defaults are his script's own defaults.
+    """
+    script: str = "sound-localization/localize_angle.py"   # relative to path-navigation/
+    python: str = "python3"         # the interpreter that has numpy and sounddevice (on the Pupper: system python3)
+    device: str = ""                # "" = his auto-select (a name with "DJI" or "Wireless Mic Rx"); or an index or name part
+    rate: int = 48000
+    width_mm: float = 120.0         # left/right spacing of the transmitters, CH1-CH2 and CH3-CH4
+    height_mm: float = 234.0        # front/back spacing, CH1-CH3 and CH2-CH4
+    threshold: float = 0.01         # RMS (0..1, all four channels) a sound must reach to be located
+    frame_seconds: float = 0.35
+    deadband_samples: float = 1.5
+    # Checks made on his numbers (robot/dji_bearing.py): a bearing failing one gets a lower confidence
+    fit_low: float = 0.5            # fit magnitude is cos(elevation); his script warns below 0.15, the course never goes below 0.8
+    fit_high: float = 1.25          # his script's own limit
+    caution_confidence: float = 0.3  # confidence of a bearing whose fit is outside fit_low..fit_high
+    max_residual_samples: float = 3.0  # |CH4 - (CH2 + CH3)| above this: a pair is wrong, confidence 0
+    restart_s: float = 3.0          # if his script exits (receiver unplugged), start it again after this
 
 
 @dataclass
@@ -141,12 +164,13 @@ class Safety:
 
 @dataclass
 class Topics:
-    """ROS names. The sound module's are a proposal until the partner's code is seen."""
+    """ROS names. /sound/bearing and /sound/status are published by robot/sound_node.py, which runs the
+    partner's localize_angle.py and passes on its numbers unchanged: degrees, positive to the RIGHT."""
     cmd: str = "/nav_cmd_vel"
     sound: str = "/sound/bearing"
     sound_type: str = "json"        # json | float32 | float64 | vector3
     sound_units: str = "deg"        # deg | rad
-    sound_positive: str = "left"    # left (ROS) | right (compass)
+    sound_positive: str = "right"   # left (ROS) | right (compass). localize_angle.py prints positive to the right
     sound_zero_deg: float = 0.0     # where the module's zero points, measured from the nose, left positive
     sound_json_key: str = "bearing"
     sound_status: str = "/sound/status"
@@ -160,6 +184,7 @@ class Topics:
 class DemoConfig:
     course: Course = field(default_factory=Course)
     sound: Sound = field(default_factory=Sound)
+    dji: Dji = field(default_factory=Dji)
     orient: Orient = field(default_factory=Orient)
     walk: Walk = field(default_factory=Walk)
     reckon: Reckon = field(default_factory=Reckon)

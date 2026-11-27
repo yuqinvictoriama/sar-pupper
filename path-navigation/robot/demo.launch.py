@@ -13,14 +13,17 @@ What it starts
   terrain-agility/robot/terrain.launch.py        the step-over and walk-around nodes
   robot/keyword_node.py                          hears "You saved me, Pupper!"
   robot/nav_node.py                              the mission
-  sound:='<command>'                             the sound-direction module, if you give its start command
+  robot/sound_node.py                            the partner's sound-direction script (sound-localization/
+                                                 localize_angle.py, unchanged) on /sound/bearing and /sound/status
 
 Arguments
   motion:=false     true lets navigation publish velocity. Mission Control can switch it too
   keyword:=true     false: no phrase detector (the operator's button stands in)
   terrain:=true     false: no terrain agility (open floor tests)
   dodge:=true       false: no dodge node (frees the USB cameras)
-  sound:=''         shell command that starts the partner's sound module, e.g. "python3 ~/sound/doa_node.py"
+  sound:=dji        dji: robot/sound_node.py runs the partner's script (config/demo.yaml, section dji).
+                    none: nothing (send bearings with tools/fake_sound.py or Mission Control's compass).
+                    Anything else is run as a shell command instead.
   gemini_dir:=~/gemini_pupper
   config:=''        another demo.yaml
 
@@ -57,9 +60,13 @@ def dodge_stack():
 
 def sound_module(context):
     cmd = LaunchConfiguration("sound").perform(context).strip()
-    if not cmd:
-        return [LogInfo(msg="[demo] sound:='' : the sound module is not started here. Start it yourself, or send "
+    if cmd.lower() in ("", "none", "off", "false"):
+        return [LogInfo(msg="[demo] sound:=none : the sound module is not started here. Start it yourself, or send "
                             "bearings by hand with tools/fake_sound.py or Mission Control's compass.")]
+    if cmd.lower() == "dji":
+        args = ["--ros-args", "-p", "config:=" + LaunchConfiguration("config").perform(context)]
+        return [ExecuteProcess(cmd=["python3", "-u", str(HERE / "sound_node.py"), *args], cwd=str(ROOT),
+                               output="both", respawn=True, respawn_delay=3.0)]
     return [ExecuteProcess(cmd=["bash", "-c", cmd], output="both", respawn=True, respawn_delay=3.0)]
 
 
@@ -74,7 +81,7 @@ def generate_launch_description():
         DeclareLaunchArgument("keyword", default_value="true"),
         DeclareLaunchArgument("terrain", default_value="true"),
         DeclareLaunchArgument("dodge", default_value="true"),
-        DeclareLaunchArgument("sound", default_value=os.environ.get("PUPPER_SOUND_CMD", "")),
+        DeclareLaunchArgument("sound", default_value=os.environ.get("PUPPER_SOUND_CMD", "dji")),
         DeclareLaunchArgument("gemini_dir", default_value=os.environ.get("GEMINI_PUPPER_DIR", "~/gemini_pupper")),
         DeclareLaunchArgument("config", default_value=""),
     ]

@@ -129,6 +129,10 @@ class Node:
     def get_logger(self):
         return Logger()
 
+    def get_clock(self):
+        import time
+        return types.SimpleNamespace(now=lambda: types.SimpleNamespace(nanoseconds=int(time.time() * 1e9)))
+
     def destroy_node(self):
         pass
 

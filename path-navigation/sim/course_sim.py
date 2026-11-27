@@ -61,7 +61,11 @@ class SimOptions:
     start_yaw_deg: float | None = None      # which way Pupper faces on the start mark; None = random
     moe_deg: float | None = None            # the sound module's margin of error; None = the config's
     echo_p: float = 0.08                    # chance that a bearing is an echo, well off the true direction
-    per_cry: int = 2                        # bearings the sound module reports for one cry
+    # The partner's localize_angle.py locates a sound once and then waits for quiet: one bearing per cry.
+    # In synthetic quiet-room recordings about 40 % of them fail the bridge's checks (SOUND_INTEGRATION.md).
+    per_cry: int = 1                        # bearings the sound module reports for one cry
+    drop_p: float = 0.4                     # chance that a cry gives no usable bearing
+    call_every_s: float = 4.0               # the first call's rhythm (Demo instructions)
     speed_factor: float = 0.92              # true walking speed / what the mission believes (reckon.forward_factor)
     walk_lag: float = 0.25
     yaw_drift_deg_min: float = 1.5          # IMU drift
@@ -214,6 +218,8 @@ class CourseSim:
         moe = self.opt.moe_deg if self.opt.moe_deg is not None else self.cfg.sound.moe_deg
         sigma = math.radians(moe) / 2.0             # the margin of error read as two standard deviations
         for k in range(self.opt.per_cry):
+            if self.rng.random() < self.opt.drop_p:
+                continue
             b = self.true_bearing() + self.rng.gauss(0.0, sigma)
             if self.rng.random() < self.opt.echo_p:
                 b += math.radians(self.rng.choice((-1, 1)) * self.rng.uniform(30.0, 90.0))
@@ -226,7 +232,7 @@ class CourseSim:
                 self.next_first_call = None          # Pupper is walking: stop calling
             elif self.t >= self.voice_until + 0.3:
                 self._cry()
-                self.next_first_call = self.t + 4.0
+                self.next_first_call = self.t + self.opt.call_every_s
             else:
                 self.next_first_call = self.voice_until + 0.6
         while self.calls_due and self.t >= self.calls_due[0]:
@@ -580,6 +586,8 @@ def main() -> None:
     ap.add_argument("--moe", type=float, default=None, help="sound module margin of error, degrees (default: the config's)")
     ap.add_argument("--no-second-call", action="store_true", help="the survivor does not call again at 2 m")
     ap.add_argument("--no-throws", action="store_true")
+    ap.add_argument("--drop", type=float, default=None, help="chance a cry gives no usable bearing (default 0.4)")
+    ap.add_argument("--call-every", type=float, default=None, help="seconds between first calls (default 4)")
     ap.add_argument("--config", default=None)
     args = ap.parse_args()
     cfg = load_config(args.config)
@@ -587,6 +595,10 @@ def main() -> None:
     for k in range(args.runs):
         opt = SimOptions(seed=args.seed + k, moe_deg=args.moe, second_call=not args.no_second_call,
                          throws=not args.no_throws)
+        if args.drop is not None:
+            opt.drop_p = args.drop
+        if args.call_every is not None:
+            opt.call_every_s = args.call_every
         sim = CourseSim(cfg, opt)
         res = sim.run()
         results.append(res)
@@ -607,6 +619,9 @@ def main() -> None:
         print(f"{ok} of {len(results)} runs ended in front of the cover. Sideways miss: median {off[len(off) // 2]:.2f} m, "
               f"worst {off[-1]:.2f} m. Balls: {hits} hits in {throws} throws. "
               f"Median time {sorted(r['time'] for r in results)[len(results) // 2]:.0f} s.")
+        fixes = sorted(next((t for t, n in r["events"] if n == "fix"), float("inf")) for r in results)
+        print(f"First fix after start: median {fixes[len(fixes) // 2]:.0f} s, slowest {fixes[-1]:.0f} s; "
+              f"{sum(1 for r in results if any(n == 'no_sound' for _, n in r['events']))} runs said \"I can't hear anyone yet\".")
 
 
 if __name__ == "__main__":

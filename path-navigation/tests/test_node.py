@@ -19,24 +19,27 @@ D = math.radians
 
 
 # ------------------------------------------------------------------ the sound module's convention
-def test_adapter_default_is_degrees_left_positive_in_json():
+def test_adapter_default_is_the_partners_convention_degrees_right_positive_in_json():
+    # sound-localization/localize_angle.py prints 0 = nose, positive to the RIGHT; navigation is left positive
     a = SoundAdapter(Topics())
-    assert a.from_text('{"bearing": 30, "confidence": 0.7}') == (pytest.approx(D(30)), 0.7)
-    assert a.from_text("-45")[0] == pytest.approx(D(-45))
-    assert a.from_text('{"azimuth_deg": 10}')[0] == pytest.approx(D(10))      # other common names are understood
+    assert a.from_text('{"bearing": 30, "confidence": 0.7}') == (pytest.approx(D(-30)), 0.7)
+    assert a.from_text("-45")[0] == pytest.approx(D(45))
+    assert a.from_text('{"azimuth_deg": 10}')[0] == pytest.approx(D(-10))     # other common names are understood
+    left = SoundAdapter(Topics(sound_positive="left"))
+    assert left.from_text('{"bearing": 30}')[0] == pytest.approx(D(30))
     assert a.from_text("help") is None and a.from_text('{"bearing": "left"}') is None and a.from_text("true") is None
 
 
 def test_adapter_compass_convention_and_offset_and_radians():
     compass = SoundAdapter(Topics(sound_positive="right"))
     assert compass.convert(30) == pytest.approx(D(-30))
-    turned = SoundAdapter(Topics(sound_zero_deg=90.0))          # the module's zero is Pupper's left side
+    turned = SoundAdapter(Topics(sound_zero_deg=90.0, sound_positive="left"))          # the module's zero is Pupper's left side
     assert turned.convert(0) == pytest.approx(D(90)) and turned.convert(-90) == pytest.approx(0.0)
-    rad = SoundAdapter(Topics(sound_units="rad", sound_type="float32"))
+    rad = SoundAdapter(Topics(sound_units="rad", sound_type="float32", sound_positive="left"))
     assert rad.parse(fake_ros.Float32(data=math.pi / 2))[0] == pytest.approx(math.pi / 2)
-    wraps = SoundAdapter(Topics())
+    wraps = SoundAdapter(Topics(sound_positive="left"))
     assert wraps.convert(350) == pytest.approx(D(-10))
-    vec = SoundAdapter(Topics(sound_type="vector3"))
+    vec = SoundAdapter(Topics(sound_type="vector3", sound_positive="left"))
     assert vec.parse(fake_ros.Vector3Stamped(vector=fake_ros.Vector3(x=0.0, y=1.0)))[0] == pytest.approx(D(90))
     with pytest.raises(ValueError):
         SoundAdapter(Topics(sound_type="morse"))
@@ -102,7 +105,7 @@ def test_dry_run_node_listens_reports_and_publishes_no_velocity(tmp_path):
     r.run(8.0)
     assert 30 <= len(r.sent("/nav/telemetry")) <= 45                # five a second, not twenty
     for _ in range(3):
-        r.bus.publish("/sound/bearing", fake_ros.String(data='{"bearing": 90}'))
+        r.bus.publish("/sound/bearing", fake_ros.String(data='{"bearing": -90}'))   # localize_angle.py: -90 is left
         r.run(0.6)
     names = [e["event"] for e in r.events()]
     assert names[:3] == ["start", "fix", "heard"], names

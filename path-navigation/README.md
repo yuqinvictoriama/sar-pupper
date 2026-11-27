@@ -2,7 +2,7 @@
 
 This is the module that runs the demo. Pupper listens for a cry for help, turns to it, steps over a low bar, scales across a slab, asks the survivor to call again, walks through thrown balls, stops in front of the survivor's cover, hears "You saved me, Pupper!" and comforts them. `plan.md` is the why. This file is how to run it, and **"Demo instructions" below is the one place the team's set-up and script live.**
 
-**Status, 2026-11-26.** Built and tested off the robot only: 49 tests, and a simulation of the whole run that ends in front of the cover in 200 of 200 simulated rooms. **None of it has run on the robot.** The sound-direction module (your partner's) has not been seen, so its topic name and sign convention are settings, not facts. "What is verified and what is not" near the end says exactly which claims rest on what.
+**Status, 2026-11-27.** Built and tested off the robot only: 67 tests (1 skips without the phrase model), and a simulation of the whole run (see "What is verified and what is not" for how often it ends in front of the cover). **None of it has run on the robot.** The sound-direction module is now your partner's code (`sound-localization/`, his commit ca06155), run unchanged by `robot/sound_node.py`; it has been tested on synthetic four-channel recordings only, never with the DJI receiver on the Pupper. [`SOUND_INTEGRATION.md`](SOUND_INTEGRATION.md) has how it was joined, what was measured and what to fix. "What is verified and what is not" near the end says exactly which claims rest on what.
 
 ## Start here
 
@@ -17,10 +17,10 @@ On a Mac you can instead double-click `path-navigation/mission-control.command`.
 **On the Pupper (the real run):**
 
 ```bash
-bash ~/sar-pupper/path-navigation/robot/start_demo.sh --sound "<the command that starts the sound module>"
+bash ~/sar-pupper/path-navigation/robot/start_demo.sh
 ```
 
-Then on the laptop open `http://<pupper>.local:8078`, and in Mission Control: **Stand up**, tick **Allow motion**, press **Start**. Stop everything with `robot/stop_demo.sh`. Read "First time on the robot" before doing this for the first time.
+It also starts the sound module (the DJI receiver must be plugged in, in Q mode: "Wiring in the sound module"). Then on the laptop open `http://<pupper>.local:8078`, and in Mission Control: **Stand up**, tick **Allow motion**, press **Start**. Stop everything with `robot/stop_demo.sh`. Read "First time on the robot" before doing this for the first time.
 
 ---
 
@@ -38,6 +38,7 @@ Everything the team needs to set up and run the demo. Mission Control shows the 
 | **Balls** | The neon green foam pickleballs, 74 mm | 6–8 |
 | **Markers** | Flat tape, 30 cm strips: the start mark, three pairs of side markers, two thrower spots. Not cones (a cone is an obstacle) | 1 roll |
 | **Tape measure** | 8 m or longer, and a ruler for the low obstacle | 1 |
+| **Sound module** | DJI Mic 3 receiver in **Q (Quadraphonic)** mode on the Pupper's USB, and four transmitters fixed at the corners of a **120 mm × 234 mm** rectangle on Pupper's back: TX1 front-left, TX2 front-right, TX3 back-left, TX4 back-right, all at the same height. All charged | 1 + 4 |
 | **Gamepad** | The e-stop (right-stick press). Charged | 1 |
 | **Battery** | Charged, plus a spare. A run is 4 to 6 minutes, over two of them on the obstacles | 2 |
 | **Laptop** | On the robot's network, showing Mission Control | 1 |
@@ -122,6 +123,7 @@ Rules for the floor:
 - **Why the second call:** the sound module is taken to be good to about ±5°. One fix at the start would put Pupper up to 0.5 m to one side of the survivor after 6 m; a second fix with about 4 m to go brings that to about 0.3 m, inside a 1.2 m cover. If Pupper hears nothing within 6 s it carries on along its first line.
 - **Nobody says "You saved me, Pupper" at any other time**, or anything close to it, rehearsal chatter included. Pupper ignores the phrase until it is 4 m along the line, but do not test that on demo day.
 - **Between calls the survivor is silent.** So is everyone else: to the microphones, any voice is a direction.
+- **One bearing per call, and a pause makes the next one.** The sound module locates a sound once, as it starts, and then waits for quiet before it will locate another. "Help! Help me!" is one call; keep at least a second of silence between calls. A shout that is too quiet gives nothing at all (it must reach the module's threshold, `dji.threshold`; tune it in the room, see `SOUND_INTEGRATION.md`).
 
 ### Throwing rules
 
@@ -139,6 +141,7 @@ Rules for the floor:
 - [ ] Course measured from the start mark; low obstacle square; tape measure removed; no balls left in the lane.
 - [ ] Colours calibrated in this room and this light (floor, obstacles, ball).
 - [ ] One warm-up crossing of each obstacle done today, so the crossings plan quickly.
+- [ ] DJI receiver plugged in and in Q mode; four transmitters on, at their corners (TX1 front-left … TX4 back-right). Sound panel's **Module** row names the receiver, not "not listening".
 - [ ] Mission Control open; under **Systems** every name is green (IMU, walking controller, sound module, phrase detector, terrain agility, dodge node, voice).
 - [ ] **Direction check:** one call from the cover with Pupper on the start mark. The ray on Mission Control's compass points at the cover. (Left and right swapped? See "Wiring in the sound module".)
 - [ ] **Phrase check:** the survivor, behind the cover, says the phrase three times with Pupper at the stop point. "PHRASE HEARD" lights three times.
@@ -149,7 +152,7 @@ Rules for the floor:
 | What happens | What to do |
 |---|---|
 | Pupper says "I can't hear anyone yet" | Survivor calls louder and keeps the 4 s rhythm. Check nobody else is talking |
-| The sound module is not giving bearings | Operator clicks the direction of the cover on Mission Control's compass. That bearing is used as the fix |
+| The sound module is not giving bearings | Operator clicks the direction of the cover on Mission Control's compass. That bearing is used as the fix. Afterwards: the Sound panel's **Module** row says why (receiver not found, not in Q mode, or calls flagged) |
 | Pupper turns the wrong way | Operator presses **End run**, puts Pupper back, starts again |
 | Pupper walks around the bar or the slab instead of crossing it | Let it. The run carries on. (It does that if the slab is skewed more than about 20°, turned end-on, or has less than 35 cm of bare floor beyond it) |
 | Pupper stops mid-crossing and settles onto the floor | That is a safe abort. Mission Control says "Pupper has stopped". Stand it up (**Stand up**), then **Resume** |
@@ -228,28 +231,26 @@ any active state ⇄ PAUSED (joystick, e-stop, fall, operator)        any active
 
 ## Wiring in the sound module
 
-The separate DJI receiver experiments live in [`sound-localization/`](sound-localization/README.md): first verify the two- or four-channel TX mapping with `test_channels.py`, then try the stereo or four-mic angle script. These are hardware experiments only; they do not publish ROS messages or move Pupper.
+The sound module is your partner's code in [`sound-localization/`](sound-localization/README.md) (his commit ca06155): a DJI Mic 3 receiver in Q mode with four transmitters at the corners of Pupper's back, and `localize_angle.py`, which prints a bearing each time it hears a sound. **His files are not edited**; a test checks they are byte for byte as he committed them. `robot/sound_node.py` starts his script as it is, reads what it prints (`robot/dji_bearing.py`), and publishes:
 
-Navigation needs one thing from it: **a bearing to the cry, each time it hears one.** It does not need a range, and it does not rely on it to hear the phrase (`robot/keyword_node.py` does that; see `keyphrase/README.md`).
+| Topic | What |
+|---|---|
+| `/sound/bearing` | `std_msgs/String`, JSON: `{"bearing": +11.2, "confidence": 1.0, "check": "ok", "fit": 0.98, "rms": 0.03, "delays": [...], "residual": 0.01}`. **`bearing` is his number unchanged: degrees, 0 = nose, positive to the RIGHT** |
+| `/sound/status` | Once a second. `alive` is true only while his script runs with a four-channel device open; it also names the device and carries the last line his script printed (so an error reaches Mission Control) |
 
-Everything about how the module talks is in `config/demo.yaml`, section `topics`, and `robot/sound_adapter.py` is the only code that reads it:
+`demo.launch.py` starts it by default (`sound:=dji`; `sound:=none` for no sound module; `start_demo.sh --no-sound`). His script's settings (device, threshold, microphone spacing) are `config/demo.yaml`, section `dji`, passed to it on its command line. `topics.sound_positive: right` turns his convention into navigation's (left positive), in `robot/sound_adapter.py`, the one place it happens.
 
-| Setting | Default | Set it to |
-|---|---|---|
-| `sound` | `/sound/bearing` | The topic the module publishes on |
-| `sound_type` | `json` | `json` (a `std_msgs/String` holding `{"bearing": 12.5, "confidence": 0.8}` or just `12.5`), `float32`, `float64`, or `vector3` (a direction vector, `geometry_msgs/Vector3Stamped`) |
-| `sound_units` | `deg` | `deg` or `rad` |
-| `sound_positive` | `left` | `left` if a positive bearing is to Pupper's left (the ROS convention), `right` if it is a compass bearing |
-| `sound_zero_deg` | `0` | Where the module's zero points, from the nose, left positive |
-| `sound_status` | `/sound/status` | A heartbeat topic, if it has one. Without one, a publisher on the bearing topic counts as alive |
+The bridge adds two checks to each bearing, made on his numbers. One microphone pair can lock onto a wrong correlation peak (it happens in quiet rooms; `SOUND_INTEGRATION.md` explains it and the fix for his script), and the four delays then do not add up: for a rectangle, CH4 = CH2 + CH3. A bearing that fails that, or whose fit magnitude is under 0.5, is published and logged but not used for the fix (`sound.min_confidence: 0.5`).
 
-Then check it, in this order:
+Check it, in this order, motion off:
 
-1. `python3 tools/fake_sound.py 30` (on the Pupper, stack running, motion off). The compass shows three rays 30° to the left and Pupper reports it would turn left.
-2. **One clap** from Pupper's left side with the real module. The ray must point left. If it points right, flip `sound_positive`.
-3. One call from the cover with Pupper on the start mark, facing away. The ray points at the cover.
+1. **The receiver.** `arecord -l` lists it; `python3 sound-localization/test_channels.py --transmitters 4` peaks on four different channels for TX1 … TX4.
+2. **The stack.** `robot/start_demo.sh`; Mission Control's Sound panel shows **Module**: the receiver's name. `/tmp/sar-demo/robot.log` has "with 4 input channel(s)".
+3. `python3 tools/fake_sound.py 30` (stack running): the compass shows rays 30° to the left and Pupper reports it would turn left. (It publishes in the configured convention, so it checks navigation, not the module.)
+4. **One clap** at 1 m straight ahead, then one from Pupper's left. In the log, straight ahead prints delays near `CH2 0, CH3 +32.7, CH4 +32.7` samples and a bearing near 0; left prints near `CH2 +16.8, CH3 0, CH4 +16.8` and a bearing near −90 (his convention), and the compass ray points **left**. A constant offset in one channel's delays at every angle is the radio link, not the room: see `SOUND_INTEGRATION.md`.
+5. One call from the cover with Pupper on the start mark, facing away. The ray points at the cover.
 
-Questions the plan still has for your partner (they change settings, not code): is ±5° the same in every direction and at 6 m; does the module report while Pupper itself is speaking (navigation ignores those bearings either way); how long after a cry does the bearing arrive; and which process opens the microphones, since the phrase detector and Gemini need audio too.
+Recordings can be replayed through his unchanged script on a laptop: `python3 tools/sound_replay.py calls.wav --truth 15` prints each bearing, its checks, and whether navigation would use it.
 
 ## First time on the robot
 
@@ -285,14 +286,17 @@ path-navigation/
                config (every number), heading (angles, fixes), reckon (where Pupper is), steer (the line),
                events (the lines and the team's cues), mission (the state machine), board (what every other
                component last said, and the snapshot Mission Control draws)
-  robot/       nav_node.py, sound_adapter.py, keyword_node.py, demo.launch.py, demo_mux.yaml,
-               start_demo.sh, stop_demo.sh, env.sh
+  robot/       nav_node.py, sound_node.py + dji_bearing.py (the partner's script on ROS), sound_adapter.py,
+               keyword_node.py, demo.launch.py, demo_mux.yaml, start_demo.sh, stop_demo.sh, env.sh
+  sound-localization/   the partner's DJI four-microphone scripts, unchanged (his README)
+  SOUND_INTEGRATION.md  how they were joined to navigation, what was measured, what to fix
   sim/         course_sim.py: the whole run in 2D
-  tools/       mission_control.py + .html, fake_sound.py, nav_cmd.sh; keyword_test.py, make_keywords.py,
+  tools/       mission_control.py + .html, fake_sound.py, sound_replay.py, nav_cmd.sh; keyword_test.py, make_keywords.py,
                get_keyword_model.sh (the phrase detector's)
   keyphrase/   the phrase detector (its own README)
   config/      demo.yaml (every number here), keyword.yaml, keywords.txt
-  tests/       test_mission.py, test_node.py, test_sim.py, test_keyphrase.py
+  tests/       test_mission.py, test_node.py, test_sim.py, test_keyphrase.py, test_sound_integration.py
+               (+ dji_synth.py and fake_sounddevice/: synthetic calls through the partner's script)
   data/runs/   run logs (git-ignored)
 ```
 
@@ -303,16 +307,17 @@ Tests, on a laptop: `python3 -m pytest path-navigation/tests -q` (needs pytest, 
 **Verified off the robot**
 
 - 49 tests: angles and fixes, the position estimate, line following, every state and transition of the mission with hand-made inputs, the node on a stand-in for ROS (dry run publishes no velocity and marks its events `dry_run`; the dodge node is armed only in the gauntlet), the sound adapter's conventions.
-- The whole run in simulation, 200 different rooms per row (random starting direction, bearing noise as given, about 8 % echoes, the legs at 0.53 of commanded speed as measured and a further 8 % short that the mission does not know about, IMU drift 1.5° a minute, throws every 3 s):
+- The whole run in simulation, 200 different rooms per row (random starting direction; the partner's sound module as it behaves on synthetic calls: one bearing per call, about 8 % echoes, and a share of calls giving nothing usable; the legs at 0.53 of commanded speed as measured and a further 8 % short that the mission does not know about; IMU drift 1.5° a minute; throws every 3 s). Seed 1, 2026-11-27:
 
-| Sound module's margin of error | Survivor calls again at 2 m | Ended in front of the cover | Sideways miss at the cover, median (worst) |
-|---|---|---|---|
-| ±5° (as given) | yes | **200 of 200** | 0.08 m (0.34 m) |
-| ±5° | no | 186 of 200 | 0.33 m (1.03 m) |
-| ±8° | yes | 199 of 200 | 0.11 m (0.57 m) |
-| ±10° | yes | 194 of 200 | 0.17 m (5.29 m: one run took a wrong fix) |
+| Sound module's margin of error | Calls with no usable bearing | Survivor calls again at 2 m | Ended in front of the cover | Sideways miss at the cover, median (worst) | First fix, median (slowest) |
+|---|---|---|---|---|---|
+| ±5° (as given) | 40 % (quiet-room figure) | yes | **199 of 200** | 0.13 m (0.56 m) | 22 s (147 s) |
+| ±5° | 0 % | yes | 199 of 200 | 0.08 m (6.58 m, one run) | 14 s (22 s) |
+| ±5° | 60 % | yes | 181 of 200 | 0.17 m (0.66 m) | 36 s (409 s) |
+| ±10° | 40 % | yes | 182 of 200 | 0.19 m (4.07 m) | 26 s (158 s) |
+| ±5° | 40 % | no | 188 of 200 | 0.35 m (0.99 m) | 22 s (147 s) |
 
-  The cover reaches 0.6 m either side of the line, so a miss under about 0.55 m is "in front of it"; the runs that failed stopped at the cover but past its edge. The course is the one in "Demo instructions": every run stepped over the bar and scaled across the slab. **The second call matters more on this course than on a shorter one**: two crossings take over two minutes, the IMU's heading drifts all that time, and the second call is what corrects it. A simulated run takes about 4 minutes, 52 s of it on the bar and 81 s on the slab.
+  The cover reaches 0.6 m either side of the line, so a miss under about 0.55 m is "in front of it"; most runs that failed stopped at the cover but past its edge, and the few misses of several metres have not been examined run by run (likely a wrong fix). The course is the one in "Demo instructions": every run stepped over the bar and scaled across the slab. **The second call matters more on this course than on a shorter one**: two crossings take over two minutes, the IMU's heading drifts all that time, and the second call is what corrects it. A simulated run takes about 4 minutes, 52 s of it on the bar and 81 s on the slab.
 
   **One thing these runs do suggest about dodging, to be checked on the robot:** the simulated dodge is a stand-in, but it moves the same slow legs. With the legs at 0.53 of commanded speed its burst covers about half the planned distance, and the simulated hit rate rose from about 1 throw in 11 to about 4 in 10. If the real legs fall as far short in a burst, dodges will be late. The dodging work has the tool for it (`projectile-dodging/tools/step_response.py`) and has been told.
 
@@ -322,11 +327,11 @@ Tests, on a laptop: `python3 -m pytest path-navigation/tests -q` (needs pytest, 
 **Not verified: needs the robot**
 
 - Everything in `robot/`: `nav_node.py` has only run against a stand-in for ROS; `demo.launch.py` and `start_demo.sh` have only been syntax-checked. In particular the launch file loads the dodging launch and swaps its mux file, which no test covers.
-- Real sound: the module's topic and convention, its accuracy at 6 m beside a board in an echoing room, and what it reports while motors and the speaker are running.
+- Real sound: the DJI receiver on the Pupper (it was not plugged in on 2026-11-27: `arecord -l` listed no capture device), whether the four radio channels keep their timing, accuracy at 6 m beside a board in an echoing room, the threshold for a real shout, and which process gets the receiver when the phrase detector also needs it (`SOUND_INTEGRATION.md`, "Beware").
 - The phrase detector on real microphones (it has only heard synthetic voices).
 - Walking: the speed factor beyond its one measurement (0.80 m in 5 s), the sideways factor, whether the legs turn on the spot at the commanded rates, yaw drift across the two crossings.
 - The Pi's CPU with every node running at once. The dodging work measured the Pi at about 80 % busy with the dodge stack alone on 2026-11-26, and the voice's server at about a third of a core while idle; if the load goes higher, camera frame rates drop and dodging gets worse. Navigation is light by design (plain Python at 20 Hz, no images; telemetry is built 5 times a second and only while Mission Control is open), but what it adds on the Pi has not been measured. Watch the frame rates under Projectiles in Mission Control, and close the page if they sag.
-- The simulation's stand-ins are simple. Its dodge rate and throw count say nothing about the real dodge node, and its bearings are the true direction plus noise.
+- The simulation's stand-ins are simple. Its dodge rate and throw count say nothing about the real dodge node. Its sound is one bearing per call (as the partner's script gives), the true direction plus noise, with 40 % of calls giving nothing usable (as measured on synthetic quiet-room recordings), not a model of a room.
 
 **Known limits**
 

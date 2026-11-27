@@ -1,7 +1,8 @@
 """The one file that knows how the sound-direction module talks.
 
-The module is the project partner's. Its topic name, message type and sign
-convention had not been seen when this was written, so they are settings
+The module is the project partner's (sound-localization/localize_angle.py, run by
+robot/sound_node.py, which publishes his numbers unchanged: degrees, positive to the
+RIGHT). The topic name, message type and sign convention are settings
 (config/demo.yaml, section `topics`) and this file turns whatever arrives into
 the one thing navigation uses:
 

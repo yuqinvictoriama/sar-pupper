@@ -8,8 +8,9 @@
 #   robot/start_demo.sh --no-keyword    no phrase detector (the operator's button stands in)
 #   robot/start_demo.sh --no-terrain    no terrain agility (open-floor tests)
 #   robot/start_demo.sh --no-dodge      no dodge node
-#   robot/start_demo.sh --sound "python3 ~/sound/doa_node.py"    also start the sound module with this command
-#                                       (or set PUPPER_SOUND_CMD; without it, start the sound module yourself)
+#   robot/start_demo.sh --no-sound      do not start the sound module (bearings from Mission Control's compass)
+#   robot/start_demo.sh --sound "<cmd>" start another sound module with this shell command instead
+#   (by default robot/sound_node.py runs the partner's sound-localization/localize_angle.py, unchanged)
 #
 # Then open Mission Control from the laptop:  http://<pupper>.local:8078
 # Stop everything with robot/stop_demo.sh. Logs are in /tmp/sar-demo/.
@@ -21,7 +22,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(dirname "$(dirname "$HERE")")
 GEMINI_DIR=${GEMINI_PUPPER_DIR:-$HOME/gemini_pupper}
 LOG=/tmp/sar-demo; mkdir -p $LOG /tmp/gemini-pupper
-MOTION=false; VOICE=1; KIOSK="--kiosk"; KEYWORD=true; TERRAIN=true; DODGE=true; SOUND=${PUPPER_SOUND_CMD:-}
+MOTION=false; VOICE=1; KIOSK="--kiosk"; KEYWORD=true; TERRAIN=true; DODGE=true; SOUND=${PUPPER_SOUND_CMD:-dji}
 while [ $# -gt 0 ]; do
   case "$1" in
     --motion) MOTION=true ;;
@@ -31,6 +32,7 @@ while [ $# -gt 0 ]; do
     --no-terrain) TERRAIN=false ;;
     --no-dodge) DODGE=false ;;
     --sound) shift; SOUND=${1:-} ;;
+    --no-sound) SOUND=none ;;
     *) echo "unknown option $1"; exit 1 ;;
   esac
   shift
@@ -55,10 +57,15 @@ if [ -d "$GEMINI_DIR" ]; then
 else
   sleep 20
 fi
-for name in "path navigation up" "dodge node up" "terrain agility ready" "step-over node ready"; do
+for name in "path navigation up" "dodge node up" "terrain agility ready" "step-over node ready" \
+            "starting the sound module" "with 4 input channel"; do
   if grep -q "$name" $LOG/robot.log; then echo "      ok: $name"; else echo "      NOT YET: $name (see $LOG/robot.log)"; fi
 done
-[ -z "$SOUND" ] && echo "      the sound module was not started here (no --sound): start it now, or use Mission Control's compass"
+case "$SOUND" in
+  ""|none) echo "      the sound module was not started here (--no-sound): start it now, or use Mission Control's compass" ;;
+  dji) grep -q "Four-channel localization needs\|Could not start four-channel input\|Could not uniquely select\|More than one input matches" $LOG/robot.log \
+         && echo "      SOUND MODULE PROBLEM: $(grep -m1 "Four-channel localization needs\|Could not start four-channel input\|Could not uniquely select\|More than one input matches" $LOG/robot.log)" ;;
+esac
 
 if [ $VOICE = 1 ]; then
   echo "[2/4] Pupper's voice (Gemini, the mission prompt, the event bridge)"

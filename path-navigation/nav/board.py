@@ -66,8 +66,12 @@ class Board:
             self.t_bearing = self.t_sound = t
 
     def sound_alive(self, t: float, status: dict | None = None) -> None:
+        """A heartbeat from the sound module. One that says "alive": false is kept (Mission Control shows
+        why) but does not count: robot/sound_node.py says false while the partner's script is not running."""
         with self.lock:
-            self.sound_status, self.t_sound = dict(status or {}), t
+            self.sound_status = dict(status or {})
+            if self.sound_status.get("alive", True) is not False:
+                self.t_sound = t
 
     def keyword_heard(self, t: float, phrase: str) -> None:
         with self.lock:
