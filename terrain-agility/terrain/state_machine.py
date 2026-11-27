@@ -60,6 +60,12 @@ class FsmConfig:
     align_max_tries: int = 5
     align_skew_deg: float = 4.0        # square enough
     align_centre: float = 0.05         # m, centred enough
+    # A round bar reads, from one place, much like a flat one; but its apparent depth (the
+    # top's far edge is where the line of sight grazes it) changes as the robot closes in,
+    # and a flat top's does not (by at most 5 mm in the overnight sweep). Two looks taken at
+    # least look_apart apart whose depths differ by more than look_depth_change: not flat.
+    look_apart: float = 0.06           # m, between the two looks' distances
+    look_depth_change: float = 0.010   # m
     intent_timeout: float = 0.4        # s without a driver's command -> stop meddling
     intent_min_speed: float = 0.05     # m/s: slower than this the driver is not going anywhere
     hold_time: float = 2.0             # s to stand in HOLD before trying again
@@ -110,6 +116,7 @@ class TerrainFsm:
         self.yaw_last = None
         self.last_cmd = (0.0, 0.0, 0.0)
         self.align_tries = 0
+        self.first_look = None               # the first full estimate of the box being approached
         self.pulse = None                    # (cmd, until)
         self.estimate = None
         self.decision = None
@@ -296,6 +303,7 @@ class TerrainFsm:
                 self.goal_yaw = inp.yaw + heading
                 self.gauge.reset()
                 self.align_tries = 0
+                self.first_look = None
                 self.seen_upper = ob.height
                 self._go(APPROACH, t)
                 out.event = f"obstacle ahead at {dist:.2f} m, may be low enough to cross: approaching to measure it"
@@ -409,14 +417,19 @@ class TerrainFsm:
             return f"decision: {self.decision}"
         if math.isfinite(self.seen_upper):
             est.height_upper = min(est.height_upper, self.seen_upper)
+        if self.first_look is None and math.isfinite(est.depth):
+            self.first_look = est
         # first get square to it and centred, then close enough, then decide
         skew_deg = math.degrees(est.skew)
         if self.align_tries < cfg.align_max_tries:
             cmd = None
             if abs(skew_deg) > cfg.align_skew_deg:
-                # skew > 0: the left end is farther away -> turn left (positive yaw) to face it
+                # skew > 0: the left end of the near face is farther away, which is how a square
+                # face looks to a robot turned left of square -> turn right (negative yaw).
+                # (Turning the other way, as this did until 2026-11-27, made the skew worse
+                # until the tries ran out; found by the overnight sweep.)
                 dur = max(cfg.align_min_pulse, 0.8 * abs(est.skew) / cfg.align_yaw_rate)
-                cmd = (0.0, 0.0, math.copysign(cfg.align_yaw_rate, est.skew))
+                cmd = (0.0, 0.0, -math.copysign(cfg.align_yaw_rate, est.skew))
             elif est.ends_seen and abs(est.y_centre) > cfg.align_centre:
                 dur = max(cfg.align_min_pulse, 0.8 * abs(est.y_centre) / cfg.align_side_speed)
                 cmd = (0.0, math.copysign(cfg.align_side_speed, est.y_centre), 0.0)
@@ -431,6 +444,13 @@ class TerrainFsm:
                         f"{est.near_x * 1000:.0f} mm away")
         self.decision = D.decide(est, cfg.decision, landing_clear=self._landing_clear(est), robot_ready=inp.level,
                                  ball_tracked=inp.ball_tracked, robot_half_track=cfg.robot_half_track)
+        first = self.first_look
+        if (self.decision.action == D.STEP_OVER and first is not None and math.isfinite(est.depth)
+                and abs(first.near_x - est.near_x) >= cfg.look_apart
+                and abs(first.depth - est.depth) > cfg.look_depth_change):
+            self.decision = D.Decision(D.GO_AROUND, [
+                f"its depth read {first.depth * 1000:.0f} mm from {first.near_x * 1000:.0f} mm away and "
+                f"{est.depth * 1000:.0f} mm from {est.near_x * 1000:.0f} mm: round, not flat"])
         if self.decision.action in D.CROSSINGS:
             self._plan_sent = False
             self._go(PLAN, t)

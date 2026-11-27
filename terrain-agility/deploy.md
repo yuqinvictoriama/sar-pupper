@@ -397,6 +397,55 @@ mics as extra mass, the node's own hand-over):
   neither was pushed. And from camera frames with both in view at once: the bar is measured
   and crossed first, then the slab. One run of each, not a spread of cases.
 
+**Against the real robot's faults (27 November, simulation only).** The crossings were run
+again with the effects that separate the real Pupper from the clean model, each on its own
+and then together. `sim/crossing_sim.py` now has switches for them: `backlash` (the course's
+own real-robot model: ±0.01 rad of play in every joint and 0.125 N·m of joint friction, ten
+times the plain model's), `command_latency`, `joint_offset_deg` (zero errors from homing),
+`link_mass_scale`, `foot_friction` and `joint_friction`.
+
+| Effect | Bar | Slab |
+|---|---|---|
+| Play and friction (course model) | crosses, tilt 8.9°, a 9 N touch on the bar | crosses, tilt 3.4° |
+| Commands 15 to 40 ms late | crosses (25 ms and more used to fail; fixed, see below) | crosses |
+| Links 15 % heavier | crosses | crosses |
+| Foot grip μ 0.4 | crosses | crosses |
+| Zero errors, 1° std (about what homing to the hard stops gives) | 9 of 10 | 10 of 10 |
+| Zero errors, 2° std (pessimistic) | 5 of 10 | 7 of 10 |
+| Play + 15 ms + 1° zero errors together | **4 of 8** | 8 of 8 |
+
+What changed because of it:
+
+- **The joint-error checks allow for delay.** They compared each joint with where the plan is
+  *now*, so a joint that is merely late looked as though it had hit something: at 25 ms of
+  delay every crossing was abandoned on a free swing ("swing foot met something"). Each joint
+  is now compared with the nearest point on its last 60 ms of plan. A blocked leg still falls
+  behind all of it and is caught, at most 60 ms later. The robot's real delay has not been
+  measured; the course's model says about 15 ms.
+- **The course's backlash model needed one fix to be usable:** with MuJoCo's default limit
+  softness the play joints sank into their limits under the robot's weight (the knees sat at
+  0.057 rad, not 0.01, and kept creeping), which on its own made both crossings fail. The sim
+  now makes those limits as stiff as the time step allows.
+- **ALIGN turned the wrong way** (found by the overnight sweep, checked here from the gauge's
+  geometry): asked to square up, it turned towards the farther end and made the skew worse,
+  so every crossing that needed squaring up was refused in the end. Fixed, together with a
+  **two-look check**: if the bar's depth reads more than 10 mm differently from 0.46 m and
+  from 0.36 m, it is round, not flat, and Pupper walks round it. Without that check, squaring
+  up properly would bring a 20 mm round bar into step-over range.
+
+Tried and not kept: holding the body's attitude from the IMU (no better than without, at
+either size of zero error), wider margins (no bar plan exists with a minimum above 15 mm), and
+feeling down for a foot that ends its descent in the air. That last one is the real failure
+with zero errors (a foot hovers a few millimetres up, carries nothing, and the body rolls
+onto it), but with legs this soft, pushing a foot down lifts the body before it builds the
+joint error that would signal contact. It needs a better contact signal than position error.
+
+**What this means for the course:** the slab is robust to everything tried. The bar is not:
+over the bar itself its plan runs at 16 to 19 mm of balance margin, and once the real robot's
+play and zero errors add up, half the simulated runs tip (the tilt limit stops the crossing,
+and in simulation the robot then falls over). Before the bar's first real run, re-home the
+legs carefully, have a spotter's hand ready at the rear, and expect to need the walk-around.
+
 Seen on the robot so far (26 November, evening; nothing moved):
 
 - **Six camera frames of the slab on a glossy wood floor**, one slab position. On them the
@@ -422,6 +471,9 @@ Not verified, because it needs the robot:
 - Foot grip on the slab's top, and whether the slab stays put.
 - That the walking policy stands still enough at zero command for a crossing to start.
 - Planning time and controller-switch time on the Pi.
+- The ALIGN turn direction on the robot: check it once, at rest, with motion enabled only for
+  that pulse (a box turned 10° should come back towards square, not away).
+- The robot's real command delay, and the two-look depth check on real frames of the bar.
 
 Known limits:
 
@@ -430,5 +482,6 @@ Known limits:
   mark the size of a slab (a sheet of paper): one camera cannot tell it from a low step.
 - A round bar between about 55 and 75 mm across can look like a low flat bar. The check that
   the top is at least 2.6 times as deep as it is tall is there to refuse it; I have tested
-  that check on the 50 mm bar only.
+  that check on the 50 mm bar only. A 20 mm round bar reads like the flat one from a single
+  place; the two-look depth check (above) is what refuses it, and it is checked in simulation only.
 - Something tall directly behind a slab is only seen once the slab has been measured.

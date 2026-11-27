@@ -228,6 +228,22 @@ def test_player_backs_a_blocked_swing_out():
     assert player.state == P.STOPPED and "blocked" in player.result
 
 
+def test_player_is_not_fooled_by_joints_that_answer_late():
+    """The joints follow the plan 40 ms late (the course's robot model says about 15 ms).
+    Compared with where the plan is now, a swinging joint is then well off its target; the
+    player must not take that for a blocked swing, or for a foot touching down early."""
+    plan = plan_crawl(0.08)
+    late = []
+
+    def lag(t, q, cmd):
+        late.append(q.copy())
+        return late[max(0, len(late) - 5)].copy()          # 4 ticks of 10 ms behind
+
+    player, states = run_player(plan, block=lag)
+    assert player.state == P.DONE and player.result == "done", player.events
+    assert P.REVERSE not in states and not any("early" in e for _, e in player.events), player.events
+
+
 def test_handover_sequence_and_estop():
     plan = plan_stand_test(hold=0.5)
     hand = H.Handover(P.TrajectoryPlayer(plan))
@@ -311,6 +327,18 @@ def test_fixed_and_light_boxes():
         assert res.crossed and res.max_tilt_deg < 8.0, (mass, res.line())
 
 
+@physics
+@pytest.mark.parametrize("kw", [dict(backlash=True), dict(command_latency=0.030), dict(backlash=True, command_latency=0.015)])
+def test_crossing_with_the_real_robots_play_and_delay(kw):
+    """The course's own real-robot model (+-0.01 rad of play in every joint, ten times the
+    joint friction) and commands that arrive late. Before 2026-11-27 a 25 ms delay already
+    made a free swing read as blocked."""
+    cfg = CS.SimConfig(box_height=0.019, box_depth=0.089, box_width=0.6, box_mass=0.6, near=GAUGE, extra_masses=HEAD, **kw)
+    res = CS.run_crossing(cfg)
+    assert res.crossed and res.max_tilt_deg < 12.0, res.line()
+    assert res.box_moved < 0.004, res.line()
+
+
 # ---------------------------------------------------------------- scale-across in physics
 slab_physics = pytest.mark.skipif(not HAVE_MODEL, reason="needs the MuJoCo model")
 SLAB = dict(box_width=0.565, scale_across=True, extra_masses=HEAD)
@@ -349,3 +377,12 @@ def test_a_light_slab_is_not_pushed_away():
     res = CS.run_crossing(cfg)
     assert res.crossed and res.max_tilt_deg < 8.0 and res.box_moved < 0.010, res.line()
 
+
+
+@slab_physics
+@pytest.mark.parametrize("kw", [dict(backlash=True), dict(command_latency=0.030), dict(backlash=True, command_latency=0.015)])
+def test_scale_across_with_the_real_robots_play_and_delay(kw):
+    cfg = CS.SimConfig(box_height=0.015, box_depth=0.38, near=GAUGE, box_mass=2.0, **{**SLAB, **kw})
+    res = CS.run_crossing(cfg)
+    assert res.crossed and res.max_tilt_deg < 10.0, res.line()
+    assert res.box_moved < 0.010, res.line()

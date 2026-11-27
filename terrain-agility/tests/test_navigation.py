@@ -12,7 +12,7 @@ from sim.avoid_sim import AvoidSimConfig, Rect, run_avoid  # noqa: E402
 from terrain import decision as D  # noqa: E402
 from terrain.gauge import BoxEstimate  # noqa: E402
 from terrain.steering import LocalMap, SteerConfig, move_points, steer  # noqa: E402
-from terrain.state_machine import APPROACH, AVOID, CRUISE, GAUGE, HOLD, Inputs, TerrainFsm  # noqa: E402
+from terrain.state_machine import ALIGN, APPROACH, AVOID, CRUISE, GAUGE, HOLD, PLAN, FsmConfig, Inputs, TerrainFsm  # noqa: E402
 
 ENV = {60: 0.030, 64: 0.030, 76: 0.030, 89: 0.025}
 
@@ -227,3 +227,33 @@ def test_boxed_in_holds_instead_of_wandering():
     res = run_avoid(AvoidSimConfig(obstacles=pocket, seed=4, max_time=40))
     assert not res.reached and HOLD in res.states
     assert res.time < 15 and res.min_clearance > 0.15
+
+
+def _gauged(fsm, e, t=0.0):
+    fsm.state, fsm.t_last, fsm.yaw_last = GAUGE, t, 0.0
+    return fsm._after_gauge(e, Inputs(t=t, yaw=0.0, obstacles=[], points=None, intent=(0.3, 0.0, 0.0)), t)
+
+
+@pytest.mark.parametrize("skew_deg", [8.0, -8.0])
+def test_align_turns_to_square_up_not_away(skew_deg):
+    """skew > 0 (the left end of the near face farther away) is how a square face looks to a
+    robot turned left of square, so it must turn right. It turned the other way until
+    2026-11-27, and every crossing that needed squaring up was refused."""
+    fsm = TerrainFsm(FsmConfig(decision=cfg()))
+    _gauged(fsm, est(skew=math.radians(skew_deg)))
+    assert fsm.state == ALIGN
+    yaw_rate = fsm.pulse[0][2]
+    assert yaw_rate != 0.0 and math.copysign(1.0, yaw_rate) == -math.copysign(1.0, skew_deg)
+
+
+@pytest.mark.parametrize("far_depth, crossed", [(0.064, True), (0.067, True), (0.082, False)])
+def test_a_bar_whose_depth_changes_between_two_looks_is_not_stepped_over(far_depth, crossed):
+    """A round bar's apparent depth changes as the robot closes in; a flat top's does not.
+    Looked at from 0.46 m and again from 0.36 m, a change of more than 10 mm means round."""
+    fsm = TerrainFsm(FsmConfig(decision=cfg()))
+    _gauged(fsm, est(near_x=0.46, depth=far_depth))
+    assert fsm.state == ALIGN                              # too far: walks closer first
+    msg = _gauged(fsm, est(near_x=0.36), 2.0)
+    assert (fsm.state == PLAN) == crossed, msg
+    if not crossed:
+        assert fsm.state == AVOID and "round, not flat" in msg

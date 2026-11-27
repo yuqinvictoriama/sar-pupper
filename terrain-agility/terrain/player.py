@@ -49,6 +49,12 @@ class PlayerConfig:
     settle_kp: float = 1.5
     settle_kd: float = 0.6
     hold_done_kp: float = 7.5
+    # The joints answer a command some milliseconds late (the course's robot model: 15 ms).
+    # Compared with where the plan is now, a moving joint then looks off by speed x delay,
+    # and in simulation 25 ms of delay was enough for a free swing to read as blocked. So
+    # each joint is checked against the closest point of the plan over this much recent
+    # time: a joint that is merely late matches somewhere along it, a blocked one does not.
+    lag_window: float = 0.06           # s
 
 
 @dataclass
@@ -100,6 +106,16 @@ class TrajectoryPlayer:
         q_cmd = self.plan.q_cmd[i - 1] * (1 - a) + self.plan.q_cmd[i] * a
         q_des = self.plan.q_des[i - 1] * (1 - a) + self.plan.q_des[i] * a
         return q_cmd, q_des, i
+
+    def _lagged_error(self, q_meas, q_des_now):
+        """Per joint, the smallest |planned - measured| over the last lag_window of the plan."""
+        err = np.abs(q_des_now - q_meas)
+        w = self.cfg.lag_window
+        if w <= 0.0:
+            return err
+        for s in np.linspace(w / 4, w, 4):
+            err = np.minimum(err, np.abs(self._sample(self._tp - s)[1] - q_meas))
+        return err
 
     def _event(self, t, text):
         self.events.append((t, text))
@@ -166,7 +182,7 @@ class TrajectoryPlayer:
             swing = int(plan.swing_leg[i])
             guard = int(plan.guard_leg[i])
             phase = plan.phase_names[int(plan.phase[i])]
-            err = q_des - q_meas
+            err = self._lagged_error(q_meas, q_des) if self.state == RUN else np.abs(q_des - q_meas)
 
             if self.state == RUN:
                 # planted legs: should sit at their desired angles (the command already carries

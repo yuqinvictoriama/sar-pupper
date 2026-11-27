@@ -80,6 +80,14 @@ class SimConfig:
     kd: float = 0.25
     control_hz: float = 100.0
     joint_noise: float = 0.0              # rad, std of joint angle measurement noise
+    # The real robot, as opposed to the model (sim-to-real). Defaults: none of it.
+    backlash: bool = False                # the course's own backlash model (+-0.01 rad play in every joint)
+    command_latency: float = 0.0          # s from a command being sent to the motor acting on it
+    joint_offset_deg: float = 0.0         # std of each joint's zero error (calibration): it is not where it reads
+    link_mass_scale: float = 1.0          # every link heavier or lighter than the model
+    foot_friction: float | None = None    # rubber feet on this floor (None: the model's)
+    joint_friction: float | None = None   # N m of dry friction in every motor joint (None: the model's;
+    #                                       the course's backlash model uses 0.125, the plain one 0.01)
     seed: int = 0
 
 
@@ -122,7 +130,29 @@ def build_model(xml: str, cfg: SimConfig, near_face_x: float):
     """Compile the robot model with the box, the legs' collision envelope and the gains."""
     import mujoco
 
+    if cfg.backlash:
+        bl = Path(xml).with_name("pupper_v3_complete.backlash.xml")
+        if not bl.exists():
+            raise FileNotFoundError(f"backlash model not found next to {xml}")
+        xml = str(bl)
     spec = mujoco.MjSpec.from_file(xml)
+    if cfg.backlash:
+        # The play is meant to be +-0.01 rad, but with MuJoCo's default limit softness
+        # (solref 0.02 s) the light backlash joints sink into their limits under the
+        # robot's weight: standing, the knees sat at 0.057 rad and kept creeping. Make the
+        # limit as stiff as the 2 ms step allows, so the play is what the model states.
+        for j in spec.joints:
+            if j.name and j.name.endswith("_backlash"):
+                j.solref_limit = [0.004, 1.0]
+    if cfg.joint_friction is not None:
+        for j in spec.joints:
+            if j.name and j.name.startswith("leg_") and not j.name.endswith("_backlash"):
+                j.frictionloss = cfg.joint_friction
+    if cfg.link_mass_scale != 1.0:
+        for b in spec.bodies:
+            if b.name and b.name != "world" and b.mass > 0:
+                b.mass = b.mass * cfg.link_mass_scale
+                b.inertia = [v * cfg.link_mass_scale for v in b.inertia]
     for act in spec.actuators:
         act.gainprm[0] = cfg.kp
         act.biasprm[1] = -cfg.kp
@@ -134,6 +164,8 @@ def build_model(xml: str, cfg: SimConfig, near_face_x: float):
             # The model's contacts are tuned soft for policy training (feet sink ~4 mm into
             # the floor). Real rubber feet give well under a millimetre; use MuJoCo's default.
             g.solimp[:3] = [0.9, 0.95, 0.001]
+            if cfg.foot_friction is not None:
+                g.friction = [cfg.foot_friction, 0.02, 0.01]
 
     def body(name):
         return spec.body(name) if hasattr(spec, "body") else spec.find_body(name)
@@ -189,11 +221,15 @@ def build_model(xml: str, cfg: SimConfig, near_face_x: float):
 class Robot:
     """Joint order, measurement and command helpers around a compiled model."""
 
-    def __init__(self, model, data):
+    def __init__(self, model, data, offsets=None, latency: float = 0.0):
         import mujoco
 
         self.mj = mujoco
         self.m, self.d = model, data
+        self.offsets = np.zeros(12) if offsets is None else np.asarray(offsets, dtype=float)
+        self.latency = latency
+        self.pending = []                    # (time due, q, kp, kd): commands on their way to the motors
+        self.t = 0.0
         self.qadr = [model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)] for n in K.JOINT_NAMES]
         self.act = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, n) for n in K.JOINT_NAMES]
         self.base = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
@@ -205,20 +241,32 @@ class Robot:
         self.mj.mj_resetData(self.m, d)
         d.qpos[0:3] = [0, 0, K.default_stance()[0] + 0.005]
         d.qpos[3:7] = [1, 0, 0, 0]
-        for a, v in zip(self.qadr, K.DEFAULT_JOINT_POS):
+        for a, v in zip(self.qadr, K.DEFAULT_JOINT_POS - self.offsets):
             d.qpos[a] = v
-        self.command(K.DEFAULT_JOINT_POS)
+        self.pending.clear()
+        self._apply(K.DEFAULT_JOINT_POS, None, None)
         self.mj.mj_forward(self.m, d)
 
     def joints(self):
+        """What the encoders read (with any calibration error)."""
+        return np.array([self.d.qpos[a] for a in self.qadr]) + self.offsets
+
+    def true_joints(self):
         return np.array([self.d.qpos[a] for a in self.qadr])
 
     def command(self, q, kp=None, kd=None):
+        if self.latency > 0.0:
+            self.pending.append((self.t + self.latency, np.array(q, dtype=float), kp, kd))
+        else:
+            self._apply(q, kp, kd)
+
+    def _apply(self, q, kp, kd):
         if kp is not None:
             self.m.actuator_gainprm[self.act, 0] = kp
             self.m.actuator_biasprm[self.act, 1] = -kp
             self.m.actuator_biasprm[self.act, 2] = -kd
-        self.d.ctrl[self.act] = np.clip(q, self.lo, self.hi)
+        # the motor holds where its (miscalibrated) encoder reads q
+        self.d.ctrl[self.act] = np.clip(q, self.lo, self.hi) - self.offsets
 
     def tilt(self):
         R = self.d.xmat[self.base].reshape(3, 3)
@@ -234,7 +282,11 @@ class Robot:
     def step(self, seconds):
         n = max(1, int(round(seconds / self.m.opt.timestep)))
         for _ in range(n):
+            while self.pending and self.pending[0][0] <= self.t + 1e-9:
+                _, q, kp, kd = self.pending.pop(0)
+                self._apply(q, kp, kd)
             self.mj.mj_step(self.m, self.d)
+            self.t += self.m.opt.timestep
 
 
 def run_crossing(cfg: SimConfig, crawl: CrawlConfig | None = None, player_cfg: PlayerConfig | None = None,
@@ -251,7 +303,8 @@ def run_crossing(cfg: SimConfig, crawl: CrawlConfig | None = None, player_cfg: P
         near_true = cfg.near
     model = build_model(find_model(model_path), cfg, near_true)
     data = mujoco.MjData(model)
-    robot = Robot(model, data)
+    offsets = np.radians(rng.normal(0.0, cfg.joint_offset_deg, 12)) if cfg.joint_offset_deg else None
+    robot = Robot(model, data, offsets=offsets, latency=cfg.command_latency)
     robot.reset_standing()
     robot.command(K.DEFAULT_JOINT_POS, cfg.walk_kp if cfg.handover else cfg.kp, cfg.walk_kd if cfg.handover else cfg.kd)
     robot.step(1.0)                                    # settle on the floor at the default pose
