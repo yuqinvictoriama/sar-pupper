@@ -27,6 +27,8 @@ if ! echo "$LIST" | awk '$1=="gemini_walk" {found=1} END {exit !found}'; then
   exit 1
 fi
 if echo " $ACTIVE " | grep -q " gemini_walk "; then echo "gemini_walk is already active"; exit 0; fi
+# A low battery or a homing that stopped short is why the robot cannot get up evenly: say so before it tries.
+python3 "$HERE/homing_report.py" --brief
 if [ -n "$ACTIVE" ]; then
   ros2 control switch_controllers --activate gemini_walk --deactivate $ACTIVE
 else

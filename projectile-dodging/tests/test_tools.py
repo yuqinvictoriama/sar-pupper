@@ -645,6 +645,57 @@ class BallColourAndShapeTests(unittest.TestCase):
         self.assertLess(math.hypot(got[0].u - 1000, got[0].v - 200), 2)
 
 
+class HomingReportTests(unittest.TestCase):
+    """The motors find their zero against their end stops at start-up; a leg held back leaves it wrong."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(HERE, "..", "robot"))
+        import homing_report
+        self.hr = homing_report
+
+    @staticmethod
+    def log(times: dict, finished=True) -> str:
+        line = "[ros2_control_node-5] [INFO] [%.9f] [ControlBoardHardwareInterface]: %s\n"
+        text = "[camera_node-13] something else\n" + line % (1000.0, "Homing actuators...")
+        for j, t in sorted(times.items(), key=lambda kv: kv[1]):
+            text += line % (1000.0 + t, "Homed actuator %d" % j)
+        return text + (line % (1004.0, "Finished homing!") if finished else "")
+
+    def test_an_even_homing_raises_nothing(self):
+        even = {2: 0.60, 5: 0.61, 8: 0.64, 11: 0.65, 1: 1.40, 4: 1.42, 7: 1.44, 10: 1.45, 0: 2.3, 3: 2.31, 6: 2.33, 9: 2.35}
+        run = self.hr.parse(self.log(even))
+        self.assertEqual(self.hr.findings(run), [])
+        self.assertAlmostEqual(self.hr.times(run)[1], 1.40 - 0.65, places=2)      # a hip's time counts from when the knees were done
+
+    def test_hips_on_one_side_stopping_short_are_pointed_out(self):
+        uneven = {2: 0.60, 5: 0.61, 8: 0.64, 11: 0.65, 1: 0.90, 7: 0.92, 4: 1.45, 10: 1.47, 0: 2.3, 3: 2.31, 6: 2.33, 9: 2.35}
+        notes = self.hr.findings(self.hr.parse(self.log(uneven)))
+        self.assertEqual(len(notes), 2)
+        self.assertIn("front right hip reached its stop", notes[0])
+        self.assertIn("back right hip reached its stop", notes[1])
+
+    def test_a_homing_that_never_finished_and_a_log_without_one_are_said_plainly(self):
+        stuck = {2: 0.60, 5: 0.61, 8: 0.64}
+        notes = self.hr.findings(self.hr.parse(self.log(stuck, finished=False)))
+        self.assertIn("back left knee", notes[0])
+        self.assertIn("no homing", self.hr.findings(self.hr.parse("nothing here"))[0])
+
+    def test_only_the_latest_start_counts(self):
+        uneven = {2: 0.6, 5: 0.61, 8: 0.64, 11: 0.65, 1: 0.9, 7: 0.92, 4: 1.45, 10: 1.47, 0: 2.3, 3: 2.31, 6: 2.33, 9: 2.35}
+        even = {2: 0.60, 5: 0.61, 8: 0.64, 11: 0.65, 1: 1.40, 4: 1.42, 7: 1.44, 10: 1.45, 0: 2.3, 3: 2.31, 6: 2.33, 9: 2.35}
+        text = self.log(uneven) + self.log(even).replace("[100", "[200")
+        self.assertEqual(self.hr.findings(self.hr.parse(text)), [])
+
+    def test_a_low_battery_is_called_out(self):
+        self.assertFalse(self.hr.battery_line((18.4, 80))[1])
+        text, bad = self.hr.battery_line((16.1, 5))
+        self.assertTrue(bad)
+        self.assertIn("LOW", text)
+        self.assertIn("EMPTY", self.hr.battery_line((15.2, 0))[0])
+        self.assertTrue(self.hr.battery_line((0.3, 0))[1])                 # on a wall supply the motors have no power
+        self.assertFalse(self.hr.battery_line(None)[1])
+
+
 class ColourStepTests(unittest.TestCase):
     """What the colour step takes for the ball. On the Pupper the fisheye's step learnt the hand holding it."""
 
