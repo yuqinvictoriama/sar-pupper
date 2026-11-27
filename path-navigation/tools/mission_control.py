@@ -32,6 +32,7 @@ import socket
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -73,16 +74,27 @@ class SimBackend:
         self.options = {"seed": 1, "moe_deg": self.cfg.sound.moe_deg, "second_call": True, "throws": True,
                         "says_phrase": True, "survivor_calls": True}
         self.sim = None
+        self.error = None                       # why the simulation stopped, if it did
         self.reset()
         threading.Thread(target=self._loop, daemon=True, name="simulation").start()
+
+    def _option(self, key: str, value):
+        """A page value in the option's own type. bool("false") is True, so booleans are read by hand."""
+        current = self.options[key]
+        if isinstance(current, bool):
+            if isinstance(value, str):
+                return value.strip().lower() in ("1", "true", "yes", "on")
+            return bool(value)
+        return type(current)(value)
 
     def reset(self, options: dict | None = None) -> None:
         with self.lock:
             for key, value in (options or {}).items():
                 if key in self.options:
-                    self.options[key] = type(self.options[key])(value)
+                    self.options[key] = self._option(key, value)
             self.options["seed"] += 1                   # a different room each time
             self.sim = self.CourseSim(self.cfg, self.SimOptions(**self.options), motion=True)
+            self.error = None
             self.sim.step()
 
     def _loop(self) -> None:
@@ -93,8 +105,14 @@ class SimBackend:
             owed = min(owed + (now - last) * self.speed, 2.0)
             last = now
             with self.lock:
-                while owed >= DT:
-                    self.sim.step()
+                while owed >= DT and self.error is None:
+                    try:
+                        self.sim.step()
+                    except Exception as exc:        # noqa: BLE001  keep serving the page, say what stopped it
+                        self.error = "%s: %s" % (type(exc).__name__, exc)
+                        traceback.print_exc()
+                        print("The simulation has stopped (%s). Reset it from the page, or restart." % self.error,
+                              file=sys.stderr)
                     owed -= DT
             time.sleep(0.02)
 
@@ -114,7 +132,7 @@ class SimBackend:
             with self.lock:
                 for key, value in body["options"].items():
                     if key in self.options:
-                        self.options[key] = type(self.options[key])(value)
+                        self.options[key] = self._option(key, value)
                         setattr(self.sim.opt, key, self.options[key])
         return True, "ok"
 
@@ -122,7 +140,7 @@ class SimBackend:
         with self.lock:
             snap = self.sim.snapshot()
         snap["server"] = {"mode": "sim", "speed": self.speed, "options": dict(self.options), "age": 0.0,
-                          "connected": True}
+                          "connected": True, "error": self.error}
         return snap
 
 
@@ -237,12 +255,19 @@ def make_handler(backend):
             except ValueError:
                 self._json(400, {"ok": False, "message": "not JSON"})
                 return
-            if path == "/api/command":
-                ok, message = backend.command(str(body.get("command", "")).strip())
-            elif path == "/api/sim":
-                ok, message = backend.configure(body)
-            else:
-                self._json(404, {"ok": False, "message": "not found"})
+            if not isinstance(body, dict):
+                self._json(400, {"ok": False, "message": "a JSON object, please"})
+                return
+            try:
+                if path == "/api/command":
+                    ok, message = backend.command(str(body.get("command", "")).strip())
+                elif path == "/api/sim":
+                    ok, message = backend.configure(body)
+                else:
+                    self._json(404, {"ok": False, "message": "not found"})
+                    return
+            except (TypeError, ValueError) as exc:      # a bad value from the page: say so, do not drop the line
+                self._json(400, {"ok": False, "message": "bad value: %s" % exc})
                 return
             self._json(200 if ok else 400, {"ok": ok, "message": message})
 
@@ -290,7 +315,11 @@ def main() -> None:
 
     # On the robot the page has to be reachable from the laptop; a simulation on a laptop need not be.
     host = "127.0.0.1" if (args.local or (backend.mode == "sim" and not args.robot)) else "0.0.0.0"
-    server = ThreadingHTTPServer((host, args.port), make_handler(backend))
+    try:
+        server = ThreadingHTTPServer((host, args.port), make_handler(backend))
+    except OSError as exc:
+        sys.exit("Port %d is taken (%s): Mission Control may already be running. Open http://localhost:%d, "
+                 "or start this one with --port <another>." % (args.port, exc.strerror or exc, args.port))
     print("Pupper Mission Control (%s). Open:" % ("SIMULATION" if backend.mode == "sim" else "ROBOT"))
     for a in (addresses(args.port) if host == "0.0.0.0" else ["http://localhost:%d" % args.port]):
         print("   ", a)
