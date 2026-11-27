@@ -276,7 +276,8 @@ class CameraRunner:
 def worker_main(name: str, cfg: dict, conn, keep_jpeg: bool, opencv_threads: int) -> None:
     """Entry point of one camera's process. Talks to the node over conn:
 
-    to the node:   ("f", FrameResult, jpeg bytes or None)   one per picture looked at
+    to the node:   ("f", FrameResult)                       one per picture looked at
+                   ("j", camera, time, jpeg bytes)          the picture itself, for the throw recorder
                    ("s", status dict)                        twice a second
                    ("log", text)
     from the node: ("hint", track hint or None), ("stop",)
@@ -295,7 +296,9 @@ def worker_main(name: str, cfg: dict, conn, keep_jpeg: bool, opencv_threads: int
             stop.set()
 
     def emit(result, jpeg) -> None:
-        send(("f", result, None if jpeg is None else bytes(jpeg)))
+        send(("f", result))                        # what was found goes first and is acted on at once;
+        if jpeg is not None:                       # the picture, for the throw recorder, follows
+            send(("j", result.cam, result.raw, bytes(jpeg)))
 
     try:
         runner = CameraRunner(name, cfg, emit, log=lambda m: send(("log", str(m))), keep_jpeg=keep_jpeg)
@@ -326,7 +329,10 @@ class CameraFarm:
     """All the cameras, each in its own process (or, with processes=False, as threads here)."""
 
     def __init__(self, cfg: dict, names, on_result, log=print, keep_jpeg: bool = True, processes: bool = True,
-                 ros_node=None, opencv_threads: int = 1):
+                 ros_node=None, opencv_threads: int = 1, on_jpeg=None):
+        """on_result(result, jpeg): jpeg is the camera's picture when the cameras run as threads; with processes
+        it is None and the picture arrives a moment later through on_jpeg(camera, time, jpeg)."""
+        self.on_jpeg = on_jpeg
         self.cfg = cfg
         self.names = list(names)
         self.on_result = on_result
@@ -373,7 +379,9 @@ class CameraFarm:
                 break
             try:
                 if msg[0] == "f":
-                    self.on_result(msg[1], msg[2])
+                    self.on_result(msg[1], None)
+                elif msg[0] == "j" and self.on_jpeg is not None:
+                    self.on_jpeg(msg[1], msg[2], msg[3])
                 elif msg[0] == "s":
                     self._status[name] = msg[1]
                 elif msg[0] == "log":

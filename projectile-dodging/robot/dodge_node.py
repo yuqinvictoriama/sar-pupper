@@ -129,7 +129,7 @@ class DodgeNode(Node):
         self.farm = CameraFarm(self.cfg, list(self.cam_cfgs), self.on_frame_result,
                                log=lambda m: self.get_logger().info(str(m)), keep_jpeg=self.record_events,
                                processes=bool(ncfg.get("camera_processes", True)), ros_node=self,
-                               opencv_threads=int(ncfg.get("opencv_threads", 1)))
+                               opencv_threads=int(ncfg.get("opencv_threads", 1)), on_jpeg=self.on_frame_jpeg)
         self.farm.start()
 
         self.create_timer(1.0 / float(ncfg.get("cmd_rate_hz", 100.0)), self.on_cmd_timer)
@@ -158,6 +158,8 @@ class DodgeNode(Node):
                    "start": round(res.start, 4), "size": [res.size[0], res.size[1]]}
             if res.roi:
                 rec["roi"] = 1
+            if res.still:
+                rec["still"] = res.still
             if res.blobs:
                 rec["blobs"] = [[round(b.u, 1), round(b.v, 1), b.w, b.h] for b in res.blobs]
             state = self.core.trace_state()
@@ -168,6 +170,7 @@ class DodgeNode(Node):
             s = self.cam_stats[name]
             s["frames"] += 1
             s["blobs"] += len(res.blobs)
+            s["still"] = res.still
             s["latency"] += 0.1 * ((now - res.t) - s["latency"])
             s["proc_ms"] += 0.1 * (res.decode_ms + res.detect_ms + core_ms - s["proc_ms"])
             s["decode_ms"] += 0.1 * (res.decode_ms - s["decode_ms"])
@@ -176,6 +179,11 @@ class DodgeNode(Node):
             s["last"] = now
         if self.record_events and jpeg is not None:
             self.ring.add_frame(name, res.raw, jpeg)
+
+    def on_frame_jpeg(self, name: str, t_raw: float, jpeg) -> None:
+        """The picture a result was about, sent after it by the camera's process: kept for the throw recorder."""
+        if self.record_events:
+            self.ring.add_frame(name, t_raw, jpeg)
 
     # ------------------------------------------------------------------ other inputs
     def on_imu(self, msg: Imu) -> None:
@@ -337,7 +345,7 @@ class DodgeNode(Node):
                 cams[name] = {"fps": round(s["fps"], 1), "latency_ms": round(s["latency"] * 1000.0, 1),
                               "proc_ms": round(s["proc_ms"], 1), "decode_ms": round(s["decode_ms"], 1),
                               "detect_ms": round(s["detect_ms"], 1), "wait_ms": round(s["wait_ms"], 1),
-                              "alive": (now - s["last"]) < 1.0, "blobs": s["blobs"]}
+                              "alive": (now - s["last"]) < 1.0, "blobs": s["blobs"], "still": s.get("still", 0)}
                 extra = self.farm.status(name)
                 if "brightness" in extra:
                     cams[name]["brightness"] = extra["brightness"]

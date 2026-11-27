@@ -344,6 +344,7 @@ class UsbCamera(threading.Thread):
         self.device = cam_cfg.get("device", "")
         self.cap_cfg = cam_cfg.get("capture", {})
         self.max_fps = float(cam_cfg.get("max_process_fps", 0) or 0)
+        self.stale_s = float(cam_cfg.get("stale_frame_s", 0.045))   # a frame older than this on arrival is let go
         self.callback = callback
         self.log = log
         self.running = True
@@ -431,6 +432,7 @@ class UsbCamera(threading.Thread):
         last_out = 0.0
         fails = 0
         n_in = 0
+        skipped = 0
         window = time.monotonic()
         while self.running:
             if not cap.grab():
@@ -447,6 +449,10 @@ class UsbCamera(threading.Thread):
             n_in += 1
             due = self.max_fps <= 0 or (t_cap - last_out) >= (1.0 / self.max_fps) * 0.9
             if due and self._want.is_set():
+                if now_mono - t_cap > self.stale_s and skipped < 8:
+                    skipped += 1          # this one waited in the camera's queue (this thread was held up):
+                    continue              # a newer one is right behind it
+                skipped = 0
                 ok, buf = cap.retrieve()
                 if ok and buf is not None:
                     last_out = t_cap

@@ -108,6 +108,14 @@ detector:
   # resolution only the places that showed ball colour. Same blobs, about a third of the work. 1 = off.
   coarse_step: 2
   coarse_min_px: 60000     # search areas smaller than this (the region around a tracked ball) are done directly
+  # Blobs that have sat in one place in the picture are not passed on to the tracker: balls already thrown,
+  # anything else of the ball's colour. Still = seen there for after_s, and over the last window_s neither moved
+  # (more than move_px pixels or move_diameters of its width) nor grown (by more than the factor grow).
+  # Also: a square of the picture (cell_px wide) that has had a blob in it for more than busy_level of the last
+  # busy_s seconds reports no more, unless one is busy_bigger times wider than usual there. That is for things
+  # whose colour shows in bits that come and go (a drying rack, a patterned mat). busy_level 0 = off.
+  still: {enabled: true, after_s: 1.0, window_s: 0.5, move_px: 6.0, move_diameters: 0.5, grow: 1.2, forget_s: 1.5,
+          cell_px: 48, busy_s: 2.0, busy_level: 0.3, busy_bigger: 1.6}
   roi_tracking: true       # while a ball is tracked, look near its predicted position first
   roi_half_deg: 14.0
   roi_min_px: 96

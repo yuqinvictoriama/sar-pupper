@@ -11,6 +11,7 @@ the track and decides.
 """
 from __future__ import annotations
 
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ class FrameResult:
     size: tuple              # (width, height) of the picture
     blobs: list = field(default_factory=list)
     roi: bool = False        # found by looking only near the tracked ball
+    still: int = 0           # blobs left out because they have not moved for a while (see StillFilter)
     detect_ms: float = 0.0   # time spent looking for the ball
     decode_ms: float = 0.0   # time spent turning the camera's JPEG into a picture
     start: float = 0.0       # wall clock when the search began (start - raw = how old the picture already was)
@@ -48,6 +50,107 @@ def load_mask(cam_cfg: dict, warn=None):
     return mask
 
 
+class StillFilter:
+    """Leaves out blobs that have sat in one place in the picture for a while: they are not thrown balls.
+
+    A room has still things of the ball's colour in it, above all the balls already thrown. Each
+    flickers a little from picture to picture, and to the tracker a flickering blob among others is
+    easily a "moving" one: on the Pupper (2026-11-26) a bowl of balls and a rolled-up mat produced a
+    false "throw seen" every few seconds and a few predicted hits, with nobody throwing.
+
+    Two rules. The first is for a thing that sits in one spot (a ball on the floor); the second for a
+    thing whose colour shows in bits that come and go (a drying rack, a patterned mat): the picture is
+    divided into squares of cell_px, and a square that has had a blob in it for most of the last few
+    seconds (busy_level of the time, averaged over busy_s) reports no more blobs, unless one is clearly
+    bigger than what that square usually shows. A ball flying through such a square is not seen there;
+    a ball coming straight at the camera is in its square for under a second, too short to count.
+
+    A blob is still when something has been seen at its place for after_s seconds and, over the last
+    window_s, it has neither moved (more than move_px or move_diameters of its own width) nor grown
+    (by more than grow: a ball coming straight at the camera stays in one place but swells). A thrown
+    ball is never still by this measure, and neither is anything while the robot turns or walks past
+    it; those are passed on as before and the tracker judges them.
+    """
+
+    def __init__(self, cfg: dict | None = None):
+        cfg = cfg or {}
+        self.enabled = bool(cfg.get("enabled", True))
+        self.after = float(cfg.get("after_s", 1.0))
+        self.window = float(cfg.get("window_s", 0.5))
+        self.move_px = float(cfg.get("move_px", 6.0))
+        self.move_d = float(cfg.get("move_diameters", 0.5))
+        self.grow = float(cfg.get("grow", 1.2))
+        self.forget = float(cfg.get("forget_s", 1.5))
+        self.max_places = int(cfg.get("max_places", 60))
+        self.places: list = []       # each: {"t0", "seen", "u", "v", "d", "hist": [(t, u, v, d), ...]}
+        self.cell = float(cfg.get("cell_px", 48.0))
+        self.busy_s = float(cfg.get("busy_s", 2.0))
+        self.busy_level = float(cfg.get("busy_level", 0.3))        # 0 = this rule off
+        self.busy_bigger = float(cfg.get("busy_bigger", 1.6))
+        self.cells: dict = {}        # (column, row) -> [share of recent time with a blob in it, usual blob width]
+        self.t_prev = None
+
+    def filter(self, t: float, blobs: list):
+        """(blobs worth passing on, number left out)."""
+        if not self.enabled:
+            return blobs, 0
+        self.places = [p for p in self.places if 0.0 <= t - p["seen"] <= self.forget]
+        # ---- squares of the picture that keep showing colour
+        busy = set()
+        if self.busy_level > 0:
+            dt = 0.0 if self.t_prev is None else min(0.5, max(0.0, t - self.t_prev))
+            self.t_prev = t
+            fade = math.exp(-dt / self.busy_s)
+            hit = {}
+            for b in blobs:
+                hit.setdefault((int(b.u // self.cell), int(b.v // self.cell)), []).append(float(b.diameter_px))
+            busy = {key for key, c in self.cells.items() if c[0] >= self.busy_level}
+            for key in list(self.cells):
+                c = self.cells[key]
+                c[0] *= fade
+                if c[0] < 0.02 and key not in hit:
+                    del self.cells[key]
+            for key, widths in hit.items():
+                c = self.cells.setdefault(key, [0.0, min(widths)])
+                c[0] += 1.0 - fade
+                c[1] += 0.2 * (min(widths) - c[1])
+        kept, used = [], set()
+        for b in blobs:
+            d = float(b.diameter_px)
+            key = (int(b.u // self.cell), int(b.v // self.cell))
+            if key in busy and d < self.busy_bigger * self.cells[key][1] if key in self.cells else False:
+                continue                           # one more bit of colour where there always is some
+            best, best_dist = None, None
+            for i, p in enumerate(self.places):
+                if i in used or not (0.6 * p["d"] <= d <= 1.7 * p["d"]):
+                    continue                       # a different size is a different thing (a ball passing in front)
+                dist = math.hypot(b.u - p["u"], b.v - p["v"])
+                if dist <= max(self.move_px, 0.8 * max(d, p["d"])) and (best is None or dist < best_dist):
+                    best, best_dist = i, dist
+            if best is None:
+                if len(self.places) < self.max_places:
+                    self.places.append({"t0": t, "seen": t, "u": b.u, "v": b.v, "d": d, "hist": [(t, b.u, b.v, d)]})
+                    used.add(len(self.places) - 1)
+                kept.append(b)
+                continue
+            used.add(best)
+            p = self.places[best]
+            hist = [h for h in p["hist"] if t - h[0] <= self.window + 0.25]
+            hist.append((t, b.u, b.v, d))
+            p.update(seen=t, u=b.u, v=b.v, d=d, hist=hist)
+            old = hist[0]
+            for h in hist:                         # the entry nearest to one window ago
+                if t - h[0] >= self.window:
+                    old = h
+            waited = (t - p["t0"]) >= self.after and (t - old[0]) >= 0.8 * self.window
+            moved = math.hypot(b.u - old[1], b.v - old[2]) > max(self.move_px, self.move_d * d)
+            grown = d > self.grow * old[3]
+            if waited and not moved and not grown:
+                continue                           # still: leave it out
+            kept.append(b)
+        return kept, len(blobs) - len(kept)
+
+
 class FramePipeline:
     def __init__(self, name: str, cfg: dict, mask=None):
         self.name = name
@@ -61,6 +164,7 @@ class FramePipeline:
         self.full_every = max(1, int(self.det_cfg.get("full_frame_every", 3)))
         self.frame_no = 0
         self.hint = None
+        self.still = StillFilter(self.det_cfg.get("still"))
 
     def set_hint(self, hint) -> None:
         """hint: DodgeCore.track_hint(), or None when nothing is tracked."""
@@ -91,5 +195,6 @@ class FramePipeline:
                     blobs, roi = None, False      # not where expected: look everywhere
         if blobs is None:
             blobs = self.detector.detect(bgr)
+        blobs, n_still = self.still.filter(t, blobs)
         done = time.time()
-        return FrameResult(self.name, t, t_capture, size, blobs, roi, (done - t0) * 1000.0, decode_ms, t0, done)
+        return FrameResult(self.name, t, t_capture, size, blobs, roi, n_still, (done - t0) * 1000.0, decode_ms, t0, done)

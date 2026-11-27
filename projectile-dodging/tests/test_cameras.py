@@ -100,7 +100,8 @@ class FreshFrameTests(unittest.TestCase):
         # the one that has just arrived, not one that sat in the camera's queue while the last was worked on.
         ages = self.run_camera(work_s=0.06)
         self.assertGreater(len(ages), 10)
-        self.assertLess(max(ages[2:]), 0.03, "frames were up to %.0f ms old when handed over" % (1000 * max(ages[2:])))
+        self.assertLess(max(ages[2:]), 0.05, "frames were up to %.0f ms old when handed over" % (1000 * max(ages[2:])))
+        self.assertLess(float(np.median(ages)), 0.02)
 
     def test_frame_rate_cap_is_kept(self):
         ages = self.run_camera(work_s=0.0, seconds=1.0, max_fps=20)
@@ -137,12 +138,15 @@ class CameraFarmTests(unittest.TestCase):
                 with lock:
                     got.append((res, jpeg))
 
-            farm = camera_worker.CameraFarm(cfg, ["elp_left"], on_result, log=logs.append, processes=processes)
+            pictures = {}
+            farm = camera_worker.CameraFarm(cfg, ["elp_left"], on_result, log=logs.append, processes=processes,
+                                            on_jpeg=lambda cam, t, jpeg: pictures.__setitem__(round(t, 4), jpeg))
             farm.start()
             farm.set_hint(None)
             end = time.time() + 20.0
-            while time.time() < end and len(got) < 12:
+            while time.time() < end and (len(got) < 12 or (processes and len(pictures) < 12)):
                 time.sleep(0.05)
+            got = [(res, jpeg if jpeg is not None else pictures.get(round(res.raw, 4))) for res, jpeg in got]
             status = farm.status("elp_left")
             farm.stop()
         return got, logs, status
