@@ -97,6 +97,24 @@ Turning any one of those options off brings real false dodges from 7 down to 5 o
 
 The recordings are a dry-run evening with someone handling balls next to the robot and 12 unmarked armed throws; the straight-behind case the new rules are for is barely in them (`213916`, from −162°, fires with or without them). Judge them on throws from straight behind.
 
+### Re-scored on 6ab9ac2 (the Projectile dodging session's changes after this report)
+
+6ab9ac2 limits the two-look rule to within 30° of straight behind and to a second look in the top strip of a rear picture, fires an unconfident estimate only when the last look was in that strip, turns `bearing_pool` off, and sets `loom_min` 0.15, `loom_support` 0.45, `bearing_max_closing_speed` 6.5. Its new hint rule changes what the cameras find, so the **139 recordings whose pictures are on the Mac were searched again under 6ab9ac2** (all labelled and armed ones among them). The other 200 (16:xx, pictures deleted for disk space) were re-scored on blobs searched under the older hint rule. The full `replay.py` search of the 38 labelled and armed recordings gave the same verdicts.
+
+| Code | Real false dodges | Real throws missed | Sim false dodges | Sim lobs not cleared | Unmarked recordings dodged | Recordings raising an exception |
+|---|---|---|---|---|---|---|
+| fa4fd42, its config | 3 / 27 | 4 / 8 | 19 / 135 | 2 / 60 | 11 / 304 | 0 / 339 |
+| c3329ad, its config | – | – | – | – | – | 21 / 339 |
+| 3842b7a, its config | 7 / 27 | 4 / 8 | 20 / 135 | 1 / 60 | 23 / 304 | 0 / 339 |
+| **6ab9ac2, its config** | **2 / 27** | **4 / 8** | **3 / 135** (2 / 90 with 20 cases per kind) | **1 / 60** (1 / 40) | **12 / 304** | **0 / 339** |
+
+- With 20 simulated cases per kind the numbers are the session's own: 2 / 90 false, 1 / 40 not cleared. The remaining simulated false dodges are all "ball lifted out of a basket".
+- The known false live dodges `213905`, `213910`, `214011` do not fire. The four false dodges 3842b7a added (`204813`, `205203`, `205322`, plus `205455`) are down to one: **`205455-dry` still fires**: three looks from `elp_left` at +99°, 1.8 m, not confident, tau 0.32 s.
+- **`205520-dry` still fires** (fisheye, six looks, 1.2 m, confident, 3.7 m/s). **`205525-dry` no longer fires.**
+- Throws missed are the same four: the three from the slow 15:5x cameras and `213938`.
+- Armed session: 8 of the 12 unmarked live dodges fire, as before (`213821`, `213835`, `213842`, `213916`, `213921`, `213927`, `213955`, `214007`). `213835` now fires with 0.36 s left (0.25 s under fa4fd42). `213838` does not fire.
+- Not checked: whether `213835` fires at the same moment as it did live; the replay's 30 ms fixed latency differs from the robot's.
+
 ## Still dodged falsely with the recommended setting
 
 - `205520-dry` and `205525-dry` (handled balls, fisheye, 1.2–1.4 m). `205525`: the blob's range read 1.37 → 0.88 → 0.88 m over 0.15 s, which looks like a ball coming in at 3.2 m/s and agrees with the bearing's 3.9 m/s; probably a hand uncovering the ball. Nothing in the threshold set tells it apart. The bearing test seems to have reached its limit here; a ball handled 1–1.5 m from the robot will sometimes pass for a throw.
