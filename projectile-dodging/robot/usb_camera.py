@@ -337,8 +337,11 @@ class UsbCamera(threading.Thread):
     it, and the node was always looking about one processing time into the past.)
     """
 
-    def __init__(self, name: str, cam_cfg: dict, callback, log=print):
+    def __init__(self, name: str, cam_cfg: dict, callback, log=print, decode: bool = True):
+        """decode=False: when the camera passes its JPEG through, hand that over undecoded (bgr_frame is
+        None) and leave the decoding to the callback, which may not need the whole picture."""
         super().__init__(daemon=True, name="usb-" + name)
+        self.decode = decode
         self.cam_name = name
         self.cfg = cam_cfg
         self.device = cam_cfg.get("device", "")
@@ -486,6 +489,10 @@ class UsbCamera(threading.Thread):
             t_wall, buf = item
             try:
                 jpeg = None
+                if self.raw and not self.decode:
+                    self._n_out += 1
+                    self.callback(self.cam_name, t_wall, buf.reshape(-1), None)
+                    continue
                 if self.raw:
                     t0 = time.monotonic()
                     jpeg = buf.reshape(-1)

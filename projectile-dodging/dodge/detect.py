@@ -30,6 +30,20 @@ class Blob:
         return 2.0 * (self.area / np.pi) ** 0.5
 
 
+@dataclass
+class Candidate:
+    """A place that showed ball colour in the coarse (small) picture: roughly where and how big, in
+    full-picture pixels, and the window of the full picture to measure it in."""
+    u: float
+    v: float
+    area: float
+    window: tuple
+
+    @property
+    def diameter_px(self) -> float:
+        return 2.0 * (self.area / np.pi) ** 0.5
+
+
 def color_bounds(color: dict):
     lo = np.array([color["h_min"], color["s_min"], color["v_min"]], dtype=np.uint8)
     hi = np.array([color["h_max"], color.get("s_max", 255), color.get("v_max", 255)], dtype=np.uint8)
@@ -314,9 +328,35 @@ class BallDetector:
         of it directly is cheaper.
         """
         step = self.coarse_step
-        full_h, full_w = bgr.shape[:2]
         size = ((x1 - x0 + step - 1) // step, (y1 - y0 + step - 1) // step)
         small = cv2.resize(bgr[y0:y1, x0:x1], size, interpolation=cv2.INTER_NEAREST)
+        found = self._coarse_places(small, x0, y0, x1, y1, bgr.shape[1], bgr.shape[0])
+        return None if found is None else [c.window for c in found]
+
+    def coarse_candidates(self, small: np.ndarray, full_w: int, full_h: int):
+        """The first half of a search, on a picture already 1/coarse_step the size (a JPEG decoded small):
+        the places that show ball colour, as Candidate objects, most colour first. None when there are too
+        many for this to pay (search the full picture with detect). Follow with measure_candidates.
+        """
+        step = self.coarse_step
+        x0, y0, x1, y1 = self.search_box(full_w, full_h)
+        x0, y0 = (x0 // step) * step, (y0 // step) * step           # the small picture's pixels start on these
+        sx1, sy1 = min(small.shape[1], (x1 + step - 1) // step), min(small.shape[0], (y1 + step - 1) // step)
+        self.balance.update(small)
+        return self._coarse_places(small[y0 // step:sy1, x0 // step:sx1], x0, y0, x1, y1, full_w, full_h)
+
+    def measure_candidates(self, bgr: np.ndarray, candidates: list) -> list:
+        """The second half: blobs at the given candidates, measured in the full picture. Largest first."""
+        limit = self.search_box(bgr.shape[1], bgr.shape[0])
+        found = []
+        for c in candidates:
+            found += self._measure_window(bgr, c.window, limit)
+        return self._largest_first(found)
+
+    def _coarse_places(self, small: np.ndarray, x0: int, y0: int, x1: int, y1: int, full_w: int, full_h: int):
+        """small: the search area (x0, y0, x1, y1 of the full picture) at 1/coarse_step size."""
+        step = self.coarse_step
+        size = (small.shape[1], small.shape[0])
         raw = color_mask(self.balance.apply(small), self.color)
         ignore = self.ignore_for(full_w, full_h)
         if ignore is not None:
@@ -324,7 +364,7 @@ class BallDetector:
         if cv2.countNonZero(raw) == 0:
             return []
         # neighbouring pixels of colour are one place to look at, not several
-        n, labels, stats, _cent = cv2.connectedComponentsWithStats(cv2.dilate(raw, _GROW), connectivity=8)
+        n, labels, stats, cent = cv2.connectedComponentsWithStats(cv2.dilate(raw, _GROW), connectivity=8)
         counts = np.bincount(labels[raw > 0], minlength=n)[1:]
         # A ball of the smallest size that counts covers about min_area / step^2 of
         # the pixels looked at. Fewer than 0.4 of that is a speck of noise.
@@ -334,16 +374,18 @@ class BallDetector:
             return None                               # colour all over the picture: one direct search costs less
         keep = keep[np.argsort(-counts[keep])] + 1
         pad = 2
-        windows, covered = [], 0
+        found, covered = [], 0
         for i in keep:
             bx, by, bw, bh = (int(v) for v in stats[i, :4])
             wx0, wy0 = max(x0, x0 + (bx - pad) * step), max(y0, y0 + (by - pad) * step)
             wx1, wy1 = min(x1, x0 + (bx + bw + pad) * step), min(y1, y0 + (by + bh + pad) * step)
-            windows.append((wx0, wy0, wx1, wy1))
             covered += (wx1 - wx0) * (wy1 - wy0)
+            area = float(counts[i - 1]) * step * step
+            found.append(Candidate(x0 + (float(cent[i][0]) + 0.5) * step, y0 + (float(cent[i][1]) + 0.5) * step,
+                                   area, (wx0, wy0, wx1, wy1)))
         if covered > 0.6 * (x1 - x0) * (y1 - y0):
             return None
-        return windows
+        return found
 
     def _measure_window(self, bgr: np.ndarray, win, limit) -> list:
         """Blobs in one window of the frame, each seen whole.

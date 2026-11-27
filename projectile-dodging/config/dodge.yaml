@@ -108,6 +108,9 @@ detector:
   # resolution only the places that showed ball colour. Same blobs, about a third of the work. 1 = off.
   coarse_step: 2
   coarse_min_px: 60000     # search areas smaller than this (the region around a tracked ball) are done directly
+  decode_small_first: true # decode each JPEG at 1/coarse_step size first (a third of the cost) and decode the full
+                           # picture only when that shows ball colour somewhere it has not been sitting all along
+  full_decode_frames: 6    # ... and after a picture that showed something, decode this many in full straight away
   # Blobs that have sat in one place in the picture are not passed on to the tracker: balls already thrown,
   # anything else of the ball's colour. Still = seen there for after_s, and over the last window_s neither moved
   # (more than move_px pixels or move_diameters of its width) nor grown (by more than the factor grow).

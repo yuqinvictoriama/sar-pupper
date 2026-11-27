@@ -51,26 +51,26 @@ def main() -> None:
         pipe = FramePipeline(cam, cfg)
         dec, det, blobs, size = [], [], [], (0, 0)
         prof = cProfile.Profile() if args.profile == cam else None
+        full = 0
         for i, data in enumerate(jpegs):
-            t0 = time.perf_counter()
-            bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
-            t1 = time.perf_counter()
             if prof:
                 prof.enable()
-            res = pipe.process(float(i) / 30.0, bgr)
+            res = pipe.process_jpeg(float(i) / 30.0, np.frombuffer(data, np.uint8))
             if prof:
                 prof.disable()
-            t2 = time.perf_counter()
             if i >= 2:                       # the first pictures set up the colour balance and caches
-                dec.append((t1 - t0) * 1000.0)
-                det.append((t2 - t1) * 1000.0)
+                dec.append(res.decode_ms)
+                det.append(res.detect_ms)
                 blobs.append(len(res.blobs))
+                full += bool(res.blobs)
             size = res.size
         if not det:
             continue
         total = float(np.mean(dec) + np.mean(det))
         print("%-10s %7d %9s %10.1f %10.1f %10.1f %7.1f %.0f" % (
             cam, len(jpegs), "%dx%d" % size, np.mean(dec), np.mean(det), np.max(det), np.mean(blobs), 1000.0 / total))
+        print("%-10s the slowest picture took %.1f ms (decode + search); %d of %d pictures had a blob to pass on" % (
+            "", float(np.max(np.array(dec) + np.array(det))), full, len(dec)))
         if prof:
             pstats.Stats(prof).sort_stats("cumulative").print_stats(22)
 

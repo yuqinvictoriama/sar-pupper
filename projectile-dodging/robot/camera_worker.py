@@ -74,6 +74,7 @@ class CameraRunner:
         self.fps_in = 0.0
         # A strong colour cast means the camera is not showing the white balance it was given.
         self.cast_limit = float(cfg.get("node", {}).get("cast_limit", 1.8))
+        self._warned_dark = False
         self._cast_since = 0.0
         self._cast_tries = 0
         self._cast_next = 0.0
@@ -89,7 +90,7 @@ class CameraRunner:
                          "Skipping it." % self.name)
                 return
             from usb_camera import UsbCamera
-            self.usb = UsbCamera(self.name, self.cam, self._on_usb, log=self.log)
+            self.usb = UsbCamera(self.name, self.cam, self._on_usb, log=self.log, decode=False)
             self.usb.start()
         elif src == "ros_compressed":
             self._start_ros()
@@ -122,7 +123,7 @@ class CameraRunner:
     def status(self) -> dict:
         cast = round(self.pipeline.detector.balance.strength(), 2)
         if self.usb is not None:
-            return {"brightness": round(self.usb.brightness, 0), "problem": self.usb.problem or self.problem,
+            return {"brightness": round(self.pipeline.brightness, 0), "problem": self.usb.problem or self.problem,
                     "fps_in": round(self.usb.fps_in, 1), "cast": cast}
         return {"problem": self.problem, "fps_in": round(self.fps_in, 1), "cast": cast}
 
@@ -133,9 +134,16 @@ class CameraRunner:
 
     # ------------------------------------------------------------------ USB camera
     def _on_usb(self, _name: str, t_capture: float, jpeg, bgr) -> None:
-        result = self.pipeline.process(t_capture, bgr, self.usb.decode_ms)
+        if bgr is None:
+            result = self.pipeline.process_jpeg(t_capture, jpeg)
+        else:
+            result = self.pipeline.process(t_capture, bgr, self.usb.decode_ms)
         self.emit(result, jpeg if self.keep_jpeg else None)
         self._watch_cast()
+        if 0.0 <= self.pipeline.brightness < 25.0 and not self._warned_dark:
+            self._warned_dark = True
+            self.log("%s: the picture is very dark (average %.0f of 255): the ball will not be found. "
+                     "Run  python3 tools/tune_exposure.py %s" % (self.name, self.pipeline.brightness, self.name))
 
     def _watch_cast(self) -> None:
         """If the picture keeps a strong colour cast, the camera is not applying its white balance: send it again.
@@ -218,12 +226,8 @@ class CameraRunner:
                 if self.max_fps > 0 and (t - last_t) < 0.9 / self.max_fps:
                     continue
                 last_t = t
-                t0 = time.monotonic()
                 data = np.frombuffer(msg.data, dtype=np.uint8)
-                bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
-                if bgr is None:
-                    continue
-                result = self.pipeline.process(t, bgr, (time.monotonic() - t0) * 1000.0)
+                result = self.pipeline.process_jpeg(t, data)
                 self.emit(result, data if self.keep_jpeg else None)
             except Exception as exc:
                 self.problem = "frame processing failed: %r" % (exc,)
@@ -259,11 +263,7 @@ class CameraRunner:
                     continue                      # behind: let this one go, as a live camera would
                 t_capture = time.time()
                 data = np.frombuffer(reader.read(src_cam, off, length), dtype=np.uint8)
-                t0 = time.monotonic()
-                bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
-                if bgr is None:
-                    continue
-                result = self.pipeline.process(t_capture, bgr, (time.monotonic() - t0) * 1000.0)
+                result = self.pipeline.process_jpeg(t_capture, data)
                 self.emit(result, data if self.keep_jpeg else None)
             if not self.cam.get("loop", False):
                 break

@@ -16,6 +16,9 @@ import os
 import time
 from dataclasses import dataclass, field
 
+import cv2
+import numpy as np
+
 from .camera_models import build_cameras
 from .config import ROOT
 from .core import predict_pixel
@@ -42,7 +45,6 @@ def load_mask(cam_cfg: dict, warn=None):
     mask_file = cam_cfg.get("mask_file")
     if not mask_file:
         return None
-    import cv2
     path = mask_file if os.path.isabs(mask_file) else os.path.join(ROOT, mask_file)
     mask = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
     if mask is None and warn is not None:
@@ -165,6 +167,10 @@ class FramePipeline:
         self.frame_no = 0
         self.hint = None
         self.still = StillFilter(self.det_cfg.get("still"))
+        self.two_stage = bool(self.det_cfg.get("decode_small_first", True))
+        self.brightness = -1.0       # mean grey level of a recent picture (0-255), -1 before the first
+        self.hot_frames = int(self.det_cfg.get("full_decode_frames", 6))
+        self._hot = 0                # pictures still to be decoded in full straight away
 
     def set_hint(self, hint) -> None:
         """hint: DodgeCore.track_hint(), or None when nothing is tracked."""
@@ -178,10 +184,66 @@ class FramePipeline:
             self._scaled[key] = self.camera.with_resolution(*key)
         return self._scaled[key]
 
+    def process_jpeg(self, t_capture: float, data) -> FrameResult:
+        """One picture, still as the camera's JPEG (bytes or a uint8 array).
+
+        Decoding and searching a full picture is most of the work there is (20-30 ms of a 1280 x 720
+        one on the Pupper), and most pictures show no ball. So the JPEG is first decoded at
+        1/coarse_step size, which costs about 60 % of a full decode (measured on the Pi: 6.7 against
+        10.6 ms), and that small picture is searched for ball colour, which costs little. Only if it
+        shows something that has not been sitting there all along is the full picture decoded and
+        the thing measured. Once something is in view, and while a ball that is closing in is tracked,
+        the following pictures are decoded in full straight away, so only the first costs both.
+        """
+        det = self.detector
+        flag = {2: cv2.IMREAD_REDUCED_COLOR_2, 4: cv2.IMREAD_REDUCED_COLOR_4, 8: cv2.IMREAD_REDUCED_COLOR_8}.get(det.coarse_step)
+        data = np.frombuffer(data, dtype=np.uint8) if isinstance(data, (bytes, bytearray, memoryview)) else data
+        full_w, full_h, step = self.camera.model.width, self.camera.model.height, det.coarse_step
+        small = None
+        t0 = time.time()
+        if self._hot > 0:
+            self._hot -= 1
+        elif flag is not None and self.two_stage and not (self.roi_tracking and self.hint is not None):
+            small = cv2.imdecode(data, flag)
+            if small is None or small.shape[1] != (full_w + step - 1) // step or small.shape[0] != (full_h + step - 1) // step:
+                small = None                        # not the size this camera is set up for: the plain way
+        if small is None:
+            bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            if bgr is None:
+                raise ValueError("%s: a picture that will not decode" % self.name)
+            return self.process(t_capture, bgr, (time.time() - t0) * 1000.0)
+        t1 = time.time()
+        self._look(small)
+        candidates = det.coarse_candidates(small, full_w, full_h)
+        if candidates is None:                      # colour all over: the plain way
+            t2 = time.time()
+            bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            return self.process(t_capture, bgr, (t1 - t0 + time.time() - t2) * 1000.0)
+        t = t_capture + self.time_offset
+        self.frame_no += 1
+        moving, n_still = self.still.filter(t, candidates)
+        decode_s = t1 - t0
+        blobs = []
+        if moving:
+            self._hot = self.hot_frames
+            t2 = time.time()
+            bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            decode_s += time.time() - t2
+            blobs = det.measure_candidates(bgr, moving)
+        done = time.time()
+        return FrameResult(self.name, t, t_capture, (full_w, full_h), blobs, False, n_still,
+                           (done - t0 - decode_s) * 1000.0, decode_s * 1000.0, t0, done)
+
+    def _look(self, picture) -> None:
+        """Remember how bright the pictures are (a camera that is too dark finds nothing)."""
+        if self.frame_no % 30 == 0:
+            self.brightness = float(picture[::8, ::8].mean())
+
     def process(self, t_capture: float, bgr, decode_ms: float = 0.0) -> FrameResult:
         t0 = time.time()
         t = t_capture + self.time_offset
         size = (bgr.shape[1], bgr.shape[0])
+        self._look(bgr)
         self.frame_no += 1
         blobs, roi = None, False
         hint = self.hint
@@ -196,5 +258,7 @@ class FramePipeline:
         if blobs is None:
             blobs = self.detector.detect(bgr)
         blobs, n_still = self.still.filter(t, blobs)
+        if blobs:
+            self._hot = self.hot_frames
         done = time.time()
         return FrameResult(self.name, t, t_capture, size, blobs, roi, n_still, (done - t0) * 1000.0, decode_ms, t0, done)
