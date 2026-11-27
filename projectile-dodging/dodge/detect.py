@@ -231,6 +231,7 @@ class BallDetector:
         self.coarse_step = max(1, int(det.get("coarse_step", 2)))
         self.coarse_min_px = int(det.get("coarse_min_px", 60000))    # search areas smaller than this are done directly
         self.max_places = int(det.get("max_places", 60))             # places a coarse search hands on, most colour first
+        self.coarse_need = float(det.get("coarse_need", 0.7))        # share of the smallest ball's pixels a place must show
         self.sparse_min_px = float(det.get("sparse_min_px", 600))    # a place whose box is at least this big ...
         self.sparse_fill = float(det.get("sparse_fill", 0.2))        # ... and less than this full of colour is a scatter
         self.max_per_window = int(det.get("max_per_window", 8))      # patches judged in one place, largest first
@@ -370,9 +371,11 @@ class BallDetector:
         # neighbouring pixels of colour are one place to look at, not several
         n, labels, stats, cent = cv2.connectedComponentsWithStats(cv2.dilate(raw, _GROW), connectivity=8)
         counts = np.bincount(labels[raw > 0], minlength=n)[1:]
-        # A ball of the smallest size that counts covers about min_area / step^2 of
-        # the pixels looked at. Fewer than 0.4 of that is a speck of noise.
-        need = max(1, int(0.4 * self._min_area(full_w) / (step * step)))
+        # A ball of the smallest size that counts covers about min_area / step^2 of the pixels looked
+        # at (and min_area is already well under a ball at the farthest range: far_ball_margin).
+        # Clearly fewer is a speck of noise. (0.4 of it until 2026-11-26: on the Pupper nearly every
+        # picture then held a few specks of 2-5 pixels, each a new "place" to decode and measure.)
+        need = max(2, int(round(self.coarse_need * self._min_area(full_w) / (step * step))))
         keep = np.nonzero(counts >= need)[0]
         # Most colour first, and no more than max_places of them. A noisy picture with loose colour limits
         # shows specks by the hundred; measuring each one took 30-40 ms a picture on the Pupper, and giving

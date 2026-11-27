@@ -241,6 +241,8 @@ class FramePipeline:
             blobs, n_still = self.still.filter(t, det.detect(full()))
         else:
             moving, n_still = self.still.filter(t, candidates)
+            if moving:
+                self._hot = self.hot_frames         # something is there: the next pictures in full straight away
             # Measuring a place at full size costs about a millisecond on the Pi. In a speckled picture
             # only the places with most colour are measured: a ball near enough to matter is among them.
             blobs = det.measure_candidates(full(), moving[: self.max_measured]) if moving else []

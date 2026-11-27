@@ -108,6 +108,7 @@ detector:
   # resolution only the places that showed ball colour. Same blobs, about a third of the work. 1 = off.
   coarse_step: 2
   coarse_min_px: 60000     # search areas smaller than this (the region around a tracked ball) are done directly
+  coarse_need: 0.7         # a place counts if it shows this share of the pixels the smallest ball would (specks do not)
   max_places: 60           # a coarse search hands on at most this many places, the ones with most colour first
   max_measured: 12         # ... of which, once the still ones are left out, at most this many are measured per picture
   sparse_min_px: 600       # a place whose box covers at least this many pixels and is less than sparse_fill full of
