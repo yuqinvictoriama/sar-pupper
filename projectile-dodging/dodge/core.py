@@ -88,6 +88,7 @@ class DodgeCore:
         self.level_tilt = float(fc.get("level_tilt_deg", 20.0))
         self.still_gyro = float(fc.get("still_gyro_rad_s", 0.6))
         self.abort_tilt = float(fc.get("abort_tilt_deg", 40.0))
+        self.ramp_out = max(1e-3, float(cfg["escape"].get("ramp_out_s", 0.2)))
 
         self.lock = threading.RLock()
         self.armed = bool(armed)
@@ -229,7 +230,7 @@ class DodgeCore:
         own = R @ np.array([vx, vy, 0.0]) if (t_now - tv) < 0.6 else None
         threats = []
         for tr in tracks:
-            if not tr.flying and tr.closing_speed < self.idle_closing:
+            if not self.assessor.use_bearing and not tr.flying and tr.closing_speed < self.idle_closing:
                 # A still thing (a ball lying on the floor, a green cushion): the assessor would say the
                 # same, after flying its arc forward. A cluttered room has many of these in every picture.
                 threats.append(Threat(tr.id, reason="not approaching"))
@@ -287,10 +288,14 @@ class DodgeCore:
                 if tilt > self.abort_tilt:
                     self._event(t_now, "abort", reason="tilt %.0f deg" % tilt)
                     self._start_recover(t_now)
-                elif t_now - self.t_dodge >= self.plan.duration:
+                elif t_now - self.t_dodge >= self.plan.duration + self.ramp_out:
                     self._start_recover(t_now)
                 else:
-                    return None if self.dry_run else (self.plan.vx, self.plan.vy, 0.0)
+                    # After the burst the command is eased to zero instead of dropped: on the Pupper the
+                    # body's tilt peaked just AFTER a burst ended (26 deg, and one fall, 2026-11-26).
+                    over = t_now - self.t_dodge - self.plan.duration
+                    k = 1.0 if over <= 0.0 else max(0.0, 1.0 - over / self.ramp_out)
+                    return None if self.dry_run else (self.plan.vx * k, self.plan.vy * k, 0.0)
             if self.state == State.RECOVER:
                 held = t_now - self.t_recover
                 if held >= self.recover_max or (held >= self.recover_min and self._steady(t_now)):

@@ -358,6 +358,7 @@ class HighLobAndSmoothFloorTests(unittest.TestCase):
         import copy
         left_new, left_old = [], []
         old = copy.deepcopy(CFG)
+        old["threat"]["use_bearing"] = False              # judged by its size, and only once it is closing in
         old["threat"]["judge_rising_balls"] = False
         for bearing, seed in ((140, 1), (-135, 2), (150, 3)):
             throw = aimed_throw(CFG, bearing, 2.3, rise=1.4)
@@ -576,6 +577,131 @@ class CoreStateTests(unittest.TestCase):
         self.assertTrue(seen_zero)               # stood still first
         self.assertIsNone(core.command(t + 0.01))  # then went quiet so the mux hands control back
         self.assertEqual(core.state, State.SEARCH)
+
+    def test_the_burst_eases_to_zero_instead_of_stopping_dead(self):
+        # On the Pupper the body's tilt peaked just after a burst ended (26 degrees, and one fall).
+        core = DodgeCore(CFG, armed=True)
+        core.state = State.DODGE
+        core.plan = EscapePlanner(CFG["escape"], CFG["robot"], CFG["ball"], 0.05).plan(
+            Threat(1, True, True, "", 0.8, 0.0, 0.05, 0.05, 0.0, 0.0, np.array([0.0, -1.0]), 90.0, 50.0, 4.0, 2.0, 5.0))
+        core.t_dodge = 0.0
+        full = core.command(0.5 * core.plan.duration)
+        ramp = float(CFG["escape"]["ramp_out_s"])
+        half = core.command(core.plan.duration + 0.5 * ramp)
+        self.assertAlmostEqual(half[0], 0.5 * full[0], delta=0.03 * abs(full[0]) + 1e-6)
+        self.assertEqual(core.state, State.DODGE)
+        self.assertEqual(core.command(core.plan.duration + ramp + 0.01), (0.0, 0.0, 0.0))
+        self.assertEqual(core.state, State.RECOVER)
+
+
+class BearingTests(unittest.TestCase):
+    """Whether a ball is coming is read from how its direction moves, not from how fast it grows."""
+
+    LENS = np.array([0.045, 0.0315, 0.152])
+
+    def looks(self, p0, v0, n=5, dt=0.045, size_noise=0.0, seed=0, cam="elp_left"):
+        """A track fed with what one camera sees of a ball in free flight from p0 with velocity v0 (world = base here)."""
+        from dodge.track import Track
+        rng = np.random.default_rng(seed)
+        tr = None
+        for i in range(n):
+            t = 10.0 + i * dt
+            p = np.asarray(p0, float) + np.asarray(v0, float) * (i * dt) + np.array([0.0, 0.0, -0.5 * 9.81 * (i * dt) ** 2])
+            d = p - self.LENS
+            r = float(np.linalg.norm(d))
+            r_meas = r * (1.0 + size_noise * rng.normal())
+            z = self.LENS + d / r * r_meas
+            if tr is None:
+                tr = Track(t, z, np.eye(3) * 0.01, 7.0, cam, ray=d / r, origin=self.LENS, range_m=r_meas)
+            else:
+                tr.remember(t, z, cam, ray=d / r, origin=self.LENS, range_m=r_meas)
+                tr.hits += 1
+                tr.t_last = t
+        tr.confirmed = True
+        return tr, 10.0 + (n - 1) * dt
+
+    def assess(self, tr, t):
+        from dodge.threat import ThreatAssessor
+        return ThreatAssessor(CFG["threat"], CFG["robot"], CFG["ball"]).assess(tr, t, None)
+
+    @staticmethod
+    def lob(distance, bearing_deg, flight, side=0.0, release_h=0.75):
+        """Start point and velocity of a ball released at release_h that comes down on the body (or side metres beside it)."""
+        b = math.radians(bearing_deg)
+        p0 = np.array([distance * math.cos(b), distance * math.sin(b), release_h])
+        target = np.array([-side * math.sin(b), side * math.cos(b), 0.0])
+        v = (target - p0) / flight
+        v[2] = (0.0 - release_h + 0.5 * 9.81 * flight * flight) / flight
+        return p0, v
+
+    def test_a_lob_at_the_robot_is_recognised_from_three_looks_with_its_speed_and_time(self):
+        for bearing, flight, dist in ((150.0, 0.9, 2.5), (100.0, 0.8, 2.2), (170.0, 1.0, 3.0)):
+            p0, v0 = self.lob(dist, bearing, flight)
+            tr, t = self.looks(p0, v0, n=3, size_noise=0.08, seed=int(bearing))     # ranges 8 % off, as from blob size
+            th = self.assess(tr, t)
+            self.assertTrue(th.is_threat, th.reason)
+            self.assertAlmostEqual(th.closing_speed, dist / flight, delta=0.15 * dist / flight)
+            self.assertAlmostEqual(th.tau, flight - 2 * 0.045, delta=0.2)
+
+    def test_a_still_thing_whose_blob_flickers_is_not_a_throw(self):
+        # The blob at one spot reads 15 px, then 23: by size that is a ball rushing in (the false dodges of 2026-11-26).
+        from dodge.track import Track
+        ray = np.array([-0.6, 0.7, 0.35]) / np.linalg.norm([-0.6, 0.7, 0.35])
+        tr = Track(10.0, self.LENS + 2.6 * ray, np.eye(3) * 0.01, 7.0, "elp_left", ray=ray, origin=self.LENS, range_m=2.6)
+        for i, r in enumerate((2.3, 2.4, 1.5, 1.4), start=1):
+            tr.remember(10.0 + 0.045 * i, self.LENS + r * ray, "elp_left", ray=ray, origin=self.LENS, range_m=r)
+            tr.hits += 1
+            tr.t_last = 10.0 + 0.045 * i
+        tr.confirmed = True
+        th = self.assess(tr, 10.2)
+        self.assertFalse(th.is_threat)
+        self.assertEqual(th.reason, "not approaching")
+
+    def test_a_lob_aimed_a_metre_wide_and_one_that_falls_short_are_left_alone(self):
+        p0, v0 = self.lob(2.5, 140.0, 0.9, side=1.0)
+        tr, t = self.looks(p0, v0, n=5)
+        th = self.assess(tr, t)
+        self.assertFalse(th.is_threat, th.reason)
+        self.assertEqual(th.reason, "will miss")
+        self.assertGreater(th.miss_m, 0.5)
+        p0, v0 = self.lob(2.5, 140.0, 0.9)
+        short = np.array([0.45 * v0[0], 0.45 * v0[1], 0.6])       # thrown weakly: comes down a metre and a half away
+        tr, t = self.looks(p0 + short * 0.45, short + np.array([0.0, 0.0, -9.81 * 0.45]), n=5)     # seen already on its way down
+        self.assertFalse(self.assess(tr, t).is_threat)
+
+    def test_a_ball_lifted_by_hand_close_by_is_not_a_throw(self):
+        # It climbs in the picture as a throw from there would, but a throw from 1.2 m would be growing fast.
+        b = math.radians(-80.0)
+        p0 = np.array([1.2 * math.cos(b), 1.2 * math.sin(b), 0.0])
+        from dodge.track import Track
+        tr = None
+        for i in range(5):
+            t = 10.0 + 0.045 * i
+            p = p0 + np.array([0.0, 0.0, 1.3 * 0.045 * i])            # lifted straight up at 1.3 m/s
+            d = p - self.LENS
+            r = float(np.linalg.norm(d))
+            if tr is None:
+                tr = Track(t, p, np.eye(3) * 0.01, 7.0, "elp_right", ray=d / r, origin=self.LENS, range_m=r)
+            else:
+                tr.remember(t, p, "elp_right", ray=d / r, origin=self.LENS, range_m=r)
+                tr.hits += 1
+                tr.t_last = t
+        tr.confirmed = True
+        th = self.assess(tr, 10.18)
+        self.assertFalse(th.is_threat, th.reason)
+        self.assertIn("not getting bigger", th.reason)
+
+    def test_the_time_it_gives_does_not_depend_on_reading_the_size_right(self):
+        # The same lob with every range read 15 % too far (a blob that comes out small): 15 % later, no more.
+        p0, v0 = self.lob(2.5, 150.0, 0.9)
+        tr, t = self.looks(p0, v0, n=4)
+        good = self.assess(tr, t)
+        for i, h in enumerate(tr.history):
+            tr.history[i] = (h[0], h[1], h[2], h[3], h[4], h[5] * 1.15, h[6])
+        off = self.assess(tr, t)
+        self.assertTrue(off.is_threat, off.reason)
+        self.assertAlmostEqual(off.closing_speed, good.closing_speed, delta=0.05 * good.closing_speed)
+        self.assertLess(abs(off.tau - good.tau), 0.2)
 
 
 if __name__ == "__main__":

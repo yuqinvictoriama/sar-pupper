@@ -25,7 +25,8 @@ G = 9.81
 class Track:
     _next_id = 1
 
-    def __init__(self, t: float, p: np.ndarray, P_pos: np.ndarray, speed_sigma: float, cam: str, good: bool = True):
+    def __init__(self, t: float, p: np.ndarray, P_pos: np.ndarray, speed_sigma: float, cam: str, good: bool = True,
+                 ray: np.ndarray | None = None, origin: np.ndarray | None = None, range_m: float | None = None):
         self.id = Track._next_id
         Track._next_id += 1
         self.x = np.zeros(6)
@@ -41,7 +42,8 @@ class Track:
         self.flying = False     # seen moving like a thrown ball (set by the tracker, and it stays set)
         self.cams = {cam}
         self.last_cam = cam
-        self.history = [(t, np.array(p, dtype=float), cam, bool(good))]   # recent raw measurements: (t, point in the world frame, camera, range trustworthy)
+        # recent raw measurements: (t, point in the world frame, camera, range trustworthy, ray from the lens, range, lens position)
+        self.history = [self._look(t, p, cam, good, ray, origin, range_m)]
         self.p_first = np.array(p, dtype=float)          # where it was first seen
 
     # ---- convenience views of the state
@@ -79,10 +81,80 @@ class Track:
         r = self.range_m
         return float(-np.dot(self.x[:3], self.x[3:]) / r) if r > 1e-6 else 0.0
 
-    def remember(self, t: float, z: np.ndarray, cam: str = "", good: bool = True, window: float = 0.35) -> None:
+    @staticmethod
+    def _look(t, z, cam, good, ray=None, origin=None, range_m=None):
+        z = np.array(z, dtype=float)
+        origin = np.zeros(3) if origin is None else np.array(origin, dtype=float)
+        if ray is None:
+            d = z - origin
+            n = float(np.linalg.norm(d))
+            ray = d / n if n > 1e-9 else np.array([1.0, 0.0, 0.0])
+        if range_m is None:
+            range_m = float(np.linalg.norm(z - origin))
+        return (t, z, cam, bool(good), np.array(ray, dtype=float), float(range_m), origin)
+
+    def remember(self, t: float, z: np.ndarray, cam: str = "", good: bool = True, window: float = 0.35,
+                 ray: np.ndarray | None = None, origin: np.ndarray | None = None, range_m: float | None = None) -> None:
         """good: the range of this measurement can be trusted (the blob was not cut off by the picture's edge)."""
-        self.history.append((t, np.array(z, dtype=float), cam, bool(good)))
+        self.history.append(self._look(t, z, cam, good, ray, origin, range_m))
         self.history = [h for h in self.history if h[0] >= t - window][-24:]
+
+    def hit_course(self, min_looks: int = 3, min_span: float = 0.06, drop: float = 0.0, arrive=None):
+        """How the ball's BEARING has moved in the one camera that has seen it most, or None if no camera
+        has seen it min_looks times yet.
+
+        A camera reads a ball's direction to a quarter of a degree, and its range, from how big it looks,
+        to 10-15 % at best: at 2.5 m the ball is 6-8 pixels across in the fisheye, and one pixel more is
+        "0.4 m nearer", 8 m/s over one picture. So how fast the ball is coming cannot be read from its
+        size. It can be read from its direction. For a ball in free flight that will arrive at the
+        robot, the tangent of its elevation rises at a steady g / (2 x its speed toward the robot), and
+        its azimuth stays put. A still thing does not climb at all; a ball that will fall short sinks.
+
+        drop, arrive: the ball is aimed at a point drop metres below the lens (the body, not the camera on
+        top of it), which bends the climb in the last quarter second. Given (speed toward the robot,
+        time of arrival) from a first pass, the elevations are taken as seen from that point.
+
+        Returns a dict: cam, n, span, t (time of the last look), az and q = tan(elevation) at t with
+        their rates az_dot and q_dot, the scatter of each fit (sig_az_dot, sig_q_dot, rms_az, rms_q),
+        the looks' times and horizontal ranges (ts, r_h; from looks whose range can be trusted when
+        there are two or more), and the lens position.
+        """
+        by_cam = {}
+        for h in self.history:
+            by_cam.setdefault(h[2], []).append(h)
+        best = None
+        for looks in by_cam.values():
+            span = looks[-1][0] - looks[0][0]
+            if len(looks) >= min_looks and span >= min_span and (best is None or (len(looks), span) > best[0]):
+                best = ((len(looks), span), looks)
+        if best is None:
+            return None
+        looks = best[1][-8:]
+        ts = np.array([h[0] for h in looks])
+        rays = np.stack([h[4] for h in looks])
+        flat = np.hypot(rays[:, 0], rays[:, 1])
+        if float(flat.min()) < 0.1:
+            return None                                # almost straight overhead: azimuth means nothing there
+        az = np.unwrap(np.arctan2(rays[:, 1], rays[:, 0]))
+        q = rays[:, 2] / flat
+        if drop > 0.0 and arrive is not None:
+            v_c, T = arrive
+            q = q + drop / np.maximum(v_c * (T - ts), 0.3)
+        tc = ts - ts.mean()
+        S = float((tc * tc).sum())
+        az_dot = float((tc * (az - az.mean())).sum() / S)
+        q_dot = float((tc * (q - q.mean())).sum() / S)
+        rms_az = float(np.sqrt(np.mean((az - az.mean() - az_dot * tc) ** 2)))
+        rms_q = float(np.sqrt(np.mean((q - q.mean() - q_dot * tc) ** 2)))
+        good = [i for i, h in enumerate(looks) if h[3]]
+        use = good if len(good) >= 2 else list(range(len(looks)))
+        return {"cam": looks[0][2], "n": len(looks), "span": float(ts[-1] - ts[0]), "t": float(ts[-1]),
+                "az": float(az.mean() + az_dot * tc[-1]), "q": float(q.mean() + q_dot * tc[-1]),
+                "t_mid": float(ts.mean()), "az_mid": float(az.mean()), "q_mid": float(q.mean()),
+                "az_dot": az_dot, "q_dot": q_dot, "rms_az": rms_az, "rms_q": rms_q,
+                "sig_az_dot": max(rms_az, 0.004) / math.sqrt(S), "sig_q_dot": max(rms_q, 0.004) / math.sqrt(S),
+                "ts": ts[use], "r_h": np.array([looks[i][5] * flat[i] for i in use]), "ranges_good": len(good) >= 2,
+                "origin": looks[-1][6]}
 
     def one_camera(self, need: int, min_span: float = 0.03):
         """The recent measurements of the single camera that has seen the ball most, or None.
@@ -270,7 +342,8 @@ class Tracker:
             tr.hits += 1
             tr.cams.add(m.cam)
             tr.last_cam = m.cam
-            tr.remember(t, z, m.cam, not (getattr(m, "truncated", False) or getattr(m, "vague", False)))
+            tr.remember(t, z, m.cam, not (getattr(m, "truncated", False) or getattr(m, "vague", False)),
+                        ray=items[mi][3], origin=items[mi][4], range_m=m.range_m)
             if tr.hits >= self.confirm_hits:
                 tr.confirmed = True
                 if not tr.flying and tr.travel_m >= self.flight_travel:
@@ -286,7 +359,8 @@ class Tracker:
             if len(self.tracks) >= self.max_tracks and not self._make_room(t):
                 break
             self.tracks.append(Track(t, z, Rm, self.speed_sigma, m.cam,
-                                     not (getattr(m, "truncated", False) or getattr(m, "vague", False))))
+                                     not (getattr(m, "truncated", False) or getattr(m, "vague", False)),
+                                     ray=_ray, origin=_origin, range_m=m.range_m))
 
     def _make_room(self, t: float) -> bool:
         """With every slot taken, drop the track least likely to be a ball in flight. False if none may go.

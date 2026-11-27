@@ -20,12 +20,13 @@ would make and never moves the robot until you arm it in step G.
 
 | | |
 |---|---|
-| **Done on this Pupper** | Code installed and up to date; all tests passed there on 26 Nov (85 then, 91 now). Both rear cameras found and assigned left and right. Exposure and white balance tuned for evening light. Fisheye lens rim fitted. Camera timing measured (23 Nov). USB power cap lifted. |
+| **Done on this Pupper** | Code installed and up to date; all tests passed there on 26 Nov (85 then, 97 now). Both rear cameras found and assigned left and right. Exposure and white balance tuned for evening light. Fisheye lens rim fitted. Camera timing measured (23 Nov). USB power cap lifted. |
 | **Fixed on 26 Nov** | The lag and the missed throws. In dry run with nobody throwing, the node went from 5–15 pictures a second and 130–390 ms lag to 20–26 a second and 3–35 ms, with no false "throw seen". |
 | **Not done yet** | **No ball has been thrown at the robot since those fixes**, armed or not. The colour calibration is from 23 Nov and was made with a yellow cast in the picture: `elp_left`'s lets dark floor through, `elp_right`'s size scale is off (1.38, should be near 1), and the fisheye's is not green at all, so it is ignored and that camera runs on generic settings. The joystick has not been tried against the new velocity mux on the robot. |
 | **Found after the reboot that evening** | After a power-up the rear cameras ignored their white balance (strong yellow cast, rates back down to 10–15 a second). Cause found on the live cameras and fixed in the code; the fix running by itself is first tested at your next boot (step D checks it). The colour step had been learning the hand holding the ball instead of the ball, which is why the fisheye's result was thrown away twice; fixed. |
 | **Also fixed that night** | Balls being handled beside the robot, and balls lying still, set off about ten dry-run "dodges" in four minutes. Five recordings were replayed on the Mac: none dodges any more, the recorded real throw still does. Not yet run on the robot. |
-| **Open** | Both rear cameras share one USB controller and deliver about 43 pictures a second instead of 90 (step B). |
+| **After the first armed lobs (21:36–21:40)** | Three faults read from the 22 recordings: dodges of still patches (one ended in the fall), real dodges 0.12–0.18 s before the ball, and straight behind weak. Cause of the first two: the ball's speed was read from how fast it grows in the picture, which at 2.5 m is a matter of one pixel. It is now read from how the ball's direction moves. In simulation every direction is as good or better (rear cone 70 → 80 %, front 67 → 77 %), and the false dodges in the recordings are gone. The dodge now eases to a stop instead of stopping dead. **Not yet run on the robot.** |
+| **Open** | Straight behind, the rear cameras see only 30° above the horizontal, so a lob from there is out of sight 0.1 s after release (see "The room and the throw"). Both rear cameras share one USB controller and deliver about 43 pictures a second instead of 90 (step B). |
 
 ## What to do next
 
@@ -42,7 +43,7 @@ cd ~/sar-pupper && git pull && cd projectile-dodging
 python3 -m unittest discover -s tests
 ```
 
-- [ ] It ends with `Ran 91 tests ... OK`. If not, stop and send me the output.
+- [ ] It ends with `Ran 97 tests ... OK`. If not, stop and send me the output.
 
 The line `note: the colour calibration in ... fisheye_color.yaml is for hue 9-28 ... is being ignored`
 is expected until step C.
@@ -322,6 +323,20 @@ Every calibration distance below fits in 2 m.
   following it on its arc while it is out of sight.
 - No flat or hard throws: from these distances they arrive in under half a
   second, which is not enough.
+- **Stand at least 2 m away.** From 1–1.5 m a lob is in the air 0.4–0.5 s and
+  the robot needs 0.6 s. Keep the basket of spare balls behind you, not in your
+  hand in front of the cameras.
+- **Straight behind is the weak direction.** The rear cameras overlap there,
+  but only up to 30° above the horizontal (38° at 15° to one side, 46° at the
+  rear diagonals), and a lob from 2.5 m is above that 0.1 s after release.
+  From behind, throw from 2.5 m or more (simulated: 100 % from 2.5–3.5 m, 80 %
+  from 2–3 m, 57 % for high lobs from 2 m), or from 15–20° to one side. The
+  hardware fix is to tilt the rear cameras up about 15° (then put
+  `pitch_deg: 15` under each rear camera's `extrinsics` in
+  `config/calib/mounting.yaml`); that raises the ceiling behind to about 45°.
+- The node now judges a ball by how its direction moves, so it reacts to a ball
+  that will sail over the robot as well as one that will hit, and to nothing
+  that is not climbing in the picture the way an incoming ball does.
 
 Simulated with the shipped numbers, 40 throws per row and direction (a
 simulation, not a measurement on the robot):
@@ -391,7 +406,7 @@ SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 ## 2. Check the code runs (no robot needed)
 
 ```bash
-python3 -m unittest discover -s tests     # expect: Ran 91 tests ... OK
+python3 -m unittest discover -s tests     # expect: Ran 97 tests ... OK
 python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7 --elp-fps 30    # simulated 2 m throws, rear cameras at their 30 a second; about a minute on the Pi
 ```
 
@@ -921,6 +936,7 @@ robot idle.
 | Tracks appear with no ball | Something else in view is ball-coloured | Remove it and redo the colour step for that camera |
 | Range reads consistently wrong | Size calibration | `calibrate_color.py <cam> --distance ...`; check `ball.diameter_m` |
 | Dodges balls that would miss by a lot | Prediction too generous | Lower `threat.k_sigma` or `threat.sigma_cap_m` |
+| Dodges (or does not dodge) differently from before 26 Nov night | The ball is now judged by how its direction moves, not by its size (`threat.use_bearing`) | To compare with the earlier way: put `threat: {use_bearing: false}` in a file such as `config/calib/method.yaml` and restart |
 | Reacts too late | Open the throw in Pupper Dodging View: it says where the time went | Few pictures per second or old pictures (age over 100 ms) in "Cameras during this throw": the Pi is overloaded, see stage 7. Ball first seen close to the robot: lighting or colour calibration (stage 5). A long time from command to the mux passing it on: check `start.sh` was not given `--slow-mux`. Otherwise more time in the air: throw higher, or from further back |
 | Loses a high lob that left the picture | It is followed unseen for 0.6 s; a very high lob is out of sight longer | Raise `tracker.flight_coast_s` (0.8), or throw a little lower |
 | Reacts in time but does not get clear | Robot slower than the config assumes | Raise `escape.accel_lag_s` in steps of 0.05 (or measure it with the stage 7 video), set `react_s` from stage 7; raise `vx_*` if steady |

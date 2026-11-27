@@ -165,6 +165,14 @@ threat:
   margin_m: 0.05           # clearance wanted between ball surface and body outline
   k_sigma: 1.5
   sigma_cap_m: 0.45
+  use_bearing: true        # judge a ball by how its DIRECTION moves (climbing elevation, steady azimuth) rather than by
+                           # how fast it grows in the picture; false = the earlier, size-based way
+  bearing_max_closing_speed: 7.0   # m/s. A ball coming faster than this from 2.5 m arrives in under 0.36 s, less than
+                           # the robot needs to get clear; and the slower the limit, the less a still thing's
+                           # flicker can pass for a climb
+  min_climb: 0.02          # tan(elevation) must have risen at least this much over the looks (about 1.1 degrees)
+  loom_min: 0.3            # where the ball should have come nearer by this share of its range between the looks ...
+  loom_support: 0.3        # ... its size must show at least this share of that approach (a ball lifted by hand does not)
   camera_support: 0.4      # an approach must also show within ONE camera's own pictures, at this share of the speed all
                            # cameras together give. Cameras that disagree about a still ball's range look, together,
                            # like a ball rushing in (a ball handled beside the robot "dodged", 2026-11-26). 0 = off
@@ -191,6 +199,7 @@ escape:
   max_displacement_m: 0.40
   min_duration_s: 0.25
   max_duration_s: 0.80     # hard cap on one burst
+  ramp_out_s: 0.20         # after the burst the command eases to zero over this long instead of stopping dead
   hold_past_arrival_s: 0.15  # never keep moving longer than this after the ball should have arrived
   along_track: false       # stretch: run under/away from steep lobs in the front and rear cones
   along_track_min_descent_deg: 45.0
