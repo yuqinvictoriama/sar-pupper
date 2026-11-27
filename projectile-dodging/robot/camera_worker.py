@@ -74,6 +74,7 @@ class CameraRunner:
         self.fps_in = 0.0
         # A strong colour cast means the camera is not showing the white balance it was given.
         self.cast_limit = float(cfg.get("node", {}).get("cast_limit", 1.8))
+        self.settle_s = float(cfg.get("node", {}).get("settle_s", 1.5))
         self._warned_dark = False
         self._cast_since = 0.0
         self._cast_tries = 0
@@ -138,6 +139,11 @@ class CameraRunner:
             result = self.pipeline.process_jpeg(t_capture, jpeg)
         else:
             result = self.pipeline.process(t_capture, bgr, self.usb.decode_ms)
+        if result.blobs and time.monotonic() - self.usb.t_settings < self.settle_s:
+            # The camera has just been opened or sent its settings: for a moment its colours shift, and a
+            # ball lying still shows as a patch that grows from picture to picture, which is what a ball
+            # coming straight at the camera looks like (two "dodges" on the Pupper, 2026-11-26).
+            result.blobs = []
         self.emit(result, jpeg if self.keep_jpeg else None)
         self._watch_cast()
         if 0.0 <= self.pipeline.brightness < 25.0 and not self._warned_dark:

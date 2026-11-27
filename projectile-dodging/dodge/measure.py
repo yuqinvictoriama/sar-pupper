@@ -28,6 +28,7 @@ class Measurement:
     u: float = 0.0
     v: float = 0.0
     area: float = 0.0
+    vague: bool = False     # range not to be relied on: cut by the frame edge, or not round (part of the ball hidden or in shadow)
 
     @property
     def point(self) -> np.ndarray:
@@ -81,23 +82,39 @@ def measure_blob(camera: Camera, blob, ball_diameter: float) -> Measurement | No
     # Thresholded blobs come out a little too big (edge pixels that are only
     # partly ball still pass): take a fixed number of pixels off the diameter,
     # then apply the scale. Both come from tools/calibrate_color.py --distance.
-    d_px = blob.diameter_px
+    area = float(blob.area)
+    long_side, short_side = float(max(blob.w, blob.h)), float(max(1, min(blob.w, blob.h)))
+    lopsided = False
+    if bool(cfg.get("size_by_width", False)):
+        # A camera with a long exposure smears a ball that moves across its picture into a streak, and the
+        # streak's area reads as a bigger, nearer ball: on the Pupper (2026-11-26, lamp light) a ball lifted
+        # out of a basket 1.5 m away "approached" at 4 m/s in the fisheye and set off a dodge. Across the
+        # smear the streak is as wide as the ball, so take the area of a disc of that width.
+        area *= short_side / long_side
+    else:
+        # A short exposure does not smear. A blob that is not round is then a ball partly hidden (by a hand,
+        # a basket's rim) or partly in shadow, and how much of it shows changes from picture to picture:
+        # its size says little about its range.
+        lopsided = long_side > float(cfg.get("round_aspect", 1.4)) * short_side
+    d_px = 2.0 * math.sqrt(area / math.pi)
     d_fix = max(d_px - float(cfg.get("size_offset_px", 0.0)), 0.5 * d_px)
-    theta = angular_diameter(camera, blob.u, blob.v, blob.area * (d_fix / d_px) ** 2)
+    theta = angular_diameter(camera, blob.u, blob.v, area * (d_fix / d_px) ** 2)
     if not (theta > 0.0):
         return None
     theta *= float(cfg.get("size_scale", 1.0))
     rng = (ball_diameter / 2.0) / math.sin(min(theta, math.pi * 0.999) / 2.0)
-    d_px = max(blob.diameter_px, 1.0)
+    d_px = max(d_px, 1.0)
     rel = float(cfg.get("size_sigma_px", 0.5)) / d_px
     sigma_r = rng * rel
     truncated = bool(blob.touches_edge)
     if truncated:
         sigma_r = max(sigma_r, 0.6 * rng)   # the ball is at most this far; could be much closer
+    elif lopsided:
+        sigma_r = max(sigma_r, 0.3 * rng)
     sigma_t = rng * math.radians(float(cfg.get("bearing_sigma_deg", 0.3)))
     sigma_t = max(sigma_t, rng * math.tan(math.sqrt(camera.model.solid_angle_per_px(blob.u, blob.v)) * 0.4))
     return Measurement(camera.name, camera.t.copy(), ray_b, theta, rng, sigma_t, sigma_r, truncated,
-                       blob.u, blob.v, blob.area)
+                       blob.u, blob.v, blob.area, truncated or lopsided)
 
 
 def measure_blobs(camera: Camera, blobs, ball_diameter: float) -> list:

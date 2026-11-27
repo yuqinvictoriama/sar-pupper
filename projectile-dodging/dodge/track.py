@@ -25,7 +25,7 @@ G = 9.81
 class Track:
     _next_id = 1
 
-    def __init__(self, t: float, p: np.ndarray, P_pos: np.ndarray, speed_sigma: float, cam: str):
+    def __init__(self, t: float, p: np.ndarray, P_pos: np.ndarray, speed_sigma: float, cam: str, good: bool = True):
         self.id = Track._next_id
         Track._next_id += 1
         self.x = np.zeros(6)
@@ -41,7 +41,7 @@ class Track:
         self.flying = False     # seen moving like a thrown ball (set by the tracker, and it stays set)
         self.cams = {cam}
         self.last_cam = cam
-        self.history = [(t, np.array(p, dtype=float))]   # recent raw measurement points (world frame)
+        self.history = [(t, np.array(p, dtype=float), cam, bool(good))]   # recent raw measurements: (t, point in the world frame, camera, range trustworthy)
         self.p_first = np.array(p, dtype=float)          # where it was first seen
 
     # ---- convenience views of the state
@@ -79,25 +79,58 @@ class Track:
         r = self.range_m
         return float(-np.dot(self.x[:3], self.x[3:]) / r) if r > 1e-6 else 0.0
 
-    def remember(self, t: float, z: np.ndarray, window: float = 0.18) -> None:
-        self.history.append((t, np.array(z, dtype=float)))
-        self.history = [h for h in self.history if h[0] >= t - window][-16:]
+    def remember(self, t: float, z: np.ndarray, cam: str = "", good: bool = True, window: float = 0.35) -> None:
+        """good: the range of this measurement can be trusted (the blob was not cut off by the picture's edge)."""
+        self.history.append((t, np.array(z, dtype=float), cam, bool(good)))
+        self.history = [h for h in self.history if h[0] >= t - window][-24:]
+
+    def one_camera(self, need: int, min_span: float = 0.03):
+        """The recent measurements of the single camera that has seen the ball most, or None.
+
+        Each camera reads the ball's range from how big it looks, with an error of its own (its size
+        calibration, a hand over part of the ball, the light). The same still ball can read 4.5 m in one
+        camera and 1.5 m in the next: put together, that is a ball rushing in at 10 m/s. On the Pupper
+        (2026-11-26) a ball being taken out of a basket beside the robot set off a "dodge" this way ten
+        times in four minutes. Within one camera the error is the same from picture to picture, so how
+        the ball moves is judged from one camera's pictures at a time.
+        """
+        by_cam = {}
+        for h in self.history:
+            if h[3]:
+                by_cam.setdefault(h[2], []).append(h)
+        best = None
+        for pts in by_cam.values():
+            span = pts[-1][0] - pts[0][0]
+            if len(pts) >= need and span >= min_span and (best is None or (len(pts), span) > best[0]):
+                best = ((len(pts), span), pts)
+        return None if best is None else best[1]
 
     def fitted_velocity(self):
-        """Straight-line velocity through the recent measurement points (no gravity assumed), or None.
+        """Straight-line velocity through one camera's recent measurement points (no gravity assumed), or None.
 
         Used to tell a thrown ball from a still object: the filter itself always
         assumes free fall, so a ball-coloured thing hanging above the robot looks
         to it as if it were dropping.
         """
-        if len(self.history) < 3:
+        pts_h = self.one_camera(3)
+        if pts_h is None:
             return None
-        ts = np.array([h[0] for h in self.history])
-        if ts[-1] - ts[0] < 0.03:
-            return None
-        pts = np.stack([h[1] for h in self.history])
+        ts = np.array([h[0] for h in pts_h])
+        pts = np.stack([h[1] for h in pts_h])
         tc = ts - ts.mean()
         return (tc[:, None] * (pts - pts.mean(axis=0))).sum(axis=0) / float((tc * tc).sum())
+
+    def camera_closing(self):
+        """Speed toward the robot as one camera alone has seen it (m/s; positive = approaching), or None
+        if no camera has had three good looks at it yet. See one_camera. (Two are not enough: a still
+        ball's blob flickers by 15 % in area from one picture to the next, which is 6 m/s over 40 ms.)"""
+        pts_h = self.one_camera(3, 0.05)
+        if pts_h is None:
+            return None
+        ts = np.array([h[0] for h in pts_h])
+        rs = np.array([float(np.linalg.norm(h[1])) for h in pts_h])
+        tc = ts - ts.mean()
+        return float(-(tc * (rs - rs.mean())).sum() / (tc * tc).sum())
 
     def azimuth_elevation_deg(self):
         p = self.x[:3]
@@ -134,6 +167,7 @@ class Tracker:
         self.q_p = float(cfg.get("pos_walk_sigma", 0.3))
         self.speed_sigma = float(cfg.get("init_speed_sigma", 7.0))
         self.gate = float(cfg.get("gate_chi2", 20.0))
+        self.gate_cos = math.cos(math.radians(float(cfg.get("gate_angle_deg", 45.0))))
         self.confirm_hits = int(cfg.get("confirm_hits", 3))
         self.max_coast = float(cfg.get("max_coast_s", 0.25))
         self.flight_coast = float(cfg.get("flight_coast_s", 0.6))
@@ -180,7 +214,7 @@ class Tracker:
             z = R_wb @ m.origin + m.range_m * ray
             if m.range_m > self.max_range:
                 continue
-            items.append((m, z, self.meas_cov(ray, m.sigma_t, m.sigma_r)))
+            items.append((m, z, self.meas_cov(ray, m.sigma_t, m.sigma_r), ray, R_wb @ m.origin))
 
         # Score every (track, measurement) pair, then assign best-first. All pairs are scored in one
         # go: a cluttered room gives tens of tracks and blobs, and one small solve per pair in Python
@@ -190,8 +224,8 @@ class Tracker:
         if pred and items:
             xs = np.stack([xp[:3] for xp, _ in pred])                      # (T, 3)
             Ps = np.stack([Pp[:3, :3] for _, Pp in pred])                  # (T, 3, 3)
-            zs = np.stack([z for _m, z, _R in items])                      # (M, 3)
-            Rs = np.stack([Rm for _m, _z, Rm in items])                    # (M, 3, 3)
+            zs = np.stack([it[1] for it in items])                         # (M, 3)
+            Rs = np.stack([it[2] for it in items])                         # (M, 3, 3)
             y = zs[None, :, :] - xs[:, None, :]                            # (T, M, 3)
             S = Ps[:, None, :, :] + Rs[None, :, :, :]                      # (T, M, 3, 3)
             try:
@@ -204,6 +238,15 @@ class Tracker:
                             d2[ti, mi] = float(y[ti, mi] @ np.linalg.solve(S[ti, mi], y[ti, mi]))
                         except np.linalg.LinAlgError:
                             pass
+            # ... and the blob must lie in the direction the track is expected in, as that camera sees it.
+            # Every camera's rays start at the robot, so a track whose range is vague (a ball cut off by
+            # the picture's edge) otherwise matches a blob on the opposite side of the robot, and the two
+            # together put the "ball" at the robot itself (seen on the Pupper, 2026-11-26).
+            rays = np.stack([it[3] for it in items])                       # (M, 3)
+            los = xs[:, None, :] - np.stack([it[4] for it in items])[None, :, :]
+            dist = np.linalg.norm(los, axis=2)
+            cos = np.einsum("tmi,mi->tm", los, rays) / np.maximum(dist, 1e-6)
+            d2 = np.where((cos >= self.gate_cos) | (dist < 0.3), d2, np.inf)
             for ti, mi in zip(*np.nonzero(d2 < self.gate)):
                 pairs.append((float(d2[ti, mi]), int(ti), int(mi)))
         pairs.sort()
@@ -213,7 +256,7 @@ class Tracker:
                 continue
             used_t.add(ti)
             used_m.add(mi)
-            m, z, Rm = items[mi]
+            m, z, Rm = items[mi][:3]
             xp, Pp = pred[ti]
             S = Pp[:3, :3] + Rm
             K = Pp[:, :3] @ np.linalg.inv(S)
@@ -227,7 +270,7 @@ class Tracker:
             tr.hits += 1
             tr.cams.add(m.cam)
             tr.last_cam = m.cam
-            tr.remember(t, z)
+            tr.remember(t, z, m.cam, not (getattr(m, "truncated", False) or getattr(m, "vague", False)))
             if tr.hits >= self.confirm_hits:
                 tr.confirmed = True
                 if not tr.flying and tr.travel_m >= self.flight_travel:
@@ -237,12 +280,13 @@ class Tracker:
                     tr.flying = v_fit is not None and float(np.linalg.norm(v_fit)) >= self.flight_speed
 
         self.prune(t)       # first: tracks that have gone unseen too long make room
-        for mi, (m, z, Rm) in enumerate(items):
+        for mi, (m, z, Rm, _ray, _origin) in enumerate(items):
             if mi in used_m:
                 continue
             if len(self.tracks) >= self.max_tracks and not self._make_room(t):
                 break
-            self.tracks.append(Track(t, z, Rm, self.speed_sigma, m.cam))
+            self.tracks.append(Track(t, z, Rm, self.speed_sigma, m.cam,
+                                     not (getattr(m, "truncated", False) or getattr(m, "vague", False))))
 
     def _make_room(self, t: float) -> bool:
         """With every slot taken, drop the track least likely to be a ball in flight. False if none may go.

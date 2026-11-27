@@ -416,6 +416,7 @@ class UsbCamera(threading.Thread):
         self.decode_ms = 0.0       # time the latest frame took to decode
         self.brightness = -1.0     # mean grey level of the latest frame (0-255), -1 before the first
         self.connected = False
+        self.t_settings = 0.0      # when exposure and white balance were last sent (time.monotonic): colours shift just after
         self.problem = ""          # why it is not delivering, when it is not
         self._warned_dark = False
         self._want = threading.Event()     # the work thread is free and wants the next frame
@@ -431,8 +432,10 @@ class UsbCamera(threading.Thread):
     def reapply_controls(self) -> None:
         """Send exposure, gain and white balance to the camera again while it streams (see apply_controls)."""
         if self.connected:
+            self.t_settings = time.monotonic()
             wake_white_balance(self.device, self.cap_cfg, None, self.log)     # the capture thread keeps pictures flowing
             apply_controls(self.device, self.cap_cfg, None, self.log)
+            self.t_settings = time.monotonic()
 
     def close(self, timeout: float = 3.0) -> bool:
         """Stop and wait for the thread, so the camera is released before the program exits.
@@ -458,6 +461,7 @@ class UsbCamera(threading.Thread):
                 self._sleep(2.0)
                 continue
             self.connected = True
+            self.t_settings = time.monotonic()
             self.problem = ""
             self.log("%s: opened %s %dx%d @ %.0f fps (%s)" % (
                 self.cam_name, self.device, cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT),

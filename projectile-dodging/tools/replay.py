@@ -24,14 +24,16 @@ import os
 from _common import ROOT, cv2, load_config, np
 
 from dodge.core import DodgeCore
-from dodge.detect import BallDetector, draw_blobs
+from dodge.detect import draw_blobs
+from dodge.pipeline import FramePipeline
 from dodge.recording import RecordingReader
 
 
 def replay(path: str, cfg: dict, out: str | None = None, cameras=None, latency: float = 0.03, quiet: bool = False) -> dict:
     rec = RecordingReader(path)
     core = DodgeCore(cfg, armed=False)
-    dets = {name: BallDetector.for_camera(cam, cfg["detector"]) for name, cam in cfg["cameras"].items()}
+    # The same per-camera work as on the robot: search, follow-up near a tracked ball, still things left out.
+    dets = {name: FramePipeline(name, cfg) for name, cam in cfg["cameras"].items() if cam.get("enabled", True)}
     imu = rec.imu()
     imu_i = 0
     stats = {cam: {"frames": 0, "with_ball": 0} for cam in rec.cameras}
@@ -52,8 +54,10 @@ def replay(path: str, cfg: dict, out: str | None = None, cameras=None, latency: 
         if bgr is None:
             continue
         t_first = t if t_first is None else t_first
-        blobs = dets[cam].detect(bgr)
+        blobs = dets[cam].process(t_raw, bgr).blobs
         core.process_blobs(cam, t, blobs, t_now, (bgr.shape[1], bgr.shape[0]))
+        for pipe in dets.values():
+            pipe.set_hint(core.track_hint())
         core.command(t_now)
         stats[cam]["frames"] += 1
         stats[cam]["with_ball"] += 1 if blobs else 0

@@ -69,7 +69,9 @@ class StillFilter:
 
     A blob is still when something has been seen at its place for after_s seconds and, over the last
     window_s, it has neither moved (more than move_px or move_diameters of its own width) nor grown
-    (by more than grow: a ball coming straight at the camera stays in one place but swells). A thrown
+    (by more than grow: a ball coming straight at the camera stays in one place but swells; it must
+    swell beyond the biggest the place has shown before, because a still ball in poor light is found
+    whole in one picture and half in the next). A thrown
     ball is never still by this measure, and neither is anything while the robot turns or walks past
     it; those are passed on as before and the tracker judges them.
     """
@@ -131,12 +133,15 @@ class StillFilter:
                     best, best_dist = i, dist
             if best is None:
                 if len(self.places) < self.max_places:
-                    self.places.append({"t0": t, "seen": t, "u": b.u, "v": b.v, "d": d, "hist": [(t, b.u, b.v, d)]})
+                    self.places.append({"t0": t, "seen": t, "u": b.u, "v": b.v, "d": d, "big": 0.0, "hist": [(t, b.u, b.v, d)]})
                     used.add(len(self.places) - 1)
                 kept.append(b)
                 continue
             used.add(best)
             p = self.places[best]
+            gone = [h[3] for h in p["hist"] if t - h[0] > self.window + 0.25]
+            if gone:
+                p["big"] = max(p["big"], max(gone))      # the biggest this place has shown, up to a window ago
             hist = [h for h in p["hist"] if t - h[0] <= self.window + 0.25]
             hist.append((t, b.u, b.v, d))
             p.update(seen=t, u=b.u, v=b.v, d=d, hist=hist)
@@ -146,7 +151,7 @@ class StillFilter:
                     old = h
             waited = (t - p["t0"]) >= self.after and (t - old[0]) >= 0.8 * self.window
             moved = math.hypot(b.u - old[1], b.v - old[2]) > max(self.move_px, self.move_d * d)
-            grown = d > self.grow * old[3]
+            grown = d > self.grow * max(old[3], p["big"])
             if waited and not moved and not grown:
                 continue                           # still: leave it out
             kept.append(b)

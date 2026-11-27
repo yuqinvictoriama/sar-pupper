@@ -63,6 +63,7 @@ class ThreatAssessor:
         self.k_sigma = float(cfg.get("k_sigma", 1.5))
         self.sigma_cap = float(cfg.get("sigma_cap_m", 0.45))
         self.sigma_lat_max = float(cfg.get("sigma_lat_max_m", 0.2))
+        self.camera_support = float(cfg.get("camera_support", 0.4))
 
     def assess(self, track, t_now: float, tracker, R_wb: np.ndarray | None = None,
                robot_vel_w: np.ndarray | None = None) -> Threat:
@@ -95,6 +96,16 @@ class ThreatAssessor:
                 and ground_speed >= self.min_ball_speed and float(v[2]) > 0.0
             if not lobbed:
                 th.reason = "not approaching"
+                return th
+        elif self.camera_support > 0.0:
+            # It approaches according to all cameras put together. One camera alone must see it approach
+            # too: cameras that disagree about a still ball's range look, together, like a ball rushing in.
+            seen = track.camera_closing()
+            if seen is None:
+                th.reason = "approach not yet seen three times by one camera"
+                return th
+            if seen - max(own, 0.0) < self.camera_support * (th.closing_speed - max(own, 0.0)):
+                th.reason = "no single camera sees it approach (the cameras disagree about its range)"
                 return th
         if th.closing_speed > self.max_closing or rng < self.min_range:
             th.reason = "implausible track"

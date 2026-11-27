@@ -20,11 +20,12 @@ would make and never moves the robot until you arm it in step G.
 
 | | |
 |---|---|
-| **Done on this Pupper** | Code installed and up to date; all 85 tests pass there. Both rear cameras found and assigned left and right. Exposure and white balance tuned for evening light. Fisheye lens rim fitted. Camera timing measured (23 Nov). USB power cap lifted. |
+| **Done on this Pupper** | Code installed and up to date; all tests passed there on 26 Nov (85 then, 91 now). Both rear cameras found and assigned left and right. Exposure and white balance tuned for evening light. Fisheye lens rim fitted. Camera timing measured (23 Nov). USB power cap lifted. |
 | **Fixed on 26 Nov** | The lag and the missed throws. In dry run with nobody throwing, the node went from 5–15 pictures a second and 130–390 ms lag to 20–26 a second and 3–35 ms, with no false "throw seen". |
 | **Not done yet** | **No ball has been thrown at the robot since those fixes**, armed or not. The colour calibration is from 23 Nov and was made with a yellow cast in the picture: `elp_left`'s lets dark floor through, `elp_right`'s size scale is off (1.38, should be near 1), and the fisheye's is not green at all, so it is ignored and that camera runs on generic settings. The joystick has not been tried against the new velocity mux on the robot. |
 | **Found after the reboot that evening** | After a power-up the rear cameras ignored their white balance (strong yellow cast, rates back down to 10–15 a second). Cause found on the live cameras and fixed in the code; the fix running by itself is first tested at your next boot (step D checks it). The colour step had been learning the hand holding the ball instead of the ball, which is why the fisheye's result was thrown away twice; fixed. |
-| **Open** | Both rear cameras share one USB controller and deliver about 43 pictures a second instead of 90 (step B). Handling balls beside the robot sets off dry-run "dodges" (step E has the workaround). |
+| **Also fixed that night** | Balls being handled beside the robot, and balls lying still, set off about ten dry-run "dodges" in four minutes. Five recordings were replayed on the Mac: none dodges any more, the recorded real throw still does. Not yet run on the robot. |
+| **Open** | Both rear cameras share one USB controller and deliver about 43 pictures a second instead of 90 (step B). |
 
 ## What to do next
 
@@ -41,7 +42,7 @@ cd ~/sar-pupper && git pull && cd projectile-dodging
 python3 -m unittest discover -s tests
 ```
 
-- [ ] It ends with `Ran 85 tests ... OK`. If not, stop and send me the output.
+- [ ] It ends with `Ran 91 tests ... OK`. If not, stop and send me the output.
 
 The line `note: the colour calibration in ... fisheye_color.yaml is for hue 9-28 ... is being ignored`
 is expected until step C.
@@ -192,10 +193,12 @@ python3 tools/step_response.py --vy 0.5
 
 - [ ] The robot keeps walking forward with the stick and does **not** step sideways. If it steps sideways, stop here, restart with `bash robot/start.sh --slow-mux` and tell me.
 
-**Keep spare balls out of the cameras' view** (behind the thrower, not in a
-basket beside the robot), and pick a ball up from the floor only when you are
-more than 2 m away or it is disarmed: a ball moving in a hand near the robot
-can set off a dodge. That is not fixed yet.
+**Before throwing, handle a ball beside the robot for half a minute**: take
+some out of a basket, pick one up from the floor, wave one about 1.5 m away.
+
+- [ ] No `"dodge"` event appears while you do. On 26 Nov this set off about ten; the causes found in those recordings are fixed, but this is the first check on the robot. If one appears, tell me the time: it is saved under `data/throws/`.
+
+It still helps to keep spare balls behind the thrower rather than in view.
 
 Then, with the robot standing still, throw balls at it, using the throws in
 [the room and the throw](#the-room-and-the-throw): sides first, then behind,
@@ -388,7 +391,7 @@ SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 ## 2. Check the code runs (no robot needed)
 
 ```bash
-python3 -m unittest discover -s tests     # expect: Ran 85 tests ... OK
+python3 -m unittest discover -s tests     # expect: Ran 91 tests ... OK
 python3 tools/sim_report.py --n 20 --dist 1.8 2.0 --rise 0.4 0.7 --elp-fps 30    # simulated 2 m throws, rear cameras at their 30 a second; about a minute on the Pi
 ```
 
@@ -973,12 +976,14 @@ Logs: `/tmp/sar-dodge/robot.log` (the page's: `dodging_view.log`). Every throw i
   found by measurement on the Pi and fixed (see `plan.md`, Implementation
   status). Afterwards, in dry run with nobody throwing: 20-26 pictures a second
   and 3-35 ms lag (5-15 and 130-390 ms before), no false "throw seen", the
-  dodge node at about a fifth of one core. All 85 tests pass on the Pi.
+  dodge node at about a fifth of one core. All tests passed on the Pi (85 at the time).
 - **Not verified - needs steps C to G at the top:** any throw since those
   fixes, armed or in dry run; the colour and size calibration, which predates
   them; the joystick's priority over the dodge command with `robot/fast_mux.py`
   on the robot; the white-balance wake running by itself after a power-up (the
-  mechanism was shown by hand on the live cameras); whether separate USB
+  mechanism was shown by hand on the live cameras); the fixes for false dodges
+  from handled and still balls (checked on five recordings and in simulation
+  only); the colour step's new rules; whether separate USB
   controllers raise the rear cameras' rate; and how the real robot accelerates.
   Expect to adjust numbers in `config/` along the way. `/tmp/sar-dodge/robot.log`
   says what the node could not do.

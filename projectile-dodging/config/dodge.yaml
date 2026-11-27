@@ -30,6 +30,8 @@ cameras:
     image_circle: {cx: 705.0, cy: 523.0, r: 390.0, margin_frac: 0.11}
     min_elevation_deg: -30.0          # ignore things on the floor right at the robot's feet
     time_offset_s: -0.04              # added to the frame stamp; from tools/measure_latency.py
+    size_by_width: true               # this camera's exposure is long in lamp light (about 20 ms) and smears a moving ball
+                                      # into a streak: size the ball by the streak's width, not its area
     colour_gains: [1.4, 3.3]          # fixed white balance [red, blue] the launch file sets (auto leaves this camera pink)
     size_scale: 1.0                   # apparent-size corrections; from tools/calibrate_color.py --distance
     size_offset_px: 0.4               # blobs come out about this much too wide
@@ -135,6 +137,7 @@ tracker:
   pos_walk_sigma: 0.03     # m/sqrt(s)
   init_speed_sigma: 7.0    # m/s, prior on the unknown velocity of a new track
   gate_chi2: 20.0
+  gate_angle_deg: 45.0     # ... and a blob only matches a track it lies within this angle of, as its camera sees it
   confirm_hits: 3
   max_coast_s: 0.25        # drop a confirmed track after this long unseen
   flight_coast_s: 0.6      # ... but keep following a ball seen in flight this long: a lob leaves the top of a
@@ -162,6 +165,9 @@ threat:
   margin_m: 0.05           # clearance wanted between ball surface and body outline
   k_sigma: 1.5
   sigma_cap_m: 0.45
+  camera_support: 0.4      # an approach must also show within ONE camera's own pictures, at this share of the speed all
+                           # cameras together give. Cameras that disagree about a still ball's range look, together,
+                           # like a ball rushing in (a ball handled beside the robot "dodged", 2026-11-26). 0 = off
   sigma_lat_max_m: 0.20    # do not fire early while the sideways prediction is this vague
   confirm_cycles: 2        # consecutive threat verdicts needed
   trigger_margin_s: 0.60   # fire once time-to-contact <= time needed + this (0.3 waited longer for a better estimate;
@@ -208,6 +214,8 @@ node:
                            # 2026-11-26 (then the cameras queue behind each other: far slower on the Pupper)
   opencv_threads: 1        # OpenCV worker threads per camera; the cameras already run one process each
   imu_rate_hz: 100.0       # IMU samples used per second; the rest are let go on arrival (0 = use every one)
+  settle_s: 1.5            # a rear camera reports no blobs for this long after it is opened or sent its settings:
+                           # its colours shift for a moment, and a still ball then looks like one coming closer
   cast_limit: 1.8          # a rear camera whose picture keeps one colour channel this many times another is not
                            # applying its white balance: its settings are sent again (0 = never)
   imu_topic: /imu_sensor_broadcaster/imu

@@ -399,6 +399,101 @@ class HighLobAndSmoothFloorTests(unittest.TestCase):
         self.assertFalse([e for e in r["events"] if e["event"] == "throw_seen"])           # a dodged throw is not also "seen"
 
 
+class HandledBallTests(unittest.TestCase):
+    """Balls being handled beside the robot, and balls lying about, must not set off a dodge. On the Pupper
+    (2026-11-26) taking balls out of a basket 1.5 m away did, ten times in four minutes."""
+
+    @staticmethod
+    def meas(cam, ray, rng, vague=False):
+        from dodge.measure import Measurement
+        return Measurement(cam, np.zeros(3), ray, 0.074 / rng, rng, 0.01, 0.03 * rng, False, vague=vague)
+
+    def test_cameras_that_disagree_about_a_still_balls_range_do_not_make_a_throw(self):
+        # The same still ball reads 4.5 m in one camera (a hand over half of it) and 1.5 m in the next.
+        # Put together that is a ball coming in at 10 m/s; within either camera it is not moving.
+        core = DodgeCore(CFG, armed=True)
+        core.set_can_dodge(True)
+        ray = np.array([0.15, -1.0, 0.1]) / np.linalg.norm([0.15, -1.0, 0.1])
+        t = 50.0
+        seq = [("elp_right", 4.5)] * 4 + [("fisheye", 1.5), ("elp_right", 4.4), ("fisheye", 1.45), ("fisheye", 1.5)] * 4
+        reasons = set()
+        for cam, rng in seq:
+            core.process_measurements(cam, t, [self.meas(cam, ray, rng)], t)
+            reasons.update(th.reason for th in core.last_threats)
+            t += 0.045
+        self.assertEqual([e for e in core.pop_events() if e["event"] == "dodge"], [])
+        self.assertFalse(any(tr.flying for tr in core.tracker.tracks))
+
+    def test_an_approach_needs_three_good_looks_from_one_camera(self):
+        from dodge.track import Track
+        ray = np.array([-1.0, 0.0, 0.2]) / np.linalg.norm([-1.0, 0.0, 0.2])
+        tr = Track(0.0, 3.0 * ray, np.eye(3) * 0.01, 7.0, "elp_left")
+        tr.remember(0.045, 2.7 * ray, "elp_left")
+        self.assertIsNone(tr.camera_closing(), "two looks are not enough: a still blob flickers that much")
+        tr.remember(0.09, 2.4 * ray, "elp_left")
+        self.assertAlmostEqual(tr.camera_closing(), 6.67, delta=0.1)
+        # looks whose range cannot be trusted (cut off, or not round) do not count
+        tr2 = Track(0.0, 3.0 * ray, np.eye(3) * 0.01, 7.0, "elp_left")
+        tr2.remember(0.045, 2.7 * ray, "elp_left", good=False)
+        tr2.remember(0.09, 2.4 * ray, "elp_left")
+        self.assertIsNone(tr2.camera_closing())
+        # and looks from another camera are a different ruler
+        tr3 = Track(0.0, 3.0 * ray, np.eye(3) * 0.01, 7.0, "elp_left")
+        tr3.remember(0.045, 1.5 * ray, "fisheye")
+        tr3.remember(0.09, 1.4 * ray, "fisheye")
+        self.assertIsNone(tr3.camera_closing())
+
+    def test_a_blob_on_the_other_side_of_the_robot_is_not_the_same_ball(self):
+        # Every camera's rays start at the robot. A track whose range is vague would otherwise take a blob
+        # on the opposite side for itself, and the two together put the "ball" at the robot.
+        from dodge.measure import Measurement
+        from dodge.track import Tracker
+        tracker = Tracker(CFG["tracker"], CFG["ball"])
+        right = np.array([0.2, -1.0, 0.05]) / np.linalg.norm([0.2, -1.0, 0.05])
+        left = np.array([-0.3, 1.0, 0.1]) / np.linalg.norm([-0.3, 1.0, 0.1])
+        tracker.update(0.0, [Measurement("elp_right", np.zeros(3), right, 0.03, 2.4, 0.01, 1.5, True)])
+        tracker.update(0.05, [Measurement("elp_left", np.zeros(3), left, 0.06, 1.2, 0.01, 0.05, False)])
+        self.assertEqual(len(tracker.tracks), 2)
+        self.assertLess(tracker.tracks[0].p[1], -2.0, "the first track stays where it was")
+        self.assertEqual(tracker.tracks[0].hits, 1)
+
+    def test_a_smeared_ball_reads_as_far_as_a_sharp_one_in_the_long_exposure_camera(self):
+        from dodge.detect import Blob
+        cams = build_cameras(CFG)
+        fisheye = cams["fisheye"]
+        self.assertTrue(fisheye.cfg.get("size_by_width"))
+        u, v = 700.0, 400.0
+        sharp = measure_blob(fisheye, Blob(u, v, math.pi / 4 * 14 * 14, 0, 0, 14, 14, False), CFG["ball"]["diameter_m"])
+        smeared = measure_blob(fisheye, Blob(u, v, math.pi / 4 * 14 * 26, 0, 0, 14, 26, False), CFG["ball"]["diameter_m"])
+        self.assertLess(abs(smeared.range_m - sharp.range_m), 0.06 * sharp.range_m)
+        self.assertFalse(smeared.vague)
+
+    def test_a_lopsided_blob_in_a_short_exposure_camera_has_a_vague_range(self):
+        from dodge.detect import Blob
+        elp = build_cameras(CFG)["elp_right"]
+        whole = measure_blob(elp, Blob(640.0, 360.0, math.pi / 4 * 30 * 30, 0, 0, 30, 30, False), CFG["ball"]["diameter_m"])
+        half = measure_blob(elp, Blob(640.0, 360.0, math.pi / 4 * 30 * 17, 0, 0, 30, 17, False), CFG["ball"]["diameter_m"])
+        self.assertFalse(whole.vague)
+        self.assertTrue(half.vague)
+        self.assertGreaterEqual(half.sigma_r, 0.3 * half.range_m - 1e-9)
+
+    def test_a_still_ball_found_whole_then_half_stays_left_out(self):
+        from dodge.detect import Blob
+        from dodge.pipeline import StillFilter
+        still = StillFilter(dict(CFG["detector"].get("still") or {}, busy_level=0))    # the rule for one spot, by itself
+        passed_late = 0
+        for i in range(120):                       # four seconds at 30 pictures a second
+            t = 5.0 + i / 30.0
+            d = 28.0 if (i // 4) % 2 else 22.0     # whole, half, whole, half ...
+            kept, _left = still.filter(t, [Blob(400.0, 300.0, math.pi / 4 * d * d, 0, 0, int(d), int(d), False)])
+            if t > 5.0 + 2.5:
+                passed_late += len(kept)
+        self.assertEqual(passed_late, 0)
+        # a ball that swells beyond anything the place has shown is passed on again
+        kept, _left = still.filter(9.02, [Blob(400.0, 300.0, math.pi / 4 * 46.0 * 46.0, 0, 0, 46, 46, False)])
+        self.assertEqual(len(kept), 1)
+
+
 class CoreStateTests(unittest.TestCase):
     def test_quaternion_convention(self):
         self.assertTrue(np.allclose(quat_to_rot(1, 0, 0, 0), np.eye(3)))
