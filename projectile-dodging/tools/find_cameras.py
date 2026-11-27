@@ -20,7 +20,8 @@ import time
 
 from _common import ROOT, cv2, load_config, run_tool
 
-from usb_camera import UsbCamera, apply_controls, open_problem, usb_camera_nodes, who_holds
+from usb_camera import (DODGE_NODE, FREE_THE_CAMERAS, UsbCamera, apply_controls, open_problem, usb_camera_nodes,
+                        who_holds)
 
 from dodge.config import save_calib
 
@@ -174,6 +175,7 @@ def main() -> None:
     snap_dir = os.path.join(ROOT, "data", "snapshots")
     os.makedirs(snap_dir, exist_ok=True)
     working = []
+    busy = 0                                         # cameras the dodge node is reading: not a fault
     print("%d USB camera%s present:" % (len(cams), "" if len(cams) == 1 else "s"))
     for i, cam in enumerate(cams):
         dev = cam["path"]
@@ -183,6 +185,10 @@ def main() -> None:
             ", asks for up to %d mA" % cam["max_power_ma"] if cam["max_power_ma"] else ""))
         holders = who_holds(cam["real"])
         frame = None if holders else snapshot(dev)
+        if any(h[1] == DODGE_NODE for h in holders):
+            busy += 1
+            print("  in use by the dodge node (so it works; not tested here)")
+            continue
         if frame is None:
             print("  NOT WORKING: %s" % open_problem(dev))
             continue
@@ -203,6 +209,10 @@ def main() -> None:
         print("  %-9s = %s%s" % (name, dev or "(not set)", "" if here else "   <-- no camera there now"))
     health = usb_health()
 
+    if busy and len(working) + busy >= 2:
+        print("\n" + FREE_THE_CAMERAS)
+        print("Nothing is wrong with the cameras. Run this tool again after that if you want them tested.")
+        raise SystemExit(1)
     if len(working) < 2:
         print("\nOnly %d of the 2 rear cameras works, so the dodge node would be blind on one side." % len(working))
         if len(cams) < 2:

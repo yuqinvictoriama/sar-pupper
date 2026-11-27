@@ -104,8 +104,36 @@ def who_holds(real: str) -> list:
                     cmd = f.read().replace(b"\0", b" ").decode(errors="replace").strip()
             except OSError:
                 cmd = "?"
-            out.append((pid, cmd[:80]))
+            out.append((pid, describe_holder(pid, cmd)))
     return out
+
+
+DODGE_NODE = "the dodge node"
+
+
+def describe_holder(pid: int, cmd: str) -> str:
+    """A name a person recognises. The dodge node reads each camera in a process of its own, which shows
+    up as a bare 'multiprocessing.spawn' line: say it is the dodge node."""
+    if "dodge_node.py" in cmd:
+        return DODGE_NODE
+    if "multiprocessing" in cmd:
+        try:
+            with open("/proc/%d/stat" % pid) as f:
+                parent = int(f.read().rsplit(")", 1)[1].split()[1])
+            with open("/proc/%d/cmdline" % parent, "rb") as f:
+                if b"dodge_node.py" in f.read():
+                    return DODGE_NODE
+        except (OSError, ValueError, IndexError):
+            pass
+    return cmd[:80]
+
+
+def held_by_dodge_node(device: str) -> bool:
+    return bool(device) and os.path.exists(device) and any(h[1] == DODGE_NODE for h in who_holds(os.path.realpath(device)))
+
+
+FREE_THE_CAMERAS = ("The dodge node is running and has the rear cameras; only one program can read a camera at a time. "
+                    "Restart without it:  bash robot/stop.sh && bash robot/start.sh --no-dodge")
 
 
 def open_problem(device: str) -> str:
@@ -127,8 +155,10 @@ def open_problem(device: str) -> str:
     except OSError as exc:
         return "%s is there but will not open (%s): unplug the camera and plug it back in" % (real, exc.strerror)
     holders = who_holds(real)
+    if any(h[1] == DODGE_NODE for h in holders):
+        return "the camera is fine, but %s" % (FREE_THE_CAMERAS[0].lower() + FREE_THE_CAMERAS[1:])
     if holders:
-        return "%s is in use by another program: %s. Stop it (the dodge node, view.py, record.py and a browser all count)" % (
+        return "%s is in use by another program: %s. Stop it (view.py, record.py and a browser all count)" % (
             real, "; ".join("pid %d %s" % h for h in holders))
     return ("%s is there but refuses to deliver video. Usual causes: another program has it (check: sudo fuser -v %s), "
             "too little USB power, or a marginal cable or socket (unplug it and plug it back in)" % (real, real))
@@ -180,14 +210,44 @@ EXPOSURE_TIME = ("exposure_time_absolute", "exposure_absolute")
 WB_AUTO = ("white_balance_automatic", "white_balance_temperature_auto")
 
 
-def apply_controls(device: str, cap_cfg: dict, cap=None, log=print, nudge_wb: bool = False) -> None:
-    """Fix exposure, gain and white balance. Uses v4l2-ctl when present, OpenCV properties otherwise.
+WB_WAKE_S = 0.5
 
-    nudge_wb: set the white balance to a neighbouring value first, then to the wanted one. The ELP
-    cameras report a fixed white balance as set but go on showing another (seen on the Pupper,
-    2026-11-26: "fixed at 3858 K" with red three times blue) until the value is changed while they
-    stream; only a change makes them act on it.
+
+def wake_white_balance(device: str, cap_cfg: dict, pump=None, log=print) -> bool:
+    """Make the camera act on a fixed white balance: switch automatic on while it streams, let a few
+    pictures pass, and leave the caller to switch it off and set the temperature (apply_controls).
+
+    After a power-up (a cold boot, or the plug pulled) the ELP cameras report a fixed white balance
+    as set, yet show a strong yellow cast and ignore every temperature they are sent. Measured on
+    the Pupper, 2026-11-26, on both cameras: changing the temperature while streaming did nothing
+    (one colour channel stayed 2.9 times another); automatic on for 0.3-2 s and off again brought
+    that to 1.25, and from then on 2800, 4034 and 6000 K each changed the picture as they should.
+
+    pump: called repeatedly during the wait to keep pictures flowing (the caller's cap.grab), when
+    nothing else is reading the camera. Returns whether there was anything to do.
     """
+    wb = cap_cfg.get("wb_temperature")
+    if wb is None or wb == "auto":
+        return False
+    names = read_controls(device)
+    n = control_name(names, *WB_AUTO) if names else None
+    if not n or "white_balance_temperature" not in names:
+        return False
+    err = set_control(device, n, 1)
+    if err:
+        log("%s: could not switch automatic white balance on (%s)" % (device, err))
+        return False
+    t_end = time.monotonic() + float(cap_cfg.get("wb_wake_s", WB_WAKE_S))
+    while time.monotonic() < t_end:
+        if pump is not None:
+            pump()
+        else:
+            time.sleep(0.05)
+    return True
+
+
+def apply_controls(device: str, cap_cfg: dict, cap=None, log=print) -> None:
+    """Fix exposure, gain and white balance. Uses v4l2-ctl when present, OpenCV properties otherwise."""
     auto = bool(cap_cfg.get("auto_exposure", False))
     exposure = cap_cfg.get("exposure_100us")
     gain = cap_cfg.get("gain")
@@ -209,10 +269,6 @@ def apply_controls(device: str, cap_cfg: dict, cap=None, log=print, nudge_wb: bo
         if n and wb is not None:
             sets.append((n, 1 if wb == "auto" else 0))
         if wb is not None and wb != "auto" and "white_balance_temperature" in names:
-            if nudge_wb:
-                info = names["white_balance_temperature"]
-                other = int(wb) + 150 if int(wb) + 150 <= info.get("max", 6500) else int(wb) - 150
-                sets.append(("white_balance_temperature", other))
             sets.append(("white_balance_temperature", wb))
         for name, value in (cap_cfg.get("controls") or {}).items():   # anything else, by its v4l2-ctl name
             if name in names:
@@ -296,9 +352,11 @@ def open_capture(device: str, cap_cfg: dict, log=print):
     apply_controls(device, cap_cfg, cap, log)
     # Some cameras only take (or keep) white balance and exposure settings once they
     # are streaming, and fall back to their defaults when a stream starts. So start
-    # the stream, then set everything again, then check what the camera reports.
+    # the stream, wake the white balance (see wake_white_balance), then set everything
+    # again, then check what the camera reports.
     cap.grab()
-    apply_controls(device, cap_cfg, cap, log, nudge_wb=True)
+    wake_white_balance(device, cap_cfg, pump=cap.grab, log=log)
+    apply_controls(device, cap_cfg, cap, log)
     state = describe_controls(device, cap_cfg)
     if state:
         log("camera settings: %s" % state)
@@ -373,7 +431,8 @@ class UsbCamera(threading.Thread):
     def reapply_controls(self) -> None:
         """Send exposure, gain and white balance to the camera again while it streams (see apply_controls)."""
         if self.connected:
-            apply_controls(self.device, self.cap_cfg, None, self.log, nudge_wb=True)
+            wake_white_balance(self.device, self.cap_cfg, None, self.log)     # the capture thread keeps pictures flowing
+            apply_controls(self.device, self.cap_cfg, None, self.log)
 
     def close(self, timeout: float = 3.0) -> bool:
         """Stop and wait for the thread, so the camera is released before the program exits.

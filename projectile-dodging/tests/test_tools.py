@@ -9,6 +9,7 @@ import math
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 import cv2
@@ -466,6 +467,48 @@ Camera Controls
         self.assertEqual(c["brightness"]["min"], -64)
         self.assertTrue(c["white_balance_temperature"]["inactive"])
         self.assertEqual(self.usb.control_name(c, "exposure_auto", "auto_exposure"), "auto_exposure")
+
+    def test_a_fixed_white_balance_is_woken_by_automatic_on_then_off(self):
+        """After a power-up the ELP cameras ignore a fixed temperature until automatic has been on and
+        off once while they stream (measured on the Pupper, 2026-11-26)."""
+        controls = {n: {"inactive": False, "min": 0, "max": 6500} for n in
+                    ("auto_exposure", "exposure_time_absolute", "gain", "white_balance_automatic", "white_balance_temperature")}
+        sent, pumped = [], []
+        real = self.usb.read_controls, self.usb.set_control
+        self.usb.read_controls = lambda _d: controls
+        self.usb.set_control = lambda _d, name, value: sent.append((name, value)) or ""
+        cfg = {"exposure_100us": 30, "gain": 95, "wb_temperature": 3858, "wb_wake_s": 0.05}
+        try:
+            self.assertTrue(self.usb.wake_white_balance("/dev/video0", cfg, pump=lambda: pumped.append(1) or time.sleep(0.01)))
+            self.usb.apply_controls("/dev/video0", cfg)
+            wb = [x for x in sent if x[0].startswith("white_balance")]
+            self.assertEqual(wb, [("white_balance_automatic", 1), ("white_balance_automatic", 0),
+                                  ("white_balance_temperature", 3858)])
+            self.assertGreaterEqual(len(pumped), 2, "pictures must keep flowing while automatic is on")
+            sent.clear()                              # nothing to wake when the white balance is left automatic
+            self.assertFalse(self.usb.wake_white_balance("/dev/video0", {"wb_temperature": "auto"}))
+            self.assertFalse(self.usb.wake_white_balance("/dev/video0", {}))
+            self.assertEqual(sent, [])
+        finally:
+            self.usb.read_controls, self.usb.set_control = real
+
+    def test_the_dodge_nodes_camera_process_is_named_as_the_dodge_node(self):
+        me = os.getpid()
+        self.assertEqual(self.usb.describe_holder(me, "python3 -u /home/pi/x/robot/dodge_node.py --ros-args"), self.usb.DODGE_NODE)
+        self.assertEqual(self.usb.describe_holder(me, "python3 tools/view.py elp_left"), "python3 tools/view.py elp_left")
+        # a spawned process whose parent is not the dodge node keeps its own name
+        spawn = "/usr/bin/python3 -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=20)"
+        self.assertEqual(self.usb.describe_holder(me, spawn), spawn[:80])
+        real = self.usb.who_holds
+        self.usb.who_holds = lambda _r: [(4172, self.usb.DODGE_NODE)]
+        try:
+            with tempfile.NamedTemporaryFile() as f:
+                why = self.usb.open_problem(f.name)
+                self.assertTrue(self.usb.held_by_dodge_node(f.name))
+        finally:
+            self.usb.who_holds = real
+        self.assertIn("start.sh --no-dodge", why)
+        self.assertIn("the camera is fine", why)
 
     def test_each_camera_is_listed_once_although_the_pi_names_it_twice(self):
         with tempfile.TemporaryDirectory() as tmp:

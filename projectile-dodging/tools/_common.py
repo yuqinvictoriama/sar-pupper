@@ -136,9 +136,11 @@ def open_feed(cfg: dict, name: str, max_fps: float | None = None) -> Feed:
     feed = Feed(name)
     _feeds.append(feed)
     if cam.get("source") == "v4l2":
-        from usb_camera import UsbCamera
+        from usb_camera import FREE_THE_CAMERAS, UsbCamera, held_by_dodge_node
         if not cam.get("device"):
             raise SystemExit("%s has no device set. Run tools/find_cameras.py --assign first." % name)
+        if held_by_dodge_node(cam["device"]):       # say so at once, instead of trying for ten seconds
+            raise SystemExit("\n%s cannot be opened here. %s" % (name, FREE_THE_CAMERAS))
         c = dict(cam)
         if max_fps is not None:
             c["max_process_fps"] = max_fps
