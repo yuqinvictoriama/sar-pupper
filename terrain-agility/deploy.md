@@ -262,6 +262,13 @@ Launch as in part 3 (`avoid:=false`), Pupper standing. All commands in terminal 
   crawl has the legs and no velocity command does anything.
 - **How far a crossing took Pupper** is in `/terrain/crossing_status`: `started` and `done`
   carry `advance`, in metres on the floor.
+- **What Pupper says.** The demo's navigation has one call-out for a low obstacle ("Low
+  obstacle. Stepping over. Still coming."), and says it for the slab as well as for a bar. To
+  know which crossing it is, read `kind` or the state, not the call-out.
+- **On the demo course** (`path-navigation/README.md`, "Demo instructions"): slab with its near
+  edge 0.50 m from the start mark, 565 mm side across the line; carton with its near face at
+  1.60 m. Pupper stops 0.36 m short of the slab, crosses, and is walking again with its body
+  centre about 1.0 m from the start, 0.6 m short of the carton.
 - **Modes** (`/terrain/mode`, a `std_msgs/String`): `full` crosses what can be crossed,
   `avoid` walks around everything, `report` only looks, `off` switches it off.
 - **Before a demo:** do one crossing as a warm-up. Planning the same slab again is quicker.
