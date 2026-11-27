@@ -12,7 +12,9 @@ Requests arrive as JSON on /terrain/step_over (std_msgs/String):
     add "dry_run": true to plan and report without moving
 
 and it reports on /terrain/crossing_status (JSON): state = planning | no_plan | refused |
-started | progress | done | failed, with "why" and details.
+started | progress | done | failed, with "why" and details. "started" and "done" carry
+"advance": the metres the plan moves the body centre forward (there are no velocity
+commands during a crossing, so this is how a mission layer keeps count of distance).
 
 What it does for a motion
   1. checks the robot is standing level under a walking controller, joints near the default pose;
@@ -271,9 +273,10 @@ class StepOverNode(Node):
             return
         summary = plan.summary().splitlines()[0]
         self.get_logger().info(plan.summary())
+        advance = round(float(plan.body[-1, 0] - plan.body[0, 0]), 3) if plan.body is not None and len(plan.body) else None
         if dry:
             self.status("done", request=rid, dry_run=True, plan=summary, duration=round(plan.duration, 1),
-                        planning_s=round(self.now() - t0, 2))
+                        planning_s=round(self.now() - t0, 2), advance=advance)
             return
         why = self.ready()          # planning took a moment: the robot must still be standing
         if why or self.stop_requested:
@@ -315,7 +318,7 @@ class StepOverNode(Node):
             if not started and hand.stage in (H.RAMP, H.PLAY):
                 started = True                  # the legs are ours: only now is the crossing under way
                 self.status("started", request=rid, plan=summary, duration=round(plan.duration, 1),
-                            walking_controller=walking[0])
+                            walking_controller=walking[0], advance=advance)
             if now - last_progress > 0.5:
                 last_progress = now
                 self.status("progress", request=rid, stage=cmd.stage, phase=cmd.phase, progress=round(cmd.progress, 3))
@@ -333,7 +336,7 @@ class StepOverNode(Node):
                 if back_ok.is_set():
                     self.beat("released")
                     self.status("done", request=rid, seconds=round(now - t_start, 1),
-                                max_tilt_deg=round(hand.player.max_tilt_deg, 1))
+                                max_tilt_deg=round(hand.player.max_tilt_deg, 1), advance=advance)
                     return
                 if back_failed.is_set():
                     self._release(limp=True)

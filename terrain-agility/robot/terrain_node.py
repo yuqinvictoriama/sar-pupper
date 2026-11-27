@@ -12,12 +12,19 @@ In
   /terrain/crossing_status         answers from robot/stepover_node.py
   /dodge/event, /dodge/state       optional, from the projectile-dodging node
   /terrain/enable (Bool), /terrain/reset (Empty)
+  /terrain/mode (String)           full | avoid | report | off   (the demo's path navigation sets this by zone)
+                                     full    step over the box, walk around everything else
+                                     avoid   walk around everything, the box included
+                                     report  publish obstacles and the scan, never steer
+                                     off     the same as /terrain/enable false
 
 Out
   /terrain_cmd_vel                 Twist into cmd_vel_mux - ONLY while it is dealing with an obstacle;
                                    silent otherwise, so the mux gives control back to the driver
   /terrain/step_over               crossing requests to robot/stepover_node.py
-  /terrain/state, /terrain/event   JSON / text, for the mission layer, Gemini and logs
+  /terrain/state, /terrain/event   JSON / text, for the mission layer, Gemini and logs. The state carries the
+                                   mode and, from the moment the box has been measured, the measurement
+                                   ("box": near_x, height, depth, skew, width; metres and radians)
   /terrain/obstacles               JSON list of the obstacles in view
   /terrain/scan                    JSON: range to the nearest obstacle at each bearing (free space)
   /terrain/debug/compressed        the classified polar view (only rendered while someone subscribes)
@@ -181,6 +188,7 @@ class TerrainNode(Node):
         self.cfg = cfg
         self.fsm = SM.TerrainFsm(cfg.fsm)
         self.enabled = bool(cfg.raw.get("fsm", {}).get("enabled", True))
+        self.fsm.set_mode(str(cfg.raw.get("fsm", {}).get("mode", SM.FULL)))
         self.perception = Perception(cfg, self.get_logger(), self.now)
         self.perception.start()
 
@@ -217,6 +225,7 @@ class TerrainNode(Node):
         self.create_subscription(String, "/dodge/event", self._on_dodge_event, 10)
         self.create_subscription(String, "/dodge/state", self._on_dodge_state, 10)
         self.create_subscription(Bool, "/terrain/enable", self._on_enable, 10)
+        self.create_subscription(String, "/terrain/mode", self._on_mode, 10)
         self.create_subscription(Empty, "/terrain/reset", self._on_reset, 10)
         self.create_timer(1.0 / TICK_HZ, self._tick)
         self.get_logger().info(
@@ -252,14 +261,33 @@ class TerrainNode(Node):
         if any(k in text for k in ("TRACK", "THREAT", "DODGE")):
             self.ball_time = self.now()
 
+    def _new_fsm(self) -> None:
+        mode = self.fsm.mode
+        self.fsm = SM.TerrainFsm(self.cfg.fsm)
+        self.fsm.set_mode(mode)
+
     def _on_enable(self, msg: Bool) -> None:
         if msg.data != self.enabled:
             self.enabled = bool(msg.data)
-            self.fsm = SM.TerrainFsm(self.cfg.fsm)
+            self._new_fsm()
             self.event(f"terrain agility {'enabled' if self.enabled else 'disabled'}")
 
+    def _on_mode(self, msg: String) -> None:
+        mode = msg.data.strip().lower()
+        if mode == "off":
+            self._on_enable(Bool(data=False))
+            return
+        if mode not in SM.MODES:
+            self.get_logger().warning(f"/terrain/mode: '{msg.data}' is not one of full, avoid, report, off")
+            return
+        if not self.enabled:
+            self._on_enable(Bool(data=True))
+        if mode != self.fsm.mode:
+            self.fsm.set_mode(mode)
+            self.event(f"mode {mode}")
+
     def _on_reset(self, _msg: Empty) -> None:
-        self.fsm = SM.TerrainFsm(self.cfg.fsm)
+        self._new_fsm()
         self.cross_sent = None
         self.event("reset")
 
@@ -333,7 +361,8 @@ class TerrainNode(Node):
             self.last_box_id = box[0]
             inp.box = box[2]
 
-        if not scan_fresh and self.fsm.state not in (SM.CRUISE, SM.STEP_OVER, SM.PLAN, SM.GAUGE, SM.ALIGN, SM.HOLD):
+        if (not scan_fresh and self.fsm.mode != SM.REPORT_ONLY
+                and self.fsm.state not in (SM.CRUISE, SM.STEP_OVER, SM.PLAN, SM.GAUGE, SM.ALIGN, SM.HOLD)):
             # blind while steering round something: stop rather than walk on old data
             if now - self.last_warn > 2.0:
                 self.last_warn = now
@@ -362,7 +391,7 @@ class TerrainNode(Node):
         crossing_failed = self.fsm.state == SM.HOLD and self.fsm.hold_reason.startswith("crossing failed")
         if out.cmd is not None and not crossing_failed:
             self._send(out.cmd)
-        self._publish_state(now, self.fsm.state, self.fsm.hold_reason if self.fsm.state == SM.HOLD else "")
+        self._publish_state(now, out.state, self.fsm.hold_reason if self.fsm.state == SM.HOLD else "")
 
         if self.pub_debug.get_subscription_count() > 0:
             p.want_debug = True
@@ -385,7 +414,15 @@ class TerrainNode(Node):
         if state != self.last_state or now - self.last_state_pub > 1.0:
             self.last_state, self.last_state_pub = state, now
             m = String()
-            m.data = json.dumps({"state": state, "reason": reason, "scan_ms": round(self.perception.scan_ms, 1)})
+            status = {"state": state, "reason": reason, "scan_ms": round(self.perception.scan_ms, 1),
+                      "mode": self.fsm.mode if self.enabled else "off"}
+            e = self.fsm.estimate
+            if e is not None and state in (SM.ALIGN, SM.PLAN, SM.STEP_OVER):
+                # the box as measured, for whoever keeps track of where the robot is (it is a landmark)
+                num = lambda v: round(float(v), 4) if math.isfinite(v) else None      # noqa: E731
+                status["box"] = {"near_x": num(e.near_x), "height": num(e.height), "depth": num(e.depth),
+                                 "skew": num(e.skew), "width": num(e.width)}
+            m.data = json.dumps(status)
             self.pub_state.publish(m)
 
     def _publish_scan(self, scan, obstacles) -> None:

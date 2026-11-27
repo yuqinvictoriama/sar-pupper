@@ -29,6 +29,12 @@ from .steering import LocalMap, SteerConfig, path_clear, steer
 
 CRUISE, AVOID, APPROACH, GAUGE, ALIGN, PLAN, STEP_OVER, HOLD = (
     "CRUISE", "AVOID", "APPROACH", "GAUGE", "ALIGN", "PLAN", "STEP_OVER", "HOLD")
+REPORT = "REPORT"            # reported as the state while the mode is "report"
+
+# What the mission layer lets it do (set_mode). The demo's path navigation switches between
+# these by zone; on its own the node stays in "full".
+FULL, AVOID_ONLY, REPORT_ONLY = "full", "avoid", "report"
+MODES = (FULL, AVOID_ONLY, REPORT_ONLY)
 
 
 @dataclass
@@ -102,6 +108,19 @@ class TerrainFsm:
         self._plan_sent = False
         self.hold_reason = ""
         self.ignore_box_until = -1e9         # a box judged too low to matter is left alone until then
+        self.mode = FULL
+
+    def set_mode(self, mode: str) -> bool:
+        """full: step over the box, walk around everything else. avoid: walk around everything,
+        the box included. report: look and report, never steer. A crossing that has been
+        planned or started is always finished: the mode takes effect after it."""
+        if mode not in MODES:
+            return False
+        self.mode = mode
+        if mode == AVOID_ONLY and self.state in (APPROACH, GAUGE, ALIGN):
+            self.gauge.reset()
+            self.state = CRUISE              # it was on its way to measure the box: start again as an obstacle
+        return True
 
     # ------------------------------------------------------------------ helpers
     def _go(self, state, t):
@@ -183,6 +202,15 @@ class TerrainFsm:
         if self.state == STEP_OVER:
             out.state = STEP_OVER
             return out                       # the crossing owns the legs; say nothing
+        if self.mode == REPORT_ONLY and self.state != PLAN:
+            # looking only: whatever it was doing is dropped, and nothing is published
+            if self.state != CRUISE:
+                self.gauge.reset()
+                self.side = 0
+                self._go(CRUISE, t)
+            self.last_cmd = (0.0, 0.0, 0.0)
+            out.state = REPORT
+            return out
         if self.state == PLAN:
             out.cmd = (0.0, 0.0, 0.0)
             if not self._plan_sent:
@@ -224,18 +252,21 @@ class TerrainFsm:
             if hit is None:
                 return out
             dist, ob = hit
-            if ob.is_box and dist < cfg.box_engage_range:
+            step_box = ob.is_box and self.mode == FULL
+            if step_box and dist < cfg.box_engage_range:
                 self.goal_yaw = inp.yaw + heading
                 self.gauge.reset()
                 self.align_tries = 0
                 self._go(APPROACH, t)
                 out.event = f"box ahead at {dist:.2f} m: approaching to measure it"
-            elif not ob.is_box and dist < cfg.engage_range:
+            elif not step_box and dist < cfg.engage_range:
                 self.goal_yaw = inp.yaw + heading
                 self.side = 0
-                self.decision = D.Decision(D.GO_AROUND, ["tall" if ob.tall else "not the step-over box"])
+                why = "stepping over is switched off (mode avoid)" if ob.is_box else ("tall" if ob.tall else "not the step-over box")
+                self.decision = D.Decision(D.GO_AROUND, [why])
                 self._go(AVOID, t)
-                out.event = f"obstacle ahead at {dist:.2f} m ({'tall' if ob.tall else 'low, unknown'}): going around"
+                kind = "the box, mode avoid" if ob.is_box else ("tall" if ob.tall else "low, unknown")
+                out.event = f"obstacle ahead at {dist:.2f} m ({kind}): going around"
             if self.state == CRUISE:
                 return out
 
