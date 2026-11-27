@@ -214,9 +214,9 @@ any active state ⇄ PAUSED (joystick, e-stop, fall, operator)        any active
 | SEEK | Stands still, publishes nothing, listens | 3 bearings agree within 8° | off | off |
 | ORIENT | Turns on the spot to the fix, shortest way | Within 5° for 0.5 s | off | off |
 | CONFIRM | Listens again, nose-on, and blends the two looks | A bearing within 10° (go), over 25° off (back to SEEK), or 6 s (go with the first) | off | off |
-| ZONE1 | Walks the line at 0.25 m/s; terrain agility steps over the low bar, then scales across the slab (or walks around either, if it refuses it) | Past 2.0 m with every obstacle on the course's list behind it | off | full, then avoid once the last obstacle is passed |
+| ZONE1 | Walks the line, commanded 0.30 m/s (about 0.16 m/s on the floor); terrain agility steps over the low bar, then scales across the slab (or walks around either, if it refuses it) | Past 2.0 m with every obstacle on the course's list behind it | off | full, then avoid once the last obstacle is passed |
 | REFIX | Stops, asks for the second call, redraws the line from where it stands | A bearing within 20° of where the survivor should be, or 6 s | off | report |
-| ZONE2 | Walks the line at 0.20 m/s, steering at the cover once it is seen | The phrase (past 4.0 m), the cover within 0.45 m (past 4.8 m), or 7.2 m | **armed** | report |
+| ZONE2 | Walks the line, commanded 0.30 m/s (about 0.16 m/s on the floor), steering at the cover once it is seen | The phrase (past 4.0 m), the cover within 0.45 m (past 4.8 m), or 7.2 m | **armed** | report |
 | ARRIVE | Stands in front of the cover; says "I'm here" every 10 s; after 30 s tells the team | The phrase, or the operator's button | armed | report |
 | RESCUE | Stands. The voice does the comfort steps | Operator ends the run | off | off |
 
@@ -258,14 +258,20 @@ Nothing here has moved the robot. Do these in order, with the operator at the e-
 | 1 | Terrain agility's own ladder (`terrain-agility/deploy.md`) and the dodge node's (`projectile-dodging/DEPLOY.md`) | Both done on their own first |
 | 2 | `robot/start_demo.sh` (no `--motion`). Open Mission Control | Every node reports in `/tmp/sar-demo/robot.log`; Systems all green except, perhaps, the sound module |
 | 3 | Sound checks 1–3 above, motion off. Then **Start** with motion off | Bearings on the compass; state goes SEEK → ORIENT and stays there (dry run); "would ask for" shows a turn the right way |
-| 4 | Open floor, no obstacles, `--no-terrain --no-dodge`. Stand up, **Allow motion**, **Start**, call from 3 m | Turns to the caller, walks the line. Measure where it stops against the tape; set `reckon.forward_factor` = tape ÷ what it believed |
+| 4 | Open floor, no obstacles, `--no-terrain --no-dodge`. Stand up, **Allow motion**, **Start**, call from 3 m | Turns to the caller, walks the line. Measure where it stops against the tape; set `reckon.forward_factor` = its present value × tape ÷ what it believed |
 | 5 | The same over 6 m with a board as the cover (terrain on, in the gauntlet it only reports) | Stops about 0.3 m short of the cover; "to the cover" counts down |
 | 6 | Phrase check with the real survivor behind the real cover (`keyphrase/README.md`, step 3) | 9 or 10 of 10 heard, nothing else sets it off |
 | 7 | Zone 1 only: the low bar and the slab, **End run** at the second call. First each obstacle alone, then both | Steps over, scales across, stops for the call |
 | 8 | Gauntlet only: click **Gauntlet**, **Start from Gauntlet**, dodge node unarmed first (`dodge.yaml`), then armed, then with throws | Carries on along the line after each dodge |
 | 9 | The whole run without throws, then with. Then the script with everyone in place | Three complete runs in a row before demo day |
 
-Calibrate on the demo floor: `reckon.forward_factor` and `sideways_factor` at 0.20 and 0.25 m/s (terrain agility's notes say the walking policy barely moves below 0.20 m/s, so check that the gauntlet speed really walks), the IMU's yaw drift over three minutes standing, and the bearing error at 6 m with the cover in place.
+**The walking speed.** Pupper walks much slower than it is told to. Measured once on your floor on 2026-11-26 (terrain agility's `tools/walk_forward.py`): **0.80 m in 5 s from standing with 0.30 m/s commanded, about 0.53 of the commanded speed**. So `reckon.forward_factor` is 0.53, and both walking speeds (`walk.cruise`, `walk.gauntlet`) are 0.30 m/s commanded, the one speed that has a measurement; on the floor that is about 0.16 m/s. With the factor left at 1.0 Pupper would believe it had walked twice as far as it had and stop about half-way down the course. That one figure includes getting going from a standstill and is forwards only, so:
+
+- re-measure it over 4 m at 0.30 m/s (rung 4) and put the result in `config/demo.yaml`;
+- the sideways factor is taken to be the same, unmeasured;
+- if you change `walk.cruise` or `walk.gauntlet`, measure the factor again at the new speed (it is not the same at every speed).
+
+Also measure on the demo floor: the IMU's yaw drift over three minutes standing and across one crossing, and the bearing error at 6 m with the cover in place.
 
 ## Files
 
@@ -295,16 +301,18 @@ Tests, on a laptop: `python3 -m pytest path-navigation/tests -q` (needs pytest, 
 **Verified off the robot**
 
 - 49 tests: angles and fixes, the position estimate, line following, every state and transition of the mission with hand-made inputs, the node on a stand-in for ROS (dry run publishes no velocity and marks its events `dry_run`; the dodge node is armed only in the gauntlet), the sound adapter's conventions.
-- The whole run in simulation, 200 different rooms per row (random starting direction, bearing noise as given, about 8 % echoes, walking speed 8 % short of commanded, IMU drift 1.5° a minute, throws every 3 s):
+- The whole run in simulation, 200 different rooms per row (random starting direction, bearing noise as given, about 8 % echoes, the legs at 0.53 of commanded speed as measured and a further 8 % short that the mission does not know about, IMU drift 1.5° a minute, throws every 3 s):
 
 | Sound module's margin of error | Survivor calls again at 2 m | Ended in front of the cover | Sideways miss at the cover, median (worst) |
 |---|---|---|---|
-| ±5° (as given) | yes | **200 of 200** | 0.09 m (0.51 m) |
-| ±5° | no | 177 of 200 | 0.33 m (1.03 m) |
-| ±8° | yes | 199 of 200 | 0.16 m (0.61 m) |
-| ±10° | yes | 195 of 200 | 0.17 m (5.21 m: one run took a wrong fix) |
+| ±5° (as given) | yes | **200 of 200** | 0.08 m (0.34 m) |
+| ±5° | no | 186 of 200 | 0.33 m (1.03 m) |
+| ±8° | yes | 199 of 200 | 0.11 m (0.57 m) |
+| ±10° | yes | 194 of 200 | 0.17 m (5.29 m: one run took a wrong fix) |
 
-  The cover reaches 0.6 m either side of the line, so a miss under about 0.55 m is "in front of it"; the runs that failed stopped at the cover but past its edge. The course is the one in "Demo instructions": every run stepped over the bar and scaled across the slab. **The second call matters more on this course than on a shorter one**: two crossings take over two minutes, the IMU's heading drifts all that time, and the second call is what corrects it. A simulated run takes about 3¾ minutes, 52 s of it on the bar and 81 s on the slab.
+  The cover reaches 0.6 m either side of the line, so a miss under about 0.55 m is "in front of it"; the runs that failed stopped at the cover but past its edge. The course is the one in "Demo instructions": every run stepped over the bar and scaled across the slab. **The second call matters more on this course than on a shorter one**: two crossings take over two minutes, the IMU's heading drifts all that time, and the second call is what corrects it. A simulated run takes about 4 minutes, 52 s of it on the bar and 81 s on the slab.
+
+  **One thing these runs do suggest about dodging, to be checked on the robot:** the simulated dodge is a stand-in, but it moves the same slow legs. With the legs at 0.53 of commanded speed its burst covers about half the planned distance, and the simulated hit rate rose from about 1 throw in 11 to about 4 in 10. If the real legs fall as far short in a burst, dodges will be late. The dodging work has the tool for it (`projectile-dodging/tools/step_response.py`) and has been told.
 
 - In that simulation the real mission code drives terrain agility's real state machine and steering. That is how the stuck walk-around was found (see below).
 - Mission Control was run in simulation in a browser: one click on Start goes through all eight stages to the rescue state.
@@ -314,7 +322,7 @@ Tests, on a laptop: `python3 -m pytest path-navigation/tests -q` (needs pytest, 
 - Everything in `robot/`: `nav_node.py` has only run against a stand-in for ROS; `demo.launch.py` and `start_demo.sh` have only been syntax-checked. In particular the launch file loads the dodging launch and swaps its mux file, which no test covers.
 - Real sound: the module's topic and convention, its accuracy at 6 m beside a board in an echoing room, and what it reports while motors and the speaker are running.
 - The phrase detector on real microphones (it has only heard synthetic voices).
-- Walking: the speed factors, whether the legs turn on the spot at the commanded rates, yaw drift across a minute-long crossing.
+- Walking: the speed factor beyond its one measurement (0.80 m in 5 s), the sideways factor, whether the legs turn on the spot at the commanded rates, yaw drift across the two crossings.
 - The Pi's CPU with every node running at once. The dodging work measured the Pi at about 80 % busy with the dodge stack alone on 2026-11-26, and the voice's server at about a third of a core while idle; if the load goes higher, camera frame rates drop and dodging gets worse. Navigation is light by design (plain Python at 20 Hz, no images; telemetry is built 5 times a second and only while Mission Control is open), but what it adds on the Pi has not been measured. Watch the frame rates under Projectiles in Mission Control, and close the page if they sag.
 - The simulation's stand-ins are simple. Its dodge rate and throw count say nothing about the real dodge node, and its bearings are the true direction plus noise.
 
@@ -325,7 +333,7 @@ Tests, on a laptop: `python3 -m pytest path-navigation/tests -q` (needs pytest, 
 - **Two crossings in a row have never been run on the robot.** The terrain work ran bar-then-slab once in its physics simulation and once from rendered camera frames (2026-11-26); this module's simulation runs it every time, with the crossing itself as a stand-in.
 - **The camera on the robot is not yet calibrated** (terrain agility found it about 165 mm up and looking 11° up, not 250 mm and level). Until `terrain-agility/deploy.md` step 4.3 is done, no distance terrain agility measures on the robot is right, and navigation's landmarks rest on those distances.
 - **Terrain agility's slab crossing drifts** up to 45 mm sideways and 3.6° in yaw in its own simulation. The second call, straight after the slab, redraws the line and absorbs it.
-- **Distance is an estimate.** Expect 10–20 % until the speed factors are measured. That is why distance alone never ends the run: the phrase and the cover do.
+- **Distance is an estimate.** It rests on one 5-second measurement of the walking speed; expect 10–20 % error until that is re-measured over 4 m. That is why distance alone never ends the run: the phrase and the cover do.
 - **A second "saved" in one mission is not spoken** by the voice (after a false stop and **Not the phrase: carry on**, the real phrase still stops Pupper, and Gemini hears the phrase itself).
 - The free-space feed from terrain's scan to the dodge node (so a dodge never backs onto the slab) is not built. The throw window starts well past the last obstacle for that reason.
 

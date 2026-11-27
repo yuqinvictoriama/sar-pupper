@@ -69,8 +69,10 @@ class Orient:
 
 @dataclass
 class Walk:
-    cruise: float = 0.25            # m/s in zone 1
-    gauntlet: float = 0.20          # m/s in zone 2
+    # Commanded speeds. Both are 0.30 because that is the one speed the legs' real speed has been measured
+    # at (see reckon.forward_factor): on the floor Pupper then moves at about 0.16 m/s.
+    cruise: float = 0.30            # m/s commanded in zone 1
+    gauntlet: float = 0.30          # m/s commanded in zone 2
     look_ahead: float = 1.0         # m: aim at the point this far ahead on the line
     max_off_line_deg: float = 25.0  # never point further than this from the line to get back to it
     yaw_gain: float = 1.5           # 1/s
@@ -86,8 +88,10 @@ class Walk:
 @dataclass
 class Reckon:
     """Position from the commands the legs were sent. Calibrate the factors on the demo floor."""
-    forward_factor: float = 1.0     # actual / commanded, forwards, at the speeds above
-    sideways_factor: float = 1.0
+    # MEASURED ONCE, 2026-11-26, on the owner's floor: 0.80 m in 5 s from standing with 0.30 m/s commanded.
+    # Re-measure over 4 m at walk.cruise before trusting any distance (README, "First time on the robot").
+    forward_factor: float = 0.53    # actual / commanded, forwards, at the speeds above
+    sideways_factor: float = 0.53   # not measured: taken to be the same
     lag_s: float = 0.2              # the legs follow a command about this late
     restart_s: float = 4.0          # after a crossing the walking controller takes this long to come back
     crossing_advance: float = 0.87  # m the body moves in a crossing, if the step-over node does not say (slab 0.87, bar 0.59)

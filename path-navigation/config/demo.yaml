@@ -50,8 +50,10 @@ orient:
 
 # Walking the line.
 walk:
-  cruise: 0.25                    # m/s in zone 1
-  gauntlet: 0.2                   # m/s in zone 2
+  # Both 0.30: the one commanded speed the legs' real speed has been measured at (reckon.forward_factor).
+  # On the floor Pupper then moves at about 0.16 m/s.
+  cruise: 0.3                     # m/s commanded in zone 1
+  gauntlet: 0.3                   # m/s commanded in zone 2
   look_ahead: 1.0                 # m: aim at the point this far ahead on the line
   max_off_line_deg: 25.0          # never point further than this from the line to get back to it
   yaw_gain: 1.5                   # 1/s
@@ -65,8 +67,10 @@ walk:
 
 # Distance along the line, from the commands the legs were sent. CALIBRATE the factors on the demo floor.
 reckon:
-  forward_factor: 1.0             # actual / commanded, forwards, at the speeds above
-  sideways_factor: 1.0
+  # MEASURED ONCE, 2026-11-26, on the owner's floor: 0.80 m in 5 s from standing with 0.30 m/s commanded.
+  # Re-measure over 4 m at walk.cruise before trusting any distance (README, "First time on the robot").
+  forward_factor: 0.53            # actual / commanded, forwards, at the speeds above
+  sideways_factor: 0.53           # not measured: taken to be the same
   lag_s: 0.2                      # the legs follow a command about this late
   restart_s: 4.0                  # after a crossing the walking controller takes this long to come back
   crossing_advance: 0.87          # m the body moves in a crossing, if the step-over node does not say (slab 0.87, bar 0.59)

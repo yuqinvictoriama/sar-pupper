@@ -61,7 +61,7 @@ def test_it_ends_in_front_of_the_cover_in_nearly_every_room():
 
 def test_without_the_phrase_it_still_stops_at_the_cover():
     sim = CourseSim(DemoConfig(), SimOptions(seed=3, says_phrase=False))
-    res = sim.run(max_time=260.0)
+    res = sim.run(max_time=420.0)
     assert res["state"] == "ARRIVE" and 5.3 < res["x"] < 6.3 and res["clear_cover"] > 0.1
     names = [n for _, n in res["events"]]
     assert names.count("arrived") >= 2 and "hold" in names and "saved" not in names

@@ -62,7 +62,7 @@ class SimOptions:
     moe_deg: float | None = None            # the sound module's margin of error; None = the config's
     echo_p: float = 0.08                    # chance that a bearing is an echo, well off the true direction
     per_cry: int = 2                        # bearings the sound module reports for one cry
-    speed_factor: float = 0.92              # actual / commanded walking speed (the mission assumes 1.0)
+    speed_factor: float = 0.92              # true walking speed / what the mission believes (reckon.forward_factor)
     walk_lag: float = 0.25
     yaw_drift_deg_min: float = 1.5          # IMU drift
     crossing_s: float | None = None         # None: what terrain agility's simulation takes (slab 81 s, bar 52 s)
@@ -106,7 +106,8 @@ class CourseSim:
         self.crossed = set()                # indices of obstacles a crossing went over
         self.min_clear = {"tall": 9.9, "cover": 9.9}
         # terrain agility (the real state machine)
-        self.fsm = SM.TerrainFsm(SM.FsmConfig())
+        # terrain agility is given the same measured speed factor as navigation (its steer.speed_scale)
+        self.fsm = SM.TerrainFsm(SM.FsmConfig(steer=SM.SteerConfig(speed_scale=self.cfg.reckon.forward_factor)))
         self.terrain_enabled = False
         self.next_scan = 0.0
         self.obstacles = []
@@ -510,7 +511,7 @@ class CourseSim:
 
         # the walk
         legs = self.cross is None and t >= self.legs_back_at
-        k = self.opt.speed_factor
+        k = self.opt.speed_factor * self.cfg.reckon.forward_factor   # the legs are slower than commanded, and not exactly as measured
         target = np.array([cmd[0] * k, cmd[1] * k, cmd[2]]) if legs else np.zeros(3)
         self.vel += (target - self.vel) * min(1.0, DT / self.opt.walk_lag)
         if not legs:

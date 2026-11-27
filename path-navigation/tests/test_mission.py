@@ -448,7 +448,8 @@ def test_joystick_pauses_and_lets_go_estop_needs_resume():
     r.mux = "/teleop_cmd_vel"; r.sent = (0.0, 0.3, 0.0)
     r.tick(1.0)
     assert r.m.state == M.PAUSED and r.out.arm_dodge is False
-    assert abs(r.m.reck.d - 0.3) < 0.08             # the nudge is counted
+    moved = 0.3 * r.m.cfg.reckon.sideways_factor    # a second at 0.3 m/s commanded, at the legs' measured speed
+    assert abs(r.m.reck.d - moved) < 0.05           # the nudge is counted
     r.mux = "none"; r.sent = None
     r.tick(1.5)
     assert r.m.state == M.ZONE2
