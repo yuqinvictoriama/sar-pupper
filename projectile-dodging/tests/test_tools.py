@@ -490,7 +490,7 @@ Camera Controls
         self.assertEqual([(c["controller"], c["port"]) for c in cams], [("xhci-hcd.0", "1"), ("xhci-hcd.1", "2")])
 
     def test_a_missing_camera_is_explained(self):
-        msg = self.usb.open_problem("/dev/v4l/by-path/platform-xhci-hcd.0-usb-0:2:1.0-video-index0")
+        msg = self.usb.open_problem("/dev/v4l/by-path/platform-xhci-hcd.9-usb-0:7:1.0-video-index0")   # a socket no Pupper has
         self.assertIn("no camera on that USB socket", msg)
         self.assertIn("find_cameras.py", msg)
         self.assertIn("--assign", self.usb.open_problem(""))
