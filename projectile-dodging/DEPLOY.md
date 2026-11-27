@@ -1,16 +1,287 @@
-# Deploying projectile dodging on the Pupper
+# Projectile dodging on the Pupper: what to do next, and how to run it
 
-Work through the stages in order. Nothing moves the robot until stage 7, and
-the dodge node stays in **dry run** (it reports the dodge it would make, and
-never moves) until you arm it in stage 8.
+This guide has three parts:
 
-All commands run **on the Pupper** (over SSH), from `~/sar-pupper/projectile-dodging`,
-unless a line says "on the Mac".
+1. **[What to do next](#what-to-do-next)**: the list to work through now, steps A to G.
+2. **[Running it](#running-it-every-session)**: the short version for every session after that.
+3. **[Reference](#reference)**: the detail behind each step, Pupper Dodging View, and what to do when something is off.
 
-**Safety, throughout:** the joystick e-stop (right-stick press) always works and
-always outranks the dodge reflex. Whenever the robot can move (stages 7 and 8),
-have someone at the joystick, the robot on open floor with 1.5 m clear around
-it, and nothing it could fall off.
+All commands run **on the Pupper** (`ssh pi@192.168.1.73`), from
+`~/sar-pupper/projectile-dodging`, unless a line says "on the Mac". In every new
+terminal on the Pupper, run `source robot/env.sh` first.
+
+**Safety, throughout.** The joystick e-stop (right-stick press) always works.
+Whenever the robot can move (steps E, F and G), have someone holding the
+joystick, the robot on open floor with 1.5 m clear around it, and nothing it
+could fall off. The dodge node starts in **dry run**: it reports the dodge it
+would make and never moves the robot until you arm it in step G.
+
+## Where things stand (26 November 2026)
+
+| | |
+|---|---|
+| **Done on this Pupper** | Code installed and up to date; all 81 tests pass there. Both rear cameras found and assigned left and right. Exposure and white balance tuned for evening light. Fisheye lens rim fitted. Camera timing measured (23 Nov). USB power cap lifted. |
+| **Fixed on 26 Nov** | The lag and the missed throws. In dry run with nobody throwing, the node went from 5–15 pictures a second and 130–390 ms lag to 20–26 a second and 3–35 ms, with no false "throw seen". |
+| **Not done yet** | **No ball has been thrown at the robot since those fixes**, armed or not. The colour calibration is from 23 Nov and was made with a yellow cast in the picture: `elp_left`'s lets dark floor through, `elp_right`'s size scale is off (1.38, should be near 1), and the fisheye's is not green at all, so it is ignored and that camera runs on generic settings. The joystick has not been tried against the new velocity mux on the robot. |
+| **Open** | Both rear cameras share one USB controller and deliver about 43 pictures a second instead of 90 (step B). The white balance has not been watched after a cold boot (step D checks it). |
+
+## What to do next
+
+Work through A to G in order. Rough times are guesses. Nothing moves the robot
+until step E.
+
+### A. Get the latest code (2 min)
+
+```bash
+cd ~/sar-pupper && git pull && cd projectile-dodging
+```
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+- [ ] It ends with `Ran 81 tests ... OK`. If not, stop and send me the output.
+
+The line `note: the colour calibration in ... fisheye_color.yaml is for hue 9-28 ... is being ignored`
+is expected until step C.
+
+### B. Put the rear cameras on different USB controllers (5 min, optional)
+
+Both rear cameras are on `xhci-hcd.0`. Moving one may raise their rate from
+about 43 pictures a second; this has not been tried. Skip it if you are short
+of time: A to G work without it.
+
+```bash
+bash robot/stop.sh
+```
+
+```bash
+python3 tools/find_cameras.py
+```
+
+Move **one** rear camera's plug to another socket on the Pi and run it again,
+until the list shows one camera on `xhci-hcd.0` and the other on `xhci-hcd.1`. Then:
+
+```bash
+python3 tools/find_cameras.py --assign
+```
+
+- [ ] Cover the **robot's left** rear camera when asked. It ends by running both cameras together and printing each one's rate. Write the two rates down for me.
+
+Detail: [stage 4a and 4b](#4-find-the-rear-cameras-set-their-exposure-look-through-each).
+
+### C. Calibrate the three cameras with the ball (20–30 min)
+
+Do this in the room and the light you will throw in, with the robot where it
+will stand. **Do it again in the demo room.** The dodge node must not be
+running, because the tools open the rear cameras themselves.
+
+```bash
+bash robot/stop.sh
+```
+
+```bash
+bash robot/start.sh --no-dodge
+```
+
+```bash
+source robot/env.sh
+```
+
+**C1. Exposure and white balance** (rear cameras; about 2 min):
+
+```bash
+python3 tools/tune_exposure.py all
+```
+
+- [ ] Each camera reports `picture averages 80-100 of 255` and a colour cast of `none to speak of` or `slight`. Otherwise see the table in [stage 4c](#4-find-the-rear-cameras-set-their-exposure-look-through-each).
+
+**C2. Colour, then size, for each camera.** Three cameras, two commands each:
+
+```bash
+python3 tools/calibrate_color.py elp_left
+```
+
+```bash
+python3 tools/calibrate_color.py elp_left --distance 0.5 1 1.5 2
+```
+
+```bash
+python3 tools/calibrate_color.py elp_right
+```
+
+```bash
+python3 tools/calibrate_color.py elp_right --distance 0.5 1 1.5 2
+```
+
+```bash
+python3 tools/calibrate_color.py fisheye
+```
+
+```bash
+python3 tools/calibrate_color.py fisheye --distance 0.5 1 1.5 2
+```
+
+- **Colour:** first keep the ball out of view, then move it around 0.5–1.5 m
+  from that camera for ten seconds, low and high, with your hand behind it.
+- **Size:** hold the ball still at each distance, measured with a tape from
+  that camera's lens to the middle of the ball, ball near the middle of that
+  camera's picture.
+- [ ] Each colour step says the ball is found in 90–100 % of the pictures and `the empty room shows nothing ball-coloured`.
+- [ ] No `WARNING` lines. If there is one, the tables in [stage 5](#5-calibrate-each-camera-in-the-room-and-lighting-you-will-run-in) say what to do.
+
+**C3. Look through each camera** (open `http://192.168.1.73:8090`, Ctrl+C when done):
+
+```bash
+python3 tools/view.py elp_left
+```
+
+- [ ] The ball gets a red box, its range reads within about 10 % of the tape, and nothing else in the room gets a box. Same for `elp_right` and `fisheye`.
+- [ ] Ball held behind and to the robot's left reads a bearing near +135°; straight ahead (fisheye) near 0°.
+
+**Then tell me "calibrated".** I will copy the new files in `config/calib/` off
+the Pupper, check the limits and commit them, so they are not lost.
+
+### D. Dry run, nobody throwing (5 min)
+
+```bash
+bash robot/stop.sh
+```
+
+```bash
+bash robot/start.sh
+```
+
+```bash
+python3 tools/check_setup.py
+```
+
+```bash
+bash robot/watch.sh
+```
+
+- [ ] `check_setup.py`: every line says OK (the walking-controller line needs the robot standing; that comes in step E).
+- [ ] `watch.sh` shows `dry-run`, each camera at about 20 pictures a second or more and a lag under 50 ms.
+- [ ] No `COLOUR CAST` after a camera's name. The node re-sends the camera's settings by itself when it sees one; if the words are still there after 30 seconds, go back to C1 and C2 for that camera. This is the first check of that after a reboot.
+- [ ] No `EVENT` lines while the room is still. If they appear, something in view is being taken for the ball: open Pupper Dodging View (`http://192.168.1.73:8077`) and play the saved throw to see what was ringed.
+
+Paste me a few lines of `watch.sh` if any of these fail.
+
+### E. Stand up, check the joystick wins, throw in dry run (15 min)
+
+**The robot stands up here. Someone holds the joystick from now on.**
+
+```bash
+bash robot/walk.sh
+```
+
+- [ ] Walk it a little with the joystick. It follows the stick.
+- [ ] Press the right stick: it goes limp. Stand it up again with `bash robot/walk.sh`.
+
+Now the check that the joystick outranks a dodge command with the new mux. One
+person holds the left stick gently forward, the other runs this and types `go`:
+
+```bash
+python3 tools/step_response.py --vy 0.5
+```
+
+- [ ] The robot keeps walking forward with the stick and does **not** step sideways. If it steps sideways, stop here, restart with `bash robot/start.sh --slow-mux` and tell me.
+
+Then, with the robot standing still, throw balls at it, using the throws in
+[the room and the throw](#the-room-and-the-throw): sides first, then behind,
+then the front. Still in dry run, so it does not move. Leave `bash robot/watch.sh`
+running in a terminal, or keep Pupper Dodging View open.
+
+- [ ] Each throw that would have hit prints an `EVENT` with `"dodge"` and `"dry_run": true`, and appears in Pupper Dodging View as "would have dodged".
+- [ ] For a throw it ignores completely, press **Keep the last 3 s** in Pupper Dodging View straight afterwards.
+- [ ] Throw at least three from each side, three from behind, three from the front, and two that clearly miss.
+
+(With the robot lying relaxed instead of standing, the node reports
+`cannot_dodge` for a predicted hit rather than the dodge it would make.)
+
+**Then tell me "thrown".** I will read the saved throws off the Pupper and say
+whether it is ready to arm, or what to change first.
+
+### F. Measure how the robot takes a burst (10 min)
+
+**The robot moves.** Each run asks for `go` and moves it for half a second.
+Stop raising the speed if it stumbles or tilts past about 35°.
+
+```bash
+python3 tools/step_response.py --vy 0.5
+```
+
+```bash
+python3 tools/step_response.py --vx 0.6
+```
+
+```bash
+python3 tools/step_response.py --vx 1.0
+```
+
+```bash
+python3 tools/step_response.py --vx 1.0 --vy 0.5
+```
+
+```bash
+python3 tools/step_response.py --vx -0.8
+```
+
+- [ ] Note the `delay before the body reacts` each prints. The config assumes 0.12 s; the tool says so if yours is later.
+- [ ] If the feet slip on the floor, put the robot on a rug or mat before changing any number.
+
+Detail: [stage 7](#7-dry-run-with-the-dodge-node-then-measure-the-robots-response).
+
+### G. Arm it and throw (as long as you like)
+
+Robot standing, floor clear, someone on the joystick:
+
+```bash
+bash robot/watch.sh arm
+```
+
+Throw in this order: the **sides** from 2 m and the rear diagonals, then
+straight from **behind** and the front diagonals from 2.5–3 m, then straight
+from the **front** from 3 m with as high a lob as the ceiling allows.
+
+- [ ] After each throw, press *dodged*, *hit* or *off target* for it in Pupper Dodging View. Pupper cannot tell by itself whether the ball hit.
+
+```bash
+bash robot/watch.sh disarm
+```
+
+```bash
+bash robot/stop.sh
+```
+
+**Then tell me "thrown, armed".** I will read the throws and timings off the
+Pupper and carry on from there.
+
+## Running it, every session
+
+Once A to G have been done in a room, a session is:
+
+| When | Command | What happens |
+|---|---|---|
+| Start | `bash robot/stop.sh` then `bash robot/start.sh` | Robot stack and dodge node in dry run; about a minute. Prints the address of Pupper Dodging View |
+| New terminal | `source robot/env.sh` | Needed before any tool |
+| Check | `python3 tools/check_setup.py` | Every line OK |
+| Watch | `bash robot/watch.sh` | State, each camera's rate and lag, events |
+| Stand up | `bash robot/walk.sh` | **Robot stands.** `bash robot/walk.sh relax` lets it down |
+| Arm | `bash robot/watch.sh arm` | **A predicted hit now moves the robot** |
+| Disarm | `bash robot/watch.sh disarm` | Back to dry run |
+| Stop | `bash robot/stop.sh` | Everything off |
+| Look at throws | `http://192.168.1.73:8077` | Pupper Dodging View: every throw, its video and timings |
+
+If the light has changed since the last calibration (daylight to lamps, or a
+different room), do step C again first: `bash robot/start.sh --no-dodge`, then
+`tune_exposure.py all` and the colour and size steps.
+
+`bash robot/start.sh --armed` starts already armed. `--gemini` also starts
+Gemini Pupper's server. For the whole demo with navigation, terrain and voice
+together, use `path-navigation/README.md`; this guide is dodging by itself.
+
+## The room and the throw
 
 **Space: this guide assumes a room of about 4 × 6 m.** Stand Pupper in the
 middle, **facing along the long side**. That gives:
@@ -62,6 +333,11 @@ before lowering speeds: grip is worth more than any setting. The diagonal move
 
 ---
 
+# Reference
+
+The detail behind steps A to G, in the order of a first bring-up on a new robot.
+Stages 1 to 4 are done on this Pupper; step C above is stage 4c and stage 5 again.
+
 ## 1. Get the code onto the Pupper
 
 The code lives in `https://github.com/yuqinvictoriama/sar-pupper` on branch `main`.
@@ -87,8 +363,15 @@ then on the Pupper:
 cd ~/sar-pupper && git pull && cd projectile-dodging
 ```
 
-What the calibration tools write on the Pupper (`config/calib/*.yaml`) is not
-touched by a pull. Everything else the code needs (numpy, OpenCV, PyYAML,
+What the calibration tools write on the Pupper (`config/calib/*.yaml`) stays as
+it is through a pull, unless the same file was also changed in the repo; then
+git refuses the pull and names the file. Those files are kept in the repo, so
+after calibrating, copy them back and commit them, on the Mac:
+
+```bash
+scp 'pi@192.168.1.73:~/sar-pupper/projectile-dodging/config/calib/*.yaml' ~/Desktop/CS123/pi/sar-pupper/projectile-dodging/config/calib/
+```
+ Everything else the code needs (numpy, OpenCV, PyYAML,
 SciPy, ROS 2 Jazzy) is already on the course image. It also expects
 `~/gemini_pupper` and `~/pupperv3-monorepo` where the labs put them.
 
@@ -361,7 +644,9 @@ python3 tools/check_setup.py        # every line should say OK (the walking-cont
 bash robot/watch.sh                 # live: state, each camera's frame rate and lag, the tracked ball
 ```
 
-Throw balls. `watch.sh` prints an `EVENT ... "dodge" ... "dry_run": true` line
+Throw balls, with the robot standing (`bash robot/walk.sh`, below): lying
+relaxed, the node reports `cannot_dodge` for a predicted hit instead of the
+dodge it would make. `watch.sh` prints an `EVENT ... "dodge" ... "dry_run": true` line
 for each one it would have dodged. Every such moment, and every throw it saw
 but would not have dodged, is saved under `data/throws/` and shown in the
 **Pupper Dodging View** (the section after stage 8): open it now, in a browser, at the
@@ -369,12 +654,14 @@ address `start.sh` printed. In the `watch.sh` line, "lag" is how old a frame is
 when the node has acted on it and "cpu" is the work per frame, split into
 decoding the camera's JPEG and searching it for the ball. Each camera does that
 work in a process of its own (since 2026-11-26; `top` shows them as three extra
-`python3` lines beside the dodge node). A healthy line shows the ELPs at about
-30 fps (their `max_process_fps`), "cpu" under 25 ms and "lag" under 70 ms.
+`python3` lines beside the dodge node). Measured on this Pupper on 2026-11-26
+(evening light, nobody throwing): the fisheye at about 20 pictures a second with
+3-6 ms lag, the ELPs at 20-26 a second with 9-28 ms lag, and 24-39 ms of work
+per picture. Take that as healthy: about 20 a second or more, lag under 50 ms.
 Frame rate is what decides a dodge: in simulation, throws from 2-3 m are
 dodged 73-100 % of the time at 30 pictures a second, about half the time at
 15, and never at 7, which is what the Pupper managed before the cameras had
-their own processes. If the rates are far below 30, lag climbs, or `top` shows
+their own processes. If the rates are far below 20, lag climbs, or `top` shows
 the Pi near 100 % on all four cores, something else is using the processor:
 `start.sh` names the `llm-agent` service if it is running; stop it.
 `python3 tools/bench_detect.py data/throws/<a saved throw>` shows what each
@@ -654,9 +941,8 @@ Logs: `/tmp/sar-dodge/robot.log` (the page's: `dodging_view.log`). Every throw i
   the colour test let the dim floor through. Both were reworked (see `plan.md`).
   The next pictures were strongly yellow, with white walls passing for ball
   colour on one camera and the ball's hue shifted out of its calibrated range
-  on the other; the detector now removes the colour cast itself. All of this is
-  checked against the six pictures taken on the robot so far; none of it has
-  run live on the robot yet.
+  on the other; the detector now removes the colour cast itself. All of this was
+  checked against the six pictures taken on the robot at that point.
 - **Small room and late reactions (2026-11-26).** In simulation, high lobs
   thrown from 2 m were almost never dodged from the sides or the rear
   diagonals: the ball left the top of a rear camera's picture and was dropped
@@ -670,8 +956,17 @@ Logs: `/tmp/sar-dodge/robot.log` (the page's: `dodging_view.log`). Every throw i
   throw recorder and Pupper Dodging View have run against a stand-in robot (stand-in
   ROS, rendered cameras, a body that reacts 110 ms after a command), not on
   the Pupper; the timings they report for that stand-in match what was put in.
-- **Not verified - needs the stages above:** the second ELP and both ELPs
-  streaming together, the exposure tuner on the real cameras, colours and
-  timestamps, the dodge node in the real ROS stack, CPU load on the Pi, and how
-  the real robot accelerates. Expect to adjust numbers in `config/` during
-  stages 4-7. `/tmp/sar-dodge/robot.log` says what the node could not do.
+- **Seen on the robot (2026-11-26):** both ELPs streaming together, the
+  exposure tuner on the real cameras, and the dodge node in the real ROS stack.
+  Armed throws that afternoon were dodged late or not at all; the causes were
+  found by measurement on the Pi and fixed (see `plan.md`, Implementation
+  status). Afterwards, in dry run with nobody throwing: 20-26 pictures a second
+  and 3-35 ms lag (5-15 and 130-390 ms before), no false "throw seen", the
+  dodge node at about a fifth of one core. All 81 tests pass on the Pi.
+- **Not verified - needs steps C to G at the top:** any throw since those
+  fixes, armed or in dry run; the colour and size calibration, which predates
+  them; the joystick's priority over the dodge command with `robot/fast_mux.py`
+  on the robot; the white balance after a cold boot; whether separate USB
+  controllers raise the rear cameras' rate; and how the real robot accelerates.
+  Expect to adjust numbers in `config/` along the way. `/tmp/sar-dodge/robot.log`
+  says what the node could not do.
