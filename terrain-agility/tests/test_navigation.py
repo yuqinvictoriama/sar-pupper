@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sim.avoid_sim import AvoidSimConfig, Rect, run_avoid  # noqa: E402
 from terrain import decision as D  # noqa: E402
 from terrain.gauge import BoxEstimate  # noqa: E402
-from terrain.steering import LocalMap, SteerConfig, steer  # noqa: E402
-from terrain.state_machine import AVOID, CRUISE, HOLD  # noqa: E402
+from terrain.steering import LocalMap, SteerConfig, move_points, steer  # noqa: E402
+from terrain.state_machine import APPROACH, AVOID, CRUISE, GAUGE, HOLD, Inputs, TerrainFsm  # noqa: E402
 
 ENV = {60: 0.030, 64: 0.030, 76: 0.030, 89: 0.025}
 
@@ -165,6 +165,61 @@ def test_walk_around_picks_the_short_side():
 def test_clear_floor_never_takes_over():
     res = run_avoid(AvoidSimConfig(obstacles=[Rect(1.5, 1.2, 0.3, 0.4)], seed=3))        # well off to the side
     assert res.reached and res.states == [CRUISE]
+
+
+def test_close_in_front_of_a_wide_obstacle_it_turns_before_it_walks():
+    """Where Pupper stands after measuring something and refusing it: 0.36 m from a face
+    0.7 m wide. Walking on while turning would close in on it; it turns on the spot first."""
+    ys = np.linspace(-0.35, 0.35, 36)
+    face = np.stack([np.full_like(ys, 0.36), ys], axis=1)
+    res = steer(face, 0.0)
+    assert res.blocked and not res.stuck and res.vx == 0.0 and abs(res.wz) > 0.5
+    # once turned so the nose is clear of it, it walks
+    turned = move_points(face, 0.0, 0.0, math.copysign(math.radians(75.0), res.wz))
+    res2 = steer(turned, -math.copysign(math.radians(75.0), res.wz), side=res.side)
+    assert res2.vx > 0.0 and not res2.stuck
+
+
+@pytest.mark.parametrize("width", [0.40, 0.55, 0.70, 0.90])
+@pytest.mark.parametrize("offset", [-0.10, 0.0, 0.10])
+def test_refused_low_obstacle_is_walked_around_from_where_it_was_measured(width, offset):
+    """Something that may be low is walked up to, measured, refused (here: it cannot be
+    measured), and walked around from 0.36 m away, however wide it is. It is measured once:
+    it is not walked up to and measured again."""
+    for seed in range(2):
+        res = run_avoid(AvoidSimConfig(obstacles=[Rect(1.6 + 0.025, offset, 0.05, width, tall=False, is_box=True)],
+                                       seed=seed, goal_distance=3.1, max_time=60, stop_on_hold=False))
+        assert res.reached and HOLD not in res.states, (res.line(), res.states, res.events)
+        assert res.min_clearance > 0.17, res.line()
+        assert sum("decision:" in e for _, e in res.events) == 1, res.events
+        assert res.states[:4] == [CRUISE, APPROACH, GAUGE, AVOID], res.states
+
+
+def test_refused_obstacle_is_not_measured_again_after_a_hold():
+    """After a HOLD (here: pretend one), the obstacle just refused is walked around, not
+    approached and measured a second time; a different low obstacle elsewhere still is."""
+    from terrain.scan import Obstacle
+    fsm = TerrainFsm()
+
+    def ob(x, y0, y1):
+        ys = np.linspace(y0, y1, 15)
+        pts = np.stack([np.full_like(ys, x), ys], axis=1)
+        return Obstacle(left_deg=20.0, right_deg=-20.0, nearest=x - 0.145, nearest_bearing_deg=0.0, left_xy=tuple(pts[-1]),
+                        right_xy=tuple(pts[0]), width=y1 - y0, height=0.03, tall=False, is_box=True, columns=15, points=pts)
+
+    bar = ob(0.36, -0.35, 0.35)
+    fsm.state, fsm.t_last, fsm.yaw_last = GAUGE, 0.0, 0.0
+    fsm.estimate = None
+    fsm._after_gauge(None, Inputs(t=0.0, yaw=0.0, obstacles=[bar], points=bar.points, intent=(0.3, 0.0, 0.0)), 0.0)
+    assert fsm.state == AVOID
+    fsm.state = CRUISE                                     # as after a HOLD
+    out = fsm.tick(Inputs(t=0.05, yaw=0.0, obstacles=[bar], points=bar.points, intent=(0.3, 0.0, 0.0)))
+    assert out.state == AVOID and "measured already" in out.event, out
+    other = ob(0.80, -0.3, 0.3)                            # 0.45 m further on: a different one
+    fsm2 = TerrainFsm()
+    fsm2.refused, fsm2.refused_until = bar.points.copy(), 100.0
+    out = fsm2.tick(Inputs(t=0.05, yaw=0.0, obstacles=[other], points=other.points, intent=(0.3, 0.0, 0.0)))
+    assert out.state == APPROACH, out
 
 
 def test_boxed_in_holds_instead_of_wandering():

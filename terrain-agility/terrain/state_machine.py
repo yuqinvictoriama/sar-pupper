@@ -31,7 +31,7 @@ import numpy as np
 
 from . import decision as D
 from .gauge import BoxGauge
-from .steering import LocalMap, SteerConfig, path_clear, steer
+from .steering import LocalMap, SteerConfig, move_points, path_clear, steer
 
 CRUISE, AVOID, APPROACH, GAUGE, ALIGN, PLAN, STEP_OVER, SCALE_ACROSS, HOLD = (
     "CRUISE", "AVOID", "APPROACH", "GAUGE", "ALIGN", "PLAN", "STEP_OVER", "SCALE_ACROSS", "HOLD")
@@ -66,6 +66,8 @@ class FsmConfig:
     avoid_timeout: float = 25.0
     stall_time: float = 6.0            # s of turning on the spot without finding a way -> hold
     robot_half_track: float = 0.125
+    refused_memory: float = 30.0       # s: an obstacle measured and refused is not walked up to and measured again
+    refused_match: float = 0.20        # m: a "may be low" obstacle this close to one refused is that one
     steer: SteerConfig = field(default_factory=SteerConfig)
     decision: D.DecisionConfig = field(default_factory=D.DecisionConfig)
 
@@ -117,6 +119,8 @@ class TerrainFsm:
         self.hold_reason = ""
         self.ignore_box_until = -1e9         # something judged too low to matter is left alone until then
         self.seen_upper = float("inf")       # the lowest "no taller than" seen on the way up to the obstacle
+        self.refused = np.zeros((0, 2))      # where the last obstacle measured and refused is (body frame, moved with the robot)
+        self.refused_until = -1e9
         self.mode = FULL
 
     def set_mode(self, mode: str) -> bool:
@@ -155,6 +159,26 @@ class TerrainFsm:
                     best = (d, ob)
         return best
 
+    def _refuse(self, obstacles=(), heading: float = 0.0, t: float = 0.0) -> None:
+        """Remember where the obstacle just refused is, so that it is walked around, not walked up
+        to and measured again (after a HOLD, or when it comes back into the lane)."""
+        pts = []
+        e = self.estimate
+        if e is not None and math.isfinite(e.near_x) and math.isfinite(e.y_left) and math.isfinite(e.y_right):
+            ys = np.linspace(e.y_right, e.y_left, max(2, int(abs(e.y_left - e.y_right) / 0.05) + 1))
+            pts.append(np.stack([e.near_x + ys * math.tan(e.skew), ys], axis=1))
+        hit = self._blocking(obstacles, heading) if obstacles else None
+        if hit is not None:
+            pts.append(np.asarray(hit[1].points, dtype=float).reshape(-1, 2))
+        self.refused = np.vstack(pts) if pts else np.zeros((0, 2))
+        self.refused_until = t + self.cfg.refused_memory
+
+    def _was_refused(self, ob, t) -> bool:
+        if t > self.refused_until or not len(self.refused) or ob.points is None or not len(ob.points):
+            return False
+        d = np.hypot(ob.points[:, None, 0] - self.refused[None, :, 0], ob.points[:, None, 1] - self.refused[None, :, 1])
+        return bool(d.min() < self.cfg.refused_match)
+
     def plan_result(self, ok: bool, why: str = "") -> None:
         """The node's answer to plan_box: crossing started (ok) or no plan (then go around)."""
         if self.state != PLAN:
@@ -163,6 +187,7 @@ class TerrainFsm:
             self.state = SCALE_ACROSS if self.decision.action == D.SCALE_ACROSS else STEP_OVER
         else:
             self.decision = D.Decision(D.GO_AROUND, [why or "no crossing plan"])
+            self._refuse(t=self.t_last or 0.0)
             self.state = AVOID
             self.side = 0
 
@@ -192,6 +217,7 @@ class TerrainFsm:
             vx, vy = self.last_cmd[0], self.last_cmd[1]
         k = cfg.steer.speed_scale
         self.map.move(vx * k * dt, vy * k * dt, dyaw)
+        self.refused = move_points(self.refused, vx * k * dt, vy * k * dt, dyaw)
         if inp.points is not None:
             self.map.add_scan(t, inp.points, inp.seen_sector[0], inp.seen_sector[1], inp.scan_range)
 
@@ -204,6 +230,7 @@ class TerrainFsm:
             # a dodge moved the robot: everything measured so far is stale
             self.gauge.reset()
             self.map.clear()
+            self.refused = np.zeros((0, 2))
             self.side = 0
             self._go(CRUISE, t)
             out.event = "dodge: measurements dropped, re-assessing"
@@ -263,7 +290,8 @@ class TerrainFsm:
             if hit is None:
                 return out
             dist, ob = hit
-            measure = ob.is_box and self.mode == FULL
+            refused = ob.is_box and self._was_refused(ob, t)
+            measure = ob.is_box and self.mode == FULL and not refused
             if measure and dist < cfg.box_engage_range:
                 self.goal_yaw = inp.yaw + heading
                 self.gauge.reset()
@@ -274,10 +302,13 @@ class TerrainFsm:
             elif not measure and dist < cfg.engage_range:
                 self.goal_yaw = inp.yaw + heading
                 self.side = 0
-                why = "crossing is switched off (mode avoid)" if ob.is_box else "tall"
-                self.decision = D.Decision(D.GO_AROUND, [why])
+                why = ("measured already, and not crossable" if refused else
+                       "crossing is switched off (mode avoid)" if ob.is_box else "tall")
+                if not refused:
+                    self.decision = D.Decision(D.GO_AROUND, [why])
                 self._go(AVOID, t)
-                kind = "may be low, mode avoid" if ob.is_box else "tall"
+                kind = ("measured already, not crossable" if refused else
+                        "may be low, mode avoid" if ob.is_box else "tall")
                 out.event = f"obstacle ahead at {dist:.2f} m ({kind}): going around"
             if self.state == CRUISE:
                 return out
@@ -372,6 +403,7 @@ class TerrainFsm:
         cfg = self.cfg
         if est is None:
             self.decision = D.decide(None, cfg.decision)
+            self._refuse(inp.obstacles, self._goal_heading(inp.yaw), t)
             self.side = 0
             self._go(AVOID, t)
             return f"decision: {self.decision}"
@@ -409,6 +441,7 @@ class TerrainFsm:
             self.ignore_box_until = t + 1.5 * (est.near_x + depth + 0.4) / speed
             self._go(CRUISE, t)
         else:
+            self._refuse(inp.obstacles, self._goal_heading(inp.yaw), t)
             self.side = 0
             self._go(AVOID, t)
         mm = lambda v: "?" if not math.isfinite(v) else f"{v * 1000:.0f}"      # noqa: E731

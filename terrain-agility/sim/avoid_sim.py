@@ -63,6 +63,7 @@ class AvoidSimConfig:
     yaw_drift: float = 0.0              # rad/s gyro drift
     seed: int = 0
     max_time: float = 40.0
+    stop_on_hold: bool = True           # end the run at the first HOLD (False: see what it does next)
 
 
 def cast_scan(pose, rects, cfg, rng):
@@ -208,7 +209,7 @@ def run_avoid(cfg: AvoidSimConfig | None = None, fsm_cfg: FsmConfig | None = Non
             longest_stop = max(longest_stop, stop_t)
         else:
             stop_t = 0.0
-        if pose[0] >= cfg.goal_distance or out.state == HOLD and t > 5:
+        if pose[0] >= cfg.goal_distance or (cfg.stop_on_hold and out.state == HOLD and t > 5):
             break
     # The robot rejoins its original heading, not its original line (it has no odometry), so
     # it ends beside where it was going; compare with the shortest clear path to where it ended.

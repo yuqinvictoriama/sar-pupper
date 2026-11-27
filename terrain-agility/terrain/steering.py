@@ -37,6 +37,8 @@ class SteerConfig:
     speed_scale: float = 1.0         # actual / commanded walking speed (measure it)
     done_heading: float = math.radians(8.0)
     min_gap: float = 0.45            # m: a gap narrower than this is not passable
+    nose_clearance: float = 0.17     # m: walking on along the nose must keep this from every point...
+    nose_look: float = 0.30          # ... over this much path; otherwise turn on the spot first
 
 
 class LocalMap:
@@ -53,11 +55,7 @@ class LocalMap:
 
     def move(self, dx: float, dy: float, dyaw: float) -> None:
         """The robot moved dx, dy (m, in its old body frame) and turned dyaw (rad, + left)."""
-        if not len(self.points):
-            return
-        p = self.points - np.array([dx, dy])
-        c, s = math.cos(-dyaw), math.sin(-dyaw)
-        self.points = p @ np.array([[c, s], [-s, c]])
+        self.points = move_points(self.points, dx, dy, dyaw)
 
     def add_scan(self, t: float, points, seen_lo: float, seen_hi: float, max_range: float) -> None:
         """New scan points (k, 2). Remembered points inside the sector the camera has just
@@ -73,6 +71,15 @@ class LocalMap:
         if len(points):
             self.points = np.vstack([self.points, points])
             self.stamps = np.concatenate([self.stamps, np.full(len(points), t)])
+
+
+def move_points(points, dx: float, dy: float, dyaw: float) -> np.ndarray:
+    """Body-frame points after the robot moved dx, dy (m, in its old body frame) and turned dyaw."""
+    if not len(points):
+        return points
+    p = np.asarray(points, dtype=float) - np.array([dx, dy])
+    c, s = math.cos(-dyaw), math.sin(-dyaw)
+    return p @ np.array([[c, s], [-s, c]])
 
 
 CONTACT_RADIUS = 0.15      # m: a point this close to the body centre is in the way of every heading
@@ -141,6 +148,12 @@ def steer(points, goal_heading: float, cfg: SteerConfig | None = None, side: int
         new_side = 1 if pick > i_goal else -1
     wz = float(np.clip(cfg.yaw_gain * chosen, -cfg.max_yaw_rate, cfg.max_yaw_rate))
     if abs(chosen) > cfg.turn_in_place_above:
+        vx = 0.0
+    elif not _clear_headings(points, np.zeros(1), cfg.nose_clearance, cfg.nose_look)[0]:
+        # The robot walks along its nose while it turns towards the chosen heading. Close in
+        # front of a wide obstacle (standing where it measured one and refused it) the nose
+        # still points at it: walking on would close in on it before the turn is done, and
+        # leave no way round. Turn on the spot until the nose is clear.
         vx = 0.0
     else:
         vx = max(cfg.min_speed, cfg.speed * math.cos(chosen))

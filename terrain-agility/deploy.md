@@ -342,7 +342,7 @@ Launch as in part 3 (`avoid:=false`), Pupper standing. All commands in terminal 
 |---|---|---|
 | Gamepad e-stop | Legs limp immediately | Stand it up again with the gamepad |
 | Body tilts over 20°, a foot is blocked, or a leg is far from where it should be | Joints go soft, Pupper settles. The walking controller is **not** restarted | Lift Pupper clear, stand it up, `ros2 topic pub -1 /terrain/reset std_msgs/Empty` |
-| The obstacle cannot be crossed (too tall, wrong depth, too narrow, skewed, height not read, no clear floor beyond) | Walks around it, says why on `/terrain/event` | Fix what the event names |
+| The obstacle cannot be crossed (too tall, wrong depth, too narrow, skewed, height not read, no clear floor beyond) | Walks around it from where it measured it, turning on the spot first if it is wide, and says why on `/terrain/event`. It does not walk up to and measure the same obstacle again for 30 s | Fix what the event names |
 | Blocked on both sides | Stands still, reports `HOLD`, retries every 2 s | Clear a side |
 | The camera stops sending frames | Stands still | Check the camera node |
 | A foot comes down on the slab's far edge instead of beyond it | Carries on; in simulation this is a light touch (under 11 N) and never a fall | Redo the measurement in rung 6 (`crawl.advance_scale`) and the check in step 4.3: the edge was farther than Pupper thought |
@@ -385,6 +385,12 @@ mics as extra mass, the node's own hand-over):
   a low bar is stepped over.
 - **Through the real nodes** with a stand-in for ROS: camera frames of the slab → approach →
   measure → request → plan → hand-over → crossing in physics → hand-back.
+- **Walking around something it has just measured and refused**, from where it measured it
+  (0.36 m away): obstacles 0.40, 0.55, 0.70 and 0.90 m wide, centred or 10 cm to either side,
+  96 of 96 got round without stopping, never closer than 0.17 m, each measured once. Before
+  this fix it got stuck ("blocked on both sides") in 85 of those 96: it walked on while
+  turning and closed in on the obstacle. Ordinary walk-arounds, met from a distance: 420 of 420,
+  as before. In a simple model of the walk (`sim/avoid_sim.py`), not in MuJoCo.
 - **Bar, then slab, one after the other:** in physics, through the same crossing node with
   nothing restarted: the bar stepped over (52 s, 0.58 m, tilt at most 3.8°), then the slab
   0.36 m beyond where that left Pupper scaled across (80 s, 0.87 m, tilt at most 2.0°);
