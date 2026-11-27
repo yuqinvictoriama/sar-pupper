@@ -66,7 +66,11 @@ between the floor and the top. That band has to look different from the top (ano
 or the same colour in shadow) and different from the floor just in front of it.
 
 - The slab's raw board edge under its white top is exactly this. In simulation it is read on a
-  grey floor and on a wood-coloured floor (15 ± 1 mm).
+  grey floor and on a wood-coloured floor (15 ± 1 mm). On the robot's own camera it has been
+  found on a glossy wood floor from one position (section 9).
+- A glossy floor makes this harder: it shows glare from the lights and a dim mirror image of
+  the edge right under it. Pupper allows for both, but if `check` shows the side face on
+  less than 90 % of the width, move the slab out of the worst glare.
 - If the edge is the same colour as the floor, or the obstacle is one colour with no shading,
   the height reads as "not read" and Pupper walks around. Step 4.2 checks this on your floor
   before anything moves. The fix, if it is needed, is a strip of tape in any other colour
@@ -164,9 +168,11 @@ prints what it found.
    ```bash
    python3 tools/learn_colors.py check
    ```
-   **Expect, for the slab:** a `gauge` line with `height` near 15 mm (not "not read"), `depth`
-   near 380 mm, `side face seen on` 90 % or more, and `would do: scale_across`. The height and
-   distance will be a little off until step 3.
+   **Expect, for the slab:** a `gauge` line with a `height` (not "not read") and `side face
+   seen on` 90 % or more. The numbers themselves, and `would do`, can be well off until
+   step 3: before it the tool assumes a camera 250 mm up and level, and this Pupper's is
+   much lower and looks up. After step 3: `height` near 15 mm, `depth` near 380 mm,
+   `would do: scale_across`.
    - **"height not read"**: the edge does not show against this floor or against the top (1b).
      Put a strip of tape in another colour along the edge and run it again.
    - Repeat with the **round bar** (expect `would do: go_around`, with a reason) and the
@@ -180,15 +186,30 @@ prints what it found.
      `config/terrain.yaml` by a few degrees and run `check` again.
 
 3. **Camera position.** Use the slab. Move the **slab**, not Pupper. Measure with the ruler on
-   the floor from the **front of the front feet** to the slab's near face.
+   the floor from the **front of the front feet** to the slab's near face, slab square to
+   Pupper.
    ```bash
-   python3 tools/calibrate_camera.py add 0.20     # slab 20 cm from the toes
-   python3 tools/calibrate_camera.py add 0.30     # move it to 30 cm
-   python3 tools/calibrate_camera.py add 0.45     # move it to 45 cm
-   python3 tools/calibrate_camera.py solve --box-height 0.015 --write
+   python3 tools/calibrate_camera.py clear        # forget any earlier attempt
+   python3 tools/calibrate_camera.py add 0.25     # slab 25 cm from the toes
+   python3 tools/calibrate_camera.py add 0.35     # move it to 35 cm
+   python3 tools/calibrate_camera.py add 0.50     # move it to 50 cm
+   python3 tools/calibrate_camera.py solve --box-height 0.015 --box-depth 0.38 --write
    ```
-   Use the slab's **measured** thickness in place of `0.015`.
-   **Expect:** "fit residual ... (good)".
+   `--box-height` is the slab's **measured** thickness and `--box-depth` its measured size
+   fore-aft (near face to far edge, as it lies), both in metres.
+   - **Each `add` prints three angles**: the foot of the near face, its top edge, the far
+     edge. All three must be numbers. "not seen" for the top edge means the edge does not
+     show (1b): fix that before going on. Adding a distance again replaces the earlier
+     reading for it; `python3 tools/calibrate_camera.py list` shows what is recorded.
+   - **Not closer than 25 cm**: nearer than that the foot of the slab drops out of the
+     bottom of the camera's view, and `add` refuses.
+   - **Expect from `solve`:** "fit residual ... (good)", and a table of how far each angle
+     is from the fit, all within about 0.4 deg. If it says HIGH it names the distance that
+     fits worst: measure that one again, `add` it again, `solve` again. It will not write a
+     poor fit.
+   - For this Pupper expect a camera height near 160 to 170 mm and a pitch near -11 deg
+     (looking a little up). That is my estimate from one picture, not a measurement.
+
    **Check it:** put the slab at 27 cm from the toes and run `python3 tools/learn_colors.py check`.
    The gauge line must give the height within 3 mm, the depth within 15 mm, and the distance
    within 1 cm of 360 mm (27 cm from the toes is 36 cm from the body centre).
@@ -325,12 +346,28 @@ mics as extra mass, the node's own hand-over):
 - **Through the real nodes** with a stand-in for ROS: camera frames of the slab → approach →
   measure → request → plan → hand-over → crossing in physics → hand-back.
 
+Seen on the robot so far (26 November, evening; nothing moved):
+
+- **Six camera frames of the slab on a glossy wood floor**, one slab position. On them the
+  first version of the gauge failed: it took the slab's raw edge for floor, lost half the
+  slab to glare patches, and read no height. The gauge was reworked against those frames (the
+  edge is now found by comparing it with the floor just beyond it; its mirror image in the
+  floor and patches of glare are left out) and now finds the edge on 98 % of the slab's
+  width, with the same angles on all six frames. That is one position on one floor.
+- **The camera is not where I had assumed**: lower (about 165 mm, not 250 mm) and looking
+  about 11° up. Step 4.3 measures it; until it has been run and checked, no distance or
+  height from the camera is right.
+- The first try at step 4.3 failed ("fit too poor") because of the gauge fault above, not
+  because of how it was run.
+
 Not verified, because it needs the robot:
 
 - That the real motors track the crawl as the simulated ones do, and how far it really
   advances (rungs 5 and 6).
-- That the slab's edge shows on your floor under your lights (step 4.2), and the lens model
-  and camera position on real frames (step 4.3).
+- That the slab's edge shows on your floor under your lights from every distance (step 4.2;
+  seen from one), and the lens model and camera position on real frames (step 4.3, not yet
+  completed).
+- The round bar and the carton on real frames.
 - Foot grip on the slab's top, and whether the slab stays put.
 - That the walking policy stands still enough at zero command for a crossing to start.
 - Planning time and controller-switch time on the Pi.

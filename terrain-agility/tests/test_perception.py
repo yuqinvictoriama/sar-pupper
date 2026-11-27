@@ -297,6 +297,35 @@ def test_camera_mount_calibration_from_three_distances():
     assert abs(m.height - 0.015) < 0.004 and abs(m.near_x - 0.36) < 0.010
 
 
+@pytest.mark.parametrize("floor", [FLOOR, HARDWOOD])
+def test_camera_mount_calibration_far_from_the_first_guess_using_the_far_edge(floor):
+    """As it was on the robot: the lens 9 cm lower than first guessed and looking 11 degrees
+    up, the slab's raw edge on a wooden floor. The slab at three distances, its far edge used
+    too -> the pose, and with it the slab reads right from where a crossing starts."""
+    true_pose = CameraPose(height=0.164, pitch_deg=-11.5, x_forward=0.150)
+    guess = CameraPose(height=0.25, pitch_deg=0.0, x_forward=0.145)
+    fm, _ = _floor_model(floor)
+    view = fine_view(MODEL, guess)
+    obs = []
+    for dist in (0.337, 0.437, 0.587):          # 25, 35 and 50 cm from the toes
+        m = measure_obstacle(render(Scene(boxes=[slab(dist)], floor=floor, seed=7), MODEL, true_pose), view, fm,
+                             near_depression_deg=NEAR_DEP)
+        assert m is not None and all(math.isfinite(v) for v in (m.foot_dep, m.top_dep, m.far_dep)), (dist, m)
+        obs.append((dist, m.foot_dep, m.top_dep, m.far_dep))
+    details = {}
+    hc, corr, xf, rms = solve_camera_mount(obs, 0.015, guess.x_forward, solve_x_forward=True, box_depth=0.38, details=details)
+    assert abs(hc - 0.164) < 0.005 and abs(corr + 11.5) < 0.6 and abs(xf - 0.150) < 0.008 and rms < 0.3, (hc, corr, xf, rms)
+    assert details["residuals"].shape == (3, 3) and np.abs(details["residuals"]).max() < 0.6
+    # one distance measured 4 cm wrong shows as a poor fit, and as the worst row
+    bad = [obs[0], (obs[1][0] + 0.04,) + obs[1][1:], obs[2]]
+    *_, rms_bad = solve_camera_mount(bad, 0.015, guess.x_forward, solve_x_forward=True, box_depth=0.38, details=details)
+    assert rms_bad > 0.35 and int(np.nanargmax(np.abs(details["residuals"]).max(axis=1))) == 1
+    good = CameraPose(height=hc, pitch_deg=corr, x_forward=xf)
+    m = measure_obstacle(render(Scene(boxes=[slab(0.36)], floor=floor, seed=8), MODEL, true_pose), fine_view(MODEL, good), fm,
+                         near_depression_deg=NEAR_DEP)
+    assert abs(m.height - 0.015) < 0.003 and abs(m.near_x - 0.36) < 0.010 and abs(m.depth - 0.38) < 0.015, m
+
+
 def test_landing_strip_check():
     far = 0.36 + 0.38
     for extra, clear in (([], True),
