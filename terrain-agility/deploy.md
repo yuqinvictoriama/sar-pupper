@@ -117,6 +117,9 @@ The Pi already has what it needs from the course (ROS 2 Jazzy, the pupperv3 mono
    ```bash
    cd ~/sar-pupper && git pull
    ```
+   Your calibration lives in `config/terrain.yaml` on the Pi, as local changes that are not
+   committed; `git pull` keeps them. If `git pull` ever refuses because of local changes to
+   that file, run `git stash && git pull && git stash pop`.
 2. **In every terminal you open on the Pi**, run these four lines first:
    ```bash
    source /opt/ros/jazzy/setup.bash
@@ -229,9 +232,27 @@ prints what it found.
    **Stop point: do not go on until it does.** The crossing counts its steps blind from this
    distance.
 
-4. **Payload.** Weigh the camera plate with both cameras on it, and one mic. In
-   `config/terrain.yaml`, under `crawl:` → `extra_masses`, replace my estimates (130 g for the
-   plate and cameras, 65 g for the mics together) with the real masses in kg.
+4. **Payload (optional: no scale needed).** The crossings allow for the hardware added to the
+   stock Pupper, using my estimates: 130 g for the camera plate and cameras on the head, 65 g
+   for the mics. Getting these exact does not matter much. In simulation, with the planner
+   kept on my estimates and the real hardware made lighter or heavier at the same places:
+
+   | Real added hardware | Low bar | Slab |
+   |---|---|---|
+   | none at all | crossed, tilt 3.4° | crossed, tilt 1.9° |
+   | 0.39 kg (twice my estimate) | crossed, tilt 4.7° | crossed, tilt 2.8° |
+   | 0.58 kg (3×) | crossed, tilt 6.1° | crossed, tilt 3.3° |
+   | 0.78 kg (4×) | crossed, tilt 8.1° | crossed, tilt 4.0° |
+   | 0.98 kg (5×) | **tips over** | crossed, tilt 4.7° |
+
+   - If everything added to the stock Pupper together is clearly lighter than a full 500 ml
+     water bottle (0.5 kg) held in the other hand, leave the estimates as they are.
+   - If something heavier has been added (a power bank, another board), weigh it on any
+     kitchen or postal scale, to the nearest 10 g, and add a line for it under `crawl:` →
+     `extra_masses` in `config/terrain.yaml`: `[mass in kg, x, y, z]`, metres from the point
+     between the hips (x forward, z up).
+   - A badly wrong payload shows before any obstacle: the body lurches in rung 3 or a foot
+     drags or Pupper leans in rung 5.
 
 5. **Walking speed** (**MOVES**). 2 m of clear floor ahead.
    ```bash
@@ -239,6 +260,10 @@ prints what it found.
    ```
    Measure how far Pupper went. Set `steer.speed_scale` in `config/terrain.yaml` to
    that distance in metres ÷ 1.5.
+   - Measured on this Pupper (26 November): 0.80 m in 5 s, so `speed_scale: 0.533`. It walks
+     at about half the speed it is told to. The figure includes the moment it takes to get
+     going, so its cruising speed is a little higher; a value on the low side is the safe
+     one (when walking round something, Pupper then assumes it has not yet passed it).
 
 After editing `terrain.yaml`, stop the launch (Ctrl-C) and start it again.
 
