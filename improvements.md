@@ -196,9 +196,16 @@ Changing direction freely mid-dodge made balls thrown together worse
 **What would help**
 
 - **Deciding earlier:**
-  - faster cameras (item 3 and the Issues section);
-  - a lower threshold for a ball counting as confirmed (needs its own
-    false-dodge check).
+  - faster cameras (item 3 and the Issues section). This is the one way
+    found so far.
+  - Counting a ball after two looks instead of three (`tracker.confirm_hits`
+    and `threat.min_hits` set to 2) does not help. Two-ball results were the
+    same to the throw, in both robot models. In the 339 real recordings the
+    decision came no earlier (median 0.29 s left) and slightly more unlabelled
+    recordings were dodged (12 → 14 of 304). Adding one threat verdict
+    instead of two (`threat.confirm_cycles: 1`) was within noise. It is the
+    climb in the ball's direction, not the number of looks, that sets when
+    the dodge is decided. Left at 3.
 - **A faster first step:** the robot's measured response (step F; Issues
   section).
 
