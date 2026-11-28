@@ -121,6 +121,11 @@ class DodgeCore:
         self.hold = ""                          # why a predicted hit has not led to a dodge yet
         self.report_undodged = bool(fc.get("report_undodged", True))
         self.undodged_travel = float(fc.get("undodged_min_travel_m", 0.5))
+        # A lob that climbs out of the top of a rear camera's picture after two to four looks is gone
+        # before the rule above (five looks) can report it, and was then never recorded (2026-11-27).
+        self.report_left_top = bool(fc.get("report_left_top", True))
+        self.left_top_max_hits = int(fc.get("left_top_max_hits", 4))
+        self._left_top: dict = {}               # track id -> what is known of a ball last seen climbing out of the top
 
     # ------------------------------------------------------------------ inputs
     def set_armed(self, armed: bool) -> None:
@@ -233,10 +238,45 @@ class DodgeCore:
                 self._event(t_now, "throw_seen", seen_s=round(f["t_last"] - f["t0"], 3), travel_m=round(f["travel"], 2),
                             closest_m=round(f["closest_m"], 2), verdicts=f["verdicts"], threat=f["last"])
 
+    def _watch_left_top(self, t_now: float, alive: dict) -> None:
+        """Report a ball last seen climbing out of the top of a rear picture after only a few looks, once its
+        track is gone without a dodge: a "throw_seen" event with left_top true, so the recorder keeps it."""
+        if not self.report_left_top:
+            return
+        for tid in [k for k in self._left_top if k not in alive]:
+            c = self._left_top.pop(tid)
+            if (self.report_undodged and c["t_seen"] >= self.t_ready and self.t_dodge < c["t0"] - 0.5
+                    and self.state != State.DODGE):
+                self._event(t_now, "throw_seen", left_top=True, track=tid, hits=c["hits"], cam=c["cam"],
+                            seen_s=round(c["t_seen"] - c["t0"], 3), bearing_deg=c["bearing_deg"],
+                            elevation_deg=c["elevation_deg"])
+        R = None
+        for tid, tr in alive.items():
+            if tr.hits > self.left_top_max_hits:
+                self._left_top.pop(tid, None)        # seen more: the five-look rule or a dodge covers it
+                continue
+            if tr.hits < 2 or tid in self.handled or tr.t_last < tr.history[-1][0]:
+                continue
+            if tid in self._left_top and self._left_top[tid]["hits"] == tr.hits:
+                continue                             # nothing new about this one
+            if R is None:
+                R = self.orientation(None)
+            if self.tracker.climbed_out(tr, R):
+                ray = R.T @ np.asarray(tr.history[-1][4], dtype=float)
+                self._left_top[tid] = {"t0": tr.t0, "t_seen": tr.t_last, "hits": tr.hits, "cam": tr.history[-1][2],
+                                       "bearing_deg": round(math.degrees(math.atan2(ray[1], ray[0])), 1),
+                                       "elevation_deg": round(math.degrees(math.atan2(ray[2], math.hypot(ray[0], ray[1]))), 1)}
+            elif tid in self._left_top:
+                self._left_top[tid]["hits"] = tr.hits   # seen again, no longer at the top: not leaving after all
+                if not tr.history[-1][7]:
+                    del self._left_top[tid]
+
     def _evaluate(self, t_now: float) -> bool:
         tracks = self.tracker.confirmed() + [tr for tr in self.tracker.tracks if tr.climber and not tr.confirmed]
-        alive = {tr.id for tr in self.tracker.tracks}
+        by_id_all = {tr.id: tr for tr in self.tracker.tracks}
+        alive = set(by_id_all)
         self.handled &= alive
+        self._watch_left_top(t_now, by_id_all)
         if self.state == State.DODGE or (self.state == State.RECOVER and not self._steady(t_now)):
             if self._flight is not None:
                 self._flight["dodged"] = True

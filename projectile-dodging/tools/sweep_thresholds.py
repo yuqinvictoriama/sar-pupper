@@ -105,7 +105,12 @@ def parse_value(text: str):
 
 def detection_fingerprint(cfg: dict) -> str:
     """What the cached blobs depend on: the cameras and the detector (and the code version is the caller's)."""
-    part = {"cameras": cfg["cameras"], "detector": cfg["detector"], "ball": cfg["ball"]}
+    cams = {}
+    for name, cam in cfg["cameras"].items():
+        cams[name] = dict(cam)
+        if int(cams[name].get("search_scale", 1) or 1) == 1:
+            cams[name].pop("search_scale", None)      # 1 is how pictures were always searched: caches made before stay valid
+    part = {"cameras": cams, "detector": cfg["detector"], "ball": cfg["ball"]}
     return hashlib.sha1(json.dumps(part, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
 

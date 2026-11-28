@@ -460,7 +460,13 @@ class Tracker:
                                      ray=_ray, origin=_origin, range_m=m.range_m,
                                      near_top=getattr(m, "near_top", False)))
 
-    def _climbs(self, tr: Track, R_wb: np.ndarray | None = None) -> bool:
+    def climbed_out(self, tr: Track, R_wb: np.ndarray | None = None) -> bool:
+        """The same two-look test as for a lob straight behind (_climbs), at any bearing: its latest look
+        is in the top strip of a rear picture and it is climbing like a lob, so it is about to leave the
+        view. Used only to report such balls (fsm.report_left_top), never to decide a dodge."""
+        return self._climbs(tr, R_wb, min_bearing=0.0)
+
+    def _climbs(self, tr: Track, R_wb: np.ndarray | None = None, min_bearing: float | None = None) -> bool:
         """Two looks by the rear cameras that show a ball climbing like a lob: clearly up, hardly sideways,
         the same size. Straight behind the robot those cameras see only 30 degrees above the horizontal,
         and a lob is above that a tenth of a second after it is thrown: two looks is often all there is.
@@ -492,7 +498,7 @@ class Tracker:
         if min(fa, fb) < 0.1 or not b[7]:
             return False
         ray_b = b[4] if R_wb is None else R_wb.T @ b[4]              # in the robot's own frame: where it is relative to the nose
-        if abs(math.degrees(math.atan2(ray_b[1], ray_b[0]))) < self.climber_bearing:
+        if abs(math.degrees(math.atan2(ray_b[1], ray_b[0]))) < (self.climber_bearing if min_bearing is None else min_bearing):
             return False
         climb = b[4][2] / fb - ra[2] / fa
         turn = abs(math.atan2(ra[0] * b[4][1] - ra[1] * b[4][0], ra[0] * b[4][0] + ra[1] * b[4][1]))

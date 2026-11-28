@@ -255,20 +255,16 @@ python3 tools/step_response.py --vy 0.5
 ```
 
 ```bash
-python3 tools/step_response.py --vx 0.6
-```
-
-```bash
-python3 tools/step_response.py --vx 1.0
-```
-
-```bash
-python3 tools/step_response.py --vx 1.0 --vy 0.5
+python3 tools/step_response.py --vx 0.45
 ```
 
 ```bash
 python3 tools/step_response.py --vx -0.8
 ```
+
+These are the three moves a dodge now makes (one axis at a time, forward below
+the walking policy's fast gait at 0.5 m/s). Faster forward runs and diagonals
+are no longer used, so they need no measuring.
 
 - [ ] Note the `delay before the body reacts` each prints. The config assumes 0.12 s; the tool says so if yours is later.
 - [ ] If the feet slip on the floor, put the robot on a rug or mat before changing any number.
@@ -409,9 +405,13 @@ sidestep.
 
 On a smooth floor (hardwood, tile) the robot's feet slip when it sets off
 fast. If it trips while dodging, put it on a rug, a yoga mat or foam tiles
-before lowering speeds: grip is worth more than any setting. The diagonal move
-(forward and sideways at once) is already softened for this
-(`escape.diagonal_scale`, stage 9).
+before lowering speeds: grip is worth more than any setting. Since 2026-11-27 a
+dodge moves along one axis only (`escape.diagonals: false`) and forward at no
+more than 0.45 m/s (`escape.vx_forward`). Diagonals tipped the robot about twice
+as much as sideways moves. From a forward command of 0.5 up, the walking policy
+changes to a faster gait that tipped it twice as much in MuJoCo and covered no
+more ground in the first half second
+([reports/falls-mujoco/REPORT.md](reports/falls-mujoco/REPORT.md)).
 
 ---
 
@@ -806,9 +806,11 @@ of this guide assumed 0.20 s).
 | `These timings do not fit` | The video timings are impossible for that speed | Recount; time from the first movement, not from pressing Enter |
 | `note: the response lag of 0.79 s ... is being ignored` | A file saved by an earlier version of this tool | `rm config/calib/step_response.yaml` |
 
-If the robot was steady at 1.0 m/s and you want more margin, try
-`--vx 1.5` / `--vx -1.5`, and if those are steady too, raise `vx_forward` and
-`vx_backward` under `escape:` (in a `config/calib/` file or `dodge.yaml`).
+Keep `vx_forward` below 0.5. At 0.5 and above the walking policy changes to its
+faster gait (`gait_reference.gallop_speed` 0.5 in `default_policy.json`). In
+MuJoCo that gait tipped the robot 13–18° instead of 7° and was no faster over
+the first half second. Check that threshold again if the walking policy
+changes.
 
 ## 8. Arm it
 

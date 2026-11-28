@@ -260,8 +260,14 @@ class BallDetector:
         key = (width, height)
         if key not in self._ignore_cache:
             m = circle_ignore_mask(self.image_circle, self.ref_size, width, height)
-            if self.ignore_mask is not None and self.ignore_mask.shape[:2] == (height, width):
-                m = self.ignore_mask.copy() if m is None else cv2.bitwise_or(m, self.ignore_mask)
+            if self.ignore_mask is not None:
+                im = self.ignore_mask
+                if im.shape[:2] != (height, width):
+                    # a picture of another size (searched at half size, say): a pixel is ignored if any
+                    # part of it was
+                    im = cv2.resize(im, (width, height), interpolation=cv2.INTER_AREA)
+                    im = np.where(im > 0, 255, 0).astype(np.uint8)
+                m = im.copy() if m is None else cv2.bitwise_or(m, im)
             self._ignore_cache[key] = m
         return self._ignore_cache[key]
 

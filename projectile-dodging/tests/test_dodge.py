@@ -231,10 +231,48 @@ class EscapeTests(unittest.TestCase):
         self.assertLess(plan.vy, 0.0)
 
     def test_diagonal_uses_both_axes_and_is_faster(self):
-        plan = self.planner.plan(self.threat(45.0))
+        planner = EscapePlanner(dict(CFG["escape"], diagonals=True), CFG["robot"], CFG["ball"], CFG["threat"]["margin_m"])
+        plan = planner.plan(self.threat(45.0))
         self.assertNotEqual(plan.vx, 0.0)
         self.assertNotEqual(plan.vy, 0.0)
-        self.assertLess(plan.t_clear, self.planner.plan(self.threat(0.0)).t_clear)
+        self.assertLess(plan.t_clear, planner.plan(self.threat(0.0)).t_clear)
+
+    def test_no_diagonals_by_default_one_axis_at_a_time(self):
+        # Diagonals tipped the robot most on 2026-11-27 (reports/testing-2026-11-27.md): by default a dodge
+        # moves along one axis, the one that carries it away faster.
+        self.assertFalse(CFG["escape"]["diagonals"])
+        for bearing in range(-180, 180, 15):
+            for lateral in (-0.08, 0.0, 0.08):
+                plan = self.planner.plan(self.threat(float(bearing), lateral=lateral))
+                self.assertTrue(plan.vx == 0.0 or plan.vy == 0.0, (bearing, lateral, plan.vx, plan.vy))
+                self.assertGreater(plan.speed, 0.0)
+        vx, vy, speed = self.planner.command_for(np.array([0.6, 0.8]))       # sideways carries it further along d
+        self.assertEqual(vx, 0.0)
+        self.assertAlmostEqual(speed, 0.8 * CFG["escape"]["vy"])
+        vx, vy, speed = self.planner.command_for(np.array([-0.8, 0.6]))      # backing away does
+        self.assertEqual(vy, 0.0)
+        self.assertAlmostEqual(vx, -CFG["escape"]["vx_backward"])
+
+    def test_an_uncertain_ball_gets_the_faster_side(self):
+        # From ahead-right, the side the ball passes on makes stepping forward (0.45 m/s) the shorter way and
+        # backing away (0.8 m/s) the longer one. Sure of it: the shorter way. Unsure: the faster one.
+        b = math.radians(-60.0)
+        u = np.array([-math.cos(b), -math.sin(b)])
+
+        def th(sigma):
+            return Threat(1, True, True, "", 0.8, 0.0, 0.05, sigma, 0.09, 0.0, u, -60.0, 50.0, 4.0, 2.0, 5.0)
+        sure, unsure = self.planner.plan(th(0.01)), self.planner.plan(th(0.12))
+        self.assertGreater(sure.vx, 0.0)
+        self.assertLess(unsure.vx, 0.0)
+        self.assertAlmostEqual(unsure.t_need, self.planner.react + unsure.t_clear)   # when to start: unchanged
+
+    def test_forward_dodges_stay_below_the_walking_policys_fast_gait(self):
+        # default_policy.json changes to a faster gait at a forward command of 0.5 (gait_reference.gallop_speed),
+        # which tipped the robot twice as much in MuJoCo for no more distance (reports/falls-mujoco/REPORT.md)
+        self.assertLess(CFG["escape"]["vx_forward"], 0.5)
+        for bearing in range(-180, 180, 15):
+            plan = self.planner.plan(self.threat(float(bearing)))
+            self.assertLess(plan.vx, 0.5)
 
     def test_free_space_flips_dead_centre_choice(self):
         base = self.planner.plan(self.threat(0.0))
@@ -368,7 +406,7 @@ class HighLobAndSmoothFloorTests(unittest.TestCase):
         self.assertGreater(float(np.median(left_new)), 0.8)
 
     def test_the_diagonal_move_is_gentler(self):
-        planner = EscapePlanner(dict(CFG["escape"], diagonal_scale=0.8), CFG["robot"], CFG["ball"], 0.05)
+        planner = EscapePlanner(dict(CFG["escape"], diagonal_scale=0.8, diagonals=True), CFG["robot"], CFG["ball"], 0.05)
         vx, vy, _speed = planner.command_for(np.array([0.7071, 0.7071]))
         self.assertAlmostEqual(vx, 0.8 * CFG["escape"]["vx_forward"])
         self.assertAlmostEqual(vy, 0.8 * CFG["escape"]["vy"])
@@ -398,6 +436,28 @@ class HighLobAndSmoothFloorTests(unittest.TestCase):
         r = run_closed_loop(CFG, aimed_throw(CFG, 90, 2.0, rise=0.6), seed=3)
         self.assertIn(json.loads(json.dumps(r["dodge_event"]))["late"], (True, False))    # a real true/false, not a word
         self.assertFalse([e for e in r["events"] if e["event"] == "throw_seen"])           # a dodged throw is not also "seen"
+
+    def test_a_lob_that_climbs_out_of_the_top_after_a_few_looks_is_reported(self):
+        # High lobs from the side leave the top of a rear camera's picture after two to four looks and, on
+        # 2026-11-27, left no recording at all: too few looks for a "throw_seen". Now they are reported.
+        timing = {"fisheye": (19, 0.072), "elp_left": (17, 0.055), "elp_right": (17, 0.055)}
+        reported = undodged = 0
+        for i, bearing in enumerate((84.0, 88.0, 92.0, 96.0, -86.0, -94.0)):
+            r = run_closed_loop(CFG, aimed_throw(CFG, bearing, 2.3, release_h=1.0, rise=2.0), seed=11 + i, timing=timing)
+            left_top = [e for e in r["events"] if e["event"] == "throw_seen" and e.get("left_top")]
+            self.assertLessEqual(len(left_top), 1)
+            if r["dodges"]:
+                self.assertFalse(left_top)                   # a dodged ball is not also "seen"
+                continue
+            undodged += 1
+            reported += bool(left_top)
+            if left_top:
+                e = left_top[0]
+                self.assertLessEqual(e["hits"], CFG["fsm"]["left_top_max_hits"])
+                self.assertGreater(abs(e["bearing_deg"]), 60.0)
+                self.assertGreater(e["elevation_deg"], 20.0)
+        self.assertGreater(undodged, 0)
+        self.assertGreaterEqual(reported, max(1, undodged - 1))
 
 
 class HandledBallTests(unittest.TestCase):

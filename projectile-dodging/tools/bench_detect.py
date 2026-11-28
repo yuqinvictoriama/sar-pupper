@@ -3,6 +3,7 @@
 
     python3 tools/bench_detect.py data/throws/20261126-155217-dodge [more folders]
     python3 tools/bench_detect.py data/throws/20261126-155217-dodge --profile elp_left
+    python3 tools/bench_detect.py data/throws/<folder> --full-decode --search-scale 2   # rear at half size
 
 For every camera in the recordings it decodes each saved picture and searches it
 for the ball, exactly as the camera's process does on the robot, and prints the
@@ -36,9 +37,19 @@ def main() -> None:
     ap.add_argument("--config", default=None)
     ap.add_argument("--profile", default="", metavar="CAMERA", help="print where this camera's search spends its time")
     ap.add_argument("--threads", type=int, default=1, help="OpenCV threads (the node uses 1)")
+    ap.add_argument("--search-scale", type=int, default=0, metavar="N",
+                    help="search the rear cameras' pictures at 1/N size (cameras.<name>.search_scale; 0 = as configured)")
+    ap.add_argument("--full-decode", action="store_true",
+                    help="decode every picture in full, as while a ball is tracked (detector.decode_small_first off)")
     args = ap.parse_args()
     cv2.setNumThreads(args.threads)
     cfg = load_config(args.config)
+    if args.search_scale:
+        for name in ("elp_left", "elp_right"):
+            if name in cfg["cameras"]:
+                cfg["cameras"][name]["search_scale"] = args.search_scale
+    if args.full_decode:
+        cfg["detector"]["decode_small_first"] = False
     frames: dict = {}
     for path in args.recordings:
         reader = RecordingReader(path)

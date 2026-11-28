@@ -157,6 +157,25 @@ DEFAULT_CAMERA_TIMING = {
 }
 
 
+def mujoco_response(vx: float, vy: float):
+    """How the walking policy answers a velocity step, per axis: ((gain_x, lag_x), (gain_y, lag_y)).
+
+    Fitted to the MuJoCo study of default_policy.json (reports/falls-mujoco, vx_scan.txt: distance 0.5 s
+    after the decision, 40-50 ms actuation delay; use with actuation_delay about 0.105 s, which is the
+    0.06 s step delay of that study plus its 45 ms). Steady speeds there were within about 10 % of the
+    command fore-aft and 0.36-0.44 m/s for a sideways command of 0.5. From a forward command of 0.5 up the
+    policy changes to a faster gait that covers 0.09-0.10 m in that half second whatever the command
+    (0.51 or 1.0): a lag that grows with the command reproduces that.
+    """
+    if vx >= 0.5:
+        x = (1.0, max(0.2, -0.13 + 0.83 * vx))     # 0.51 -> 0.29 s, 0.8 -> 0.53 s, 1.0 -> 0.70 s
+    elif vx > 0.0:
+        x = (1.0, 0.15)
+    else:
+        x = (1.0, 0.2)
+    return x, (0.8, 0.2)
+
+
 def box_clearance(robot: dict, radius: float, p_rel) -> float:
     """Distance from the ball's surface to the robot's body outline (negative = touching)."""
     box = robot["box"]
@@ -169,12 +188,14 @@ def box_clearance(robot: dict, radius: float, p_rel) -> float:
 def run_closed_loop(cfg: dict, throw: Throw, seed: int = 0, armed: bool = True, timing: dict | None = None,
                     robot_lag: float = 0.2, actuation_delay: float = 0.06, floor_balls=(), t_start: float = 100.0,
                     timestamp_error: float = 0.0, policy_clip=(1.5, 0.5), trace: bool = False,
-                    reliable_px: float = 6.0, size_bias: float = 1.0, more_throws=()) -> dict:
+                    reliable_px: float = 6.0, size_bias: float = 1.0, more_throws=(), robot_response=None) -> dict:
     """Fly one throw at a robot running the dodge core. Returns what happened.
 
     floor_balls: positions (world) of extra balls lying still, to check they are ignored.
     more_throws: (Throw, delay_s) pairs, further balls released delay_s after the first. Each one's
     result is in "balls" (the first ball's is also the top-level result, as before).
+    robot_response: None for one lag (robot_lag) on both axes, or a function (vx, vy) -> ((gain_x, lag_x),
+    (gain_y, lag_y)) for a robot whose answer depends on the command, e.g. mujoco_response.
     """
     rng = np.random.default_rng(seed)
     core = DodgeCore(cfg, armed=armed)
@@ -236,7 +257,12 @@ def run_closed_loop(cfg: dict, throw: Throw, seed: int = 0, armed: bool = True, 
             _, vx, vy = cmd_queue.pop(0)
             cmd_now = np.array([vx, vy])
             core.set_robot_velocity(t_start + t, vx, vy)     # as the node hears the mux's output on /cmd_vel
-        robot_v += (cmd_now - robot_v) * (dt / max(robot_lag, 1e-3))
+        if robot_response is None:
+            robot_v += (cmd_now - robot_v) * (dt / max(robot_lag, 1e-3))
+        else:
+            (gx, lx), (gy, ly) = robot_response(float(cmd_now[0]), float(cmd_now[1]))
+            robot_v[0] += (gx * cmd_now[0] - robot_v[0]) * (dt / max(lx, 1e-3))
+            robot_v[1] += (gy * cmd_now[1] - robot_v[1]) * (dt / max(ly, 1e-3))
         robot_p[:2] += robot_v * dt
         if trace:
             log.append((t, core.state.value, robot_p.copy()))

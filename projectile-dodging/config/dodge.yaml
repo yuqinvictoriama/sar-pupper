@@ -56,6 +56,12 @@ cameras:
     # and a limit of 30 then means every second frame, 21 a second. 45 takes every frame it delivers; the camera's
     # process simply skips frames while it is busy, so a limit above what the Pi manages costs no delay.
     max_process_fps: 45
+    # search_scale 2: decode and search every picture at half size (a quarter of the pixels; 27-36 % less
+    # time per picture on a Mac). Off: replayed over the 66 recordings of 2026-11-27 it changed the outcome
+    # of 13 (8 dodges lost, 5 gained) and gave 9 of them a second dodge on something 3-4 m away, against 2
+    # at full size. Those recordings cannot show what it gains (they were taken at today's frame rate).
+    # Measure the rate on the Pi and fix the accuracy before turning it on: improvements.md
+    search_scale: 1
     model: pinhole
     intrinsics: {hfov_deg: 120.0, width: 1280, height: 720}   # replaced by tools/calibrate_camera.py
     extrinsics: {x: 0.0450, y: 0.0315, z: 0.1521, yaw_deg: 122.5, pitch_deg: 0.0, roll_deg: 0.0}
@@ -73,6 +79,7 @@ cameras:
     device: ""
     capture: {width: 1280, height: 720, fps: 120, exposure_100us: 30, gain: null, auto_exposure: false, wb_temperature: 4600, controls: {}}
     max_process_fps: 45
+    search_scale: 1                   # see elp_left
     model: pinhole
     intrinsics: {hfov_deg: 120.0, width: 1280, height: 720}
     extrinsics: {x: 0.0450, y: -0.0315, z: 0.1521, yaw_deg: -122.5, pitch_deg: 0.0, roll_deg: 0.0}
@@ -203,23 +210,32 @@ threat:
 
 escape:
   # Speeds actually commanded. The walking policy accepts |vx| <= 1.5, |vy| <= 0.5.
-  # Start at these values; raise vx toward 1.5 once tools/step_response.py shows
-  # the robot stays upright.
-  vx_forward: 1.0
+  # vx_forward stays below 0.5: from a forward command of 0.5 up, the walking policy (default_policy.json,
+  # gait_reference.gallop_speed 0.5) changes to a faster gait that, in MuJoCo, tipped the robot 13-18 deg
+  # against 7 deg at 0.49, and covered no more ground in the first half second (0.09-0.10 m against 0.12 m).
+  # Backward does not have that problem (-0.8: about 9 deg, 0.17 m). reports/falls-mujoco/REPORT.md
+  vx_forward: 0.45
   vx_backward: 0.8
   vy: 0.5
   component_min: 0.25      # ignore an axis that contributes less than this share of the escape direction
-  diagonal_scale: 0.8      # when a dodge uses both axes at once, both speeds are multiplied by this. The full
-                           # diagonal (1.0 with 0.5) is the move that trips the robot on hardwood; 1.0 = no reduction
+  diagonals: false         # false: move along one axis only, whichever carries the robot away faster. Diagonals
+                           # tipped the robot about twice as much as sideways moves on 2026-11-27, and in MuJoCo
+                           # (12.5 deg against 6.5 deg). true: both axes at once, scaled by diagonal_scale
+  diagonal_scale: 0.8      # when a dodge uses both axes at once, both speeds are multiplied by this (diagonals: true only)
   accel_lag_s: 0.20        # first-order lag of the walking response; from tools/step_response.py
   react_s: 0.12            # delay from sending the command to the robot starting to move (mux tick + policy step + legs)
   center_deadband_m: 0.04  # |miss| below this = dead centre: side chosen by free space / preference
   extra_m: 0.12            # travel beyond the bare minimum
   max_displacement_m: 0.40
   min_duration_s: 0.25
-  max_duration_s: 0.80     # hard cap on one burst
+  max_duration_s: 0.45     # hard cap on one burst. 0.8 before 2026-11-27: in MuJoCo a burst backward at 0.8 m/s tipped
+                           # the robot far more beyond about 0.45 s (0.8 s: 70 % reached 12 deg at 50 ms delay, against 40 % at
+                           # 0.45 s), and the dodge simulation cleared as many balls with 0.45 (61.0 against 61.9 %)
   ramp_out_s: 0.20         # after the burst the command eases to zero over this long instead of stopping dead
   hold_past_arrival_s: 0.15  # never keep moving longer than this after the ball should have arrived
+  side_choice_sigma_k: 1.5 # which side to go is judged as if the ball might pass this many sideways sigmas nearer
+                           # (the same for both sides), so an uncertain ball gets the faster move: with forward at
+                           # 0.45 the shorter side is often the slower one. Changes only the side, not when to start
   along_track: false       # stretch: run under/away from steep lobs in the front and rear cones
   along_track_min_descent_deg: 45.0
   free_space_needed_m: 0.6
@@ -236,6 +252,10 @@ fsm:
   abort_tilt_deg: 40.0
   report_undodged: true    # report a "throw_seen" event for a ball seen in flight that did not lead to a dodge
   undodged_min_travel_m: 0.5   # ... if it was seen to move at least this far across the line of sight
+  report_left_top: true    # also report (and so record) a ball last seen climbing out of the top of a rear camera's
+                           # picture after only a few looks, too few for the rule above: on 2026-11-27 high lobs from
+                           # the side left no recording at all. Its event is "throw_seen" with left_top: true
+  left_top_max_hits: 4     # ... a track seen at most this many times (more, and the rule above covers it)
 
 node:
   cmd_topic: /dodge_cmd_vel

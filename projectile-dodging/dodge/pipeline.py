@@ -25,6 +25,9 @@ from .core import predict_pixel
 from .detect import BallDetector
 
 
+_REDUCED = {2: cv2.IMREAD_REDUCED_COLOR_2, 4: cv2.IMREAD_REDUCED_COLOR_4, 8: cv2.IMREAD_REDUCED_COLOR_8}
+
+
 @dataclass
 class FrameResult:
     cam: str
@@ -76,18 +79,20 @@ class StillFilter:
     it; those are passed on as before and the tracker judges them.
     """
 
-    def __init__(self, cfg: dict | None = None):
+    def __init__(self, cfg: dict | None = None, scale: float = 1.0):
+        """scale: how many times smaller than the camera's own pictures the searched ones are
+        (cameras.<name>.search_scale); the pixel distances below are for the camera's own."""
         cfg = cfg or {}
         self.enabled = bool(cfg.get("enabled", True))
         self.after = float(cfg.get("after_s", 1.0))
         self.window = float(cfg.get("window_s", 0.5))
-        self.move_px = float(cfg.get("move_px", 6.0))
+        self.move_px = float(cfg.get("move_px", 6.0)) / scale
         self.move_d = float(cfg.get("move_diameters", 0.5))
         self.grow = float(cfg.get("grow", 1.2))
         self.forget = float(cfg.get("forget_s", 1.5))
         self.max_places = int(cfg.get("max_places", 60))
         self.places: list = []       # each: {"t0", "seen", "u", "v", "d", "hist": [(t, u, v, d), ...]}
-        self.cell = float(cfg.get("cell_px", 48.0))
+        self.cell = float(cfg.get("cell_px", 48.0)) / scale
         self.busy_s = float(cfg.get("busy_s", 2.0))
         self.busy_level = float(cfg.get("busy_level", 0.3))        # 0 = this rule off
         self.busy_bigger = float(cfg.get("busy_bigger", 1.6))
@@ -163,15 +168,25 @@ class FramePipeline:
         self.name = name
         cam = cfg["cameras"][name]
         self.det_cfg = cfg["detector"]
+        # search_scale 2: every JPEG is decoded at half size and searched at that size, never in full. A
+        # quarter of the pixels to decode and search, for a ball half as many pixels across. The blobs then
+        # come in that picture's pixels, and FrameResult.size says which size that is. The detector's sizes
+        # in pixels stay as they are: scaled down with the picture (shape tests from 20 px up), the shape
+        # tests turned the ball itself away, and the replay of 2026-11-27 was no better for it.
+        self.search_scale = int(cam.get("search_scale", 1) or 1)
+        if self.search_scale not in (1, 2, 4, 8):
+            raise ValueError("%s: search_scale must be 1, 2, 4 or 8, not %r" % (name, cam.get("search_scale")))
+        s = float(self.search_scale)
         self.detector = BallDetector.for_camera(cam, self.det_cfg, mask)
         self.camera = build_cameras({"cameras": {name: dict(cam, enabled=True)}})[name]
         self._scaled: dict = {}
+        self._roi_cfg = dict(self.det_cfg, roi_min_px=float(self.det_cfg.get("roi_min_px", 96)) / s)
         self.time_offset = float(cam.get("time_offset_s", 0.0))
         self.roi_tracking = bool(self.det_cfg.get("roi_tracking", True))
         self.full_every = max(1, int(self.det_cfg.get("full_frame_every", 3)))
         self.frame_no = 0
         self.hint = None
-        self.still = StillFilter(self.det_cfg.get("still"))
+        self.still = StillFilter(self.det_cfg.get("still"), s)
         self.two_stage = bool(self.det_cfg.get("decode_small_first", True))
         self.brightness = -1.0       # mean grey level of a recent picture (0-255), -1 before the first
         self.hot_frames = int(self.det_cfg.get("full_decode_frames", 6))
@@ -202,11 +217,20 @@ class FramePipeline:
         the following pictures are decoded in full straight away, so only the first costs both.
         """
         det = self.detector
-        flag = {2: cv2.IMREAD_REDUCED_COLOR_2, 4: cv2.IMREAD_REDUCED_COLOR_4, 8: cv2.IMREAD_REDUCED_COLOR_8}.get(det.coarse_step)
         data = np.frombuffer(data, dtype=np.uint8) if isinstance(data, (bytes, bytearray, memoryview)) else data
-        full_w, full_h, step = self.camera.model.width, self.camera.model.height, det.coarse_step
-        small = None
+        full_w, full_h = self.camera.model.width, self.camera.model.height
         t0 = time.time()
+        if self.search_scale > 1:
+            s = self.search_scale
+            bgr = cv2.imdecode(data, _REDUCED[s])
+            if bgr is None:
+                raise ValueError("%s: a picture that will not decode" % self.name)
+            if bgr.shape[1] != (full_w + s - 1) // s or bgr.shape[0] != (full_h + s - 1) // s:
+                bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)   # not the size this camera is set up for: as it comes
+            return self.process(t_capture, bgr, (time.time() - t0) * 1000.0)
+        flag = _REDUCED.get(det.coarse_step)
+        step = det.coarse_step
+        small = None
         if self._hot > 0:
             self._hot -= 1
         elif flag is not None and self.two_stage and not (self.roi_tracking and self.hint is not None):
@@ -271,7 +295,7 @@ class FramePipeline:
         blobs, roi, n_still = None, False, 0
         hint = self.hint
         if self.roi_tracking and hint is not None and self.frame_no % self.full_every != 0:
-            pred = predict_pixel(self.camera_for(size), hint, t, self.det_cfg)
+            pred = predict_pixel(self.camera_for(size), hint, t, self._roi_cfg if self.search_scale > 1 else self.det_cfg)
             if pred is not None:
                 u, v, half = pred
                 blobs = det.detect(bgr, roi=(u - half, v - half, u + half, v + half))

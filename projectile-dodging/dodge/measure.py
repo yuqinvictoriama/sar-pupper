@@ -98,7 +98,11 @@ def measure_blob(camera: Camera, blob, ball_diameter: float) -> Measurement | No
         # its size says little about its range.
         lopsided = long_side > float(cfg.get("round_aspect", 1.4)) * short_side
     d_px = 2.0 * math.sqrt(area / math.pi)
-    d_fix = max(d_px - float(cfg.get("size_offset_px", 0.0)), 0.5 * d_px)
+    # size_offset_px is in the pixels of the camera's own pictures (its intrinsics); a picture searched at
+    # another size (cameras.<name>.search_scale) has its blobs too wide by that much less
+    native_w = float((cfg.get("intrinsics") or {}).get("width") or camera.model.width)
+    px_scale = float(camera.model.width) / native_w if native_w > 0 else 1.0
+    d_fix = max(d_px - float(cfg.get("size_offset_px", 0.0)) * px_scale, 0.5 * d_px)
     theta = angular_diameter(camera, blob.u, blob.v, area * (d_fix / d_px) ** 2)
     if not (theta > 0.0):
         return None

@@ -1,8 +1,10 @@
 """Choose the escape move.
 
-The robot steps sideways to the ball's ground track. Pupper is fast fore-aft
-and slow sideways, so the plan commands both axes at once with signs chosen so
-each carries the robot away from the track; the side that clears soonest wins.
+The robot steps sideways to the ball's ground track. The plan moves along one
+axis at a time, fore-aft or sideways, whichever carries it away from the track
+faster (escape.diagonals: false); the side that clears soonest wins. With
+diagonals: true it commands both axes at once, the move that tipped the robot
+most on 2026-11-27 (reports/testing-2026-11-27.md).
 """
 from __future__ import annotations
 
@@ -96,6 +98,10 @@ class EscapePlanner:
         self.vy = float(cfg.get("vy", 0.5))
         self.comp_min = float(cfg.get("component_min", 0.25))
         self.diag_scale = float(cfg.get("diagonal_scale", 1.0))
+        self.diagonals = bool(cfg.get("diagonals", True))
+        # a diagonal only while its fore-aft part stays at or below this (m/s): from 0.5 up the walking policy
+        # changes to its faster gaits, and fast-gait diagonals are the moves that tipped the robot most
+        self.diag_max_vx = float(cfg.get("diagonal_max_vx", 1.5))
         self.lag = float(cfg.get("accel_lag_s", 0.2))
         self.react = float(cfg.get("react_s", 0.12))
         self.deadband = float(cfg.get("center_deadband_m", 0.04))
@@ -107,6 +113,10 @@ class EscapePlanner:
         self.along = bool(cfg.get("along_track", False))
         self.along_min_descent = float(cfg.get("along_track_min_descent_deg", 45.0))
         self.free_needed = float(cfg.get("free_space_needed_m", 0.6))
+        # Which side to go is judged as if the ball might pass this many of its sideways sigmas nearer (the
+        # same for both sides), so that when where it passes is uncertain the faster move wins. Only the
+        # choice: when to start (t_need) is not changed.
+        self.side_k = float(cfg.get("side_choice_sigma_k", 0.0))
 
     def command_for(self, d):
         """(vx, vy, speed along d) of the fastest allowed command that moves along unit vector d."""
@@ -116,7 +126,12 @@ class EscapePlanner:
         if abs(d[1]) >= self.comp_min:
             vy = self.vy if d[1] > 0 else -self.vy
         if vx and vy:                      # both at once is the move that trips the robot on a smooth floor
-            vx, vy = vx * self.diag_scale, vy * self.diag_scale
+            if self.diagonals and abs(vx * self.diag_scale) <= self.diag_max_vx + 1e-9:
+                vx, vy = vx * self.diag_scale, vy * self.diag_scale
+            elif abs(vx * d[0]) >= abs(vy * d[1]):  # one axis only: the one that carries the robot faster along d
+                vy = 0.0
+            else:
+                vx = 0.0
         return vx, vy, vx * d[0] + vy * d[1]
 
     def _candidate(self, d, disp, mode, tau=float("inf")):
@@ -159,11 +174,16 @@ class EscapePlanner:
 
         open_c = [c for c in cands if not blocked(c)]
         pool = open_c if open_c else cands
+        unsure = self.side_k * max(0.0, float(getattr(th, "sigma_lat", 0.0) or 0.0))
+
+        def t_pick(c):
+            return lag_time(c.clear_m + unsure, c.speed, self.lag) if unsure > 0 else c.t_clear
+
         if abs(s) < self.deadband and len(pool) > 1:
             # dead centre: nothing to choose on geometry, so prefer open space, then forward motion
-            pool = sorted(pool, key=lambda c: (round(c.t_clear, 2), -c.vx))
+            pool = sorted(pool, key=lambda c: (round(t_pick(c), 2), -c.vx))
         else:
-            pool = sorted(pool, key=lambda c: c.t_clear)
+            pool = sorted(pool, key=t_pick)
         best = pool[0]
         if not open_c and free_space is not None:
             best = max(cands, key=lambda c: free_space.clearance(c.direction))

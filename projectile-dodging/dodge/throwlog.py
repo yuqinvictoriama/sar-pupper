@@ -131,6 +131,8 @@ def _pick_track(frames, event):
     """The track the throw is about: the one that caused the dodge, else the ball in flight seen most."""
     if event is not None and event.get("event") == "dodge" and (event.get("threat") or {}).get("track") is not None:
         return event["threat"]["track"]
+    if event is not None and event.get("event") == "throw_seen" and event.get("track") is not None:
+        return event["track"]                    # a ball that climbed out of the top of a rear picture
     best = {}
     for r in frames:
         for tr in (r.get("core") or {}).get("tracks", []):

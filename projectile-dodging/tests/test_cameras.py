@@ -205,6 +205,68 @@ class HintTests(unittest.TestCase):
         self.assertGreater(used_roi, 3)
 
 
+class HalfSizeSearchTests(unittest.TestCase):
+    """cameras.<name>.search_scale 2: the rear pictures decoded and searched at half size."""
+
+    def cfg(self, scale, offset=0.0):
+        cfg = copy.deepcopy(CFG)
+        cfg["cameras"]["elp_left"]["search_scale"] = scale
+        cfg["cameras"]["elp_left"]["size_offset_px"] = offset
+        return cfg
+
+    def test_the_same_ball_at_the_same_place_and_range(self):
+        from dodge.measure import measure_blob
+        camera = build_cameras(CFG)["elp_left"]
+        for offset in (0.0, 1.7):                     # 1.7: the right rear camera's calibrated value on the Pupper
+            full, half = FramePipeline("elp_left", self.cfg(1, offset)), FramePipeline("elp_left", self.cfg(2, offset))
+            for p in ([-1.2, 1.4, 0.4], [-1.8, 1.9, 0.6], [-0.9, 0.5, 0.2]):
+                img, ok = render_ball(camera, p)
+                self.assertTrue(ok)
+                jpeg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 92])[1].tobytes()
+                rf, rh = full.process_jpeg(10.0, jpeg), half.process_jpeg(10.0, jpeg)
+                self.assertEqual(len(rf.blobs), 1)
+                self.assertEqual(len(rh.blobs), 1)
+                self.assertEqual(rh.size, (camera.model.width // 2, camera.model.height // 2))
+                self.assertLess(abs(2 * rh.blobs[0].u - rf.blobs[0].u), 2.0)
+                self.assertLess(abs(2 * rh.blobs[0].v - rf.blobs[0].v), 2.0)
+                mf = measure_blob(full.camera_for(rf.size), rf.blobs[0], CFG["ball"]["diameter_m"])
+                mh = measure_blob(half.camera_for(rh.size), rh.blobs[0], CFG["ball"]["diameter_m"])
+                self.assertLess(abs(mh.range_m / mf.range_m - 1.0), 0.1, (p, offset, mf.range_m, mh.range_m))
+                self.assertLess(float(np.degrees(np.arccos(np.clip(mf.ray @ mh.ray, -1, 1)))), 0.3)
+
+    def test_a_tracked_ball_is_followed_at_half_size(self):
+        cfg = self.cfg(2)
+        core = DodgeCore(cfg)
+        camera = build_cameras(cfg)["elp_left"]
+        pipe = FramePipeline("elp_left", cfg)
+        flight = 0.75
+        p0 = np.array([-2.2, 1.8, 0.9])
+        v = np.array([-p0[0] / flight, -p0[1] / flight, (-p0[2] + 4.905 * flight * flight) / flight])
+        used_roi = 0
+        for i in range(12):
+            t = 50.0 + i / 30.0
+            p = p0 + v * (i / 30.0) + np.array([0.0, 0.0, -4.905]) * (i / 30.0) ** 2
+            img, ok = render_ball(camera, p)
+            self.assertTrue(ok)
+            res = pipe.process_jpeg(t - pipe.time_offset, cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 92])[1].tobytes())
+            self.assertEqual(len(res.blobs), 1, "frame %d" % i)
+            used_roi += res.roi
+            core.process_blobs("elp_left", res.t, res.blobs, res.t, res.size)
+            pipe.set_hint(core.track_hint())
+        self.assertGreater(used_roi, 3)
+        self.assertTrue(any(th.is_threat for th in core.last_threats))
+
+    def test_a_mask_made_for_full_size_pictures_still_applies(self):
+        cfg = self.cfg(2)
+        camera = build_cameras(cfg)["elp_left"]
+        img, ok = render_ball(camera, [-1.2, 1.4, 0.4])
+        mask = np.zeros((camera.model.height, camera.model.width), np.uint8)
+        mask[:, : camera.model.width] = 255                     # everything is robot
+        pipe = FramePipeline("elp_left", cfg, mask)
+        jpeg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 92])[1].tobytes()
+        self.assertEqual(pipe.process_jpeg(10.0, jpeg).blobs, [])
+
+
 class LensDiscTests(unittest.TestCase):
     def test_fisheye_search_stays_inside_the_lit_disc_and_finds_the_same_ball(self):
         cfg = copy.deepcopy(CFG)
