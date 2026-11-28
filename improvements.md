@@ -9,8 +9,8 @@ Two Claude sessions write this file, each in its own sections:
 
 - **Projectile dodging: calibration, room, rolling balls, two balls**, from the
   "System limits" session.
-- **Projectile dodging: speed, camera rate, robot response**, from the
-  "Issues" session (added when its changes are pushed).
+- **Projectile dodging: speed, camera rate, robot response** (items 11–17),
+  from the "Issues" session.
 
 ---
 
@@ -251,4 +251,168 @@ None of these has been tried, and each needs a TA's OK first:
 
 ## Projectile dodging: speed, camera rate, robot response
 
-*(The Issues session adds this section when its changes are pushed.)*
+From the testing analysis of 27 November:
+[projectile-dodging/reports/testing-2026-11-27.md](projectile-dodging/reports/testing-2026-11-27.md).
+Its last section, "Changes made in the evening of 27 November", says what
+changed and how each change was checked. All of it was checked on the Mac
+only (replays, the dodge simulation and the MuJoCo harness). None of it has
+run on the robot yet.
+
+### 11. Get the new code onto the Pupper (you, 5 min)
+
+On the Pupper, with the robot stack stopped:
+
+```bash
+cd ~/sar-pupper && git pull
+```
+
+`git log --oneline -3` should show 589c887 (or a later commit). Along with that commit
+come:
+
+- dodges that move along one axis at a time, at trot speeds forward;
+- a recording of each ball that climbs out of the top of a rear picture;
+- the half-size rear search, built but left off;
+- the second-ball change from 5109ca3 (item 7).
+
+Then start the stack in dry run as usual (`bash robot/start.sh`) and check
+that it comes up.
+
+### 12. Try the new dodge moves (you, 30 min; dry run, then armed with someone at the e-stop)
+
+**What changed** (`config/dodge.yaml`, `escape:`):
+
+| Setting | Before | Now |
+|---|---|---|
+| Diagonals | used | off (`diagonals: false`): one axis at a time |
+| Forward | 1.0 m/s | 0.45 m/s (`vx_forward`) |
+| Longest burst | 0.8 s | 0.45 s (`max_duration_s`) |
+| Which side when unsure | the shorter way | the faster way (`side_choice_sigma_k: 1.5`) |
+| Sideways, backward | 0.5, 0.8 m/s | unchanged |
+
+**Why:**
+
+- From 0.5 m/s forward or backward, the walking policy changes to its fast
+  gaits.
+  - In MuJoCo those tipped the robot most.
+  - The fast forward gait covered no more ground in the first half second
+    than 0.45 m/s.
+- Diagonals were the moves that tipped the robot on the 27th:
+  - median 11°, and 41 % reached 12°;
+  - sideways moves: 6.5°, and 10 % reached 12°.
+- Backing away at 0.8 is still in the fast gait, so it is now cut off at
+  0.45 s.
+  - In MuJoCo with a 50 ms delay, 40 % of 0.45 s bursts reach 12°, and 70 % of
+    0.8 s bursts.
+  - On the 27th, its two straight backward dodges peaked at 5.4° and 7.1°.
+- In simulation the new moves dodge 61 % of throws that would hit, against
+  60 % before. That is with the MuJoCo-fitted robot.
+
+**Steps:**
+
+1. **Dry run.** Throw from the front, both sides, both rear diagonals and
+   straight behind.
+   - In Pupper Dodging View, each "dodge" line should name a single
+     direction: sidestep, run forward or run backward.
+2. **Armed**, on the same floor as on the 27th, with someone at the e-stop:
+
+   ```bash
+   bash robot/watch.sh arm
+   ```
+
+   - Throw the same set as on the 27th, about 20 throws.
+   - Mark each one *dodged*, *hit* or *off target* in Pupper Dodging View.
+3. Afterwards, copy `data/throws/` to the Mac. Ask Claude to compare the
+   peak tilts and the dodge rate by direction against the 27th, when there
+   were 2 falls in 50 dodges.
+
+**What to watch for:**
+
+- Sideways dodges should look like the 27th's.
+- Side throws now often back the robot away, or step it forward. These moves
+  changed the most.
+- **If backward dodges tip or stumble:** set `escape.vx_backward: 0.45` in
+  `config/dodge.yaml` and restart.
+  - Every move is then at trot speed.
+  - MuJoCo tilts at 0.45 are much smaller: 0–10 % reach 12° at a 40–50 ms
+    delay.
+  - It costs about 6 points of dodges in simulation.
+- If the robot clears fewer balls than on the 27th, write down which
+  directions. The simulation's numbers depend on how fast the robot really
+  gets going, which item 13 measures.
+
+### 13. Measure how the robot takes a burst, step F (you, 10 min; the robot moves)
+
+- **Why:**
+  - The dodge settings assume the robot starts moving 0.12 s after the
+    command (`escape.react_s`).
+  - They assume it reaches speed with a 0.2 s lag (`escape.accel_lag_s`).
+  - The MuJoCo study matches the robot's tilts only with a delay of 40–50 ms
+    from command to motors. At 60 ms it starts falling.
+  - None of these has been measured.
+  - The robot's response also sets how much a faster camera helps,
+    including for two balls (item 7).
+- **How:** `DEPLOY.md`, step F. It now runs the three moves a dodge makes:
+  - `--vy 0.5`;
+  - `--vx 0.45`;
+  - `--vx -0.8`.
+- **Write down** the `delay before the body reacts` each prints.
+  - If it is well above 0.12 s, tell Claude: the dodge settings would need
+    another look.
+  - To measure the lag as well, film a burst over tape marks (the
+    `--timed` steps in the tool's header).
+- If the feet slip, put the robot on a rug or mat before changing any number.
+
+### 14. Time the rear cameras at half size on the Pi (you, 5 min; no motion)
+
+- **What:** half-size rear search is in the code but off
+  (`cameras.elp_left.search_scale: 1`, and the same for `elp_right`).
+- **On the Mac:**
+  - It takes 27–36 % less time per picture.
+  - But replaying the 27th's recordings at half size changed 13 of 66
+    outcomes: 8 dodges lost, 5 gained, and 9 recordings got a second dodge on
+    something 3–4 m behind or beside the robot.
+  - So do **not** turn it on yet.
+- **On the Pi**, with the stack stopped, to see whether it is worth fixing:
+
+  ```bash
+  cd ~/sar-pupper/projectile-dodging
+  python3 tools/bench_detect.py data/throws/<a dodge from the 27th> --full-decode
+  python3 tools/bench_detect.py data/throws/<the same one> --full-decode --search-scale 2
+  ```
+
+- Send Claude the "frames a second possible" lines for `elp_left` and
+  `elp_right` from both runs.
+  - Half size is only worth more work if it roughly doubles the rate.
+  - Moving a camera to another USB controller (item 3) may matter more.
+
+### 15. Leave the fisheye JPEG quality at 85
+
+`--fisheye-quality 70` was suggested in the testing report and then tested.
+The fisheye pictures of the 27th were re-encoded at both 85 and 70, then
+replayed:
+
+- 6 of 66 recordings lost their dodge, and several came 0.15–0.4 s later;
+- there were 12 % more clutter blobs.
+
+Keep the default. Redoing the fisheye's colour calibration (item 2) is still
+the fix for the slow fisheye.
+
+### 16. High side lobs: throw a few on purpose (you, 5 min, dry run)
+
+- From the sides, throw a few lobs that rise more than a metre above your
+  hand. They are still the hardest throws: in simulation, 50–62 % are dodged.
+- Undodged ones now leave a recording: a "seen" folder whose `events.jsonl`
+  has a `throw_seen` line with `"left_top": true`.
+- Mark them in Pupper Dodging View, so the next analysis has real examples.
+- A ball lifted by hand near the robot may also leave such a recording. That
+  costs SD card space, never a dodge.
+
+### 17. If the robot turns or falls sideways mid-dodge again
+
+The MuJoCo study never reproduced the sideways fall in recording
+20261127-175101, a 31° turn mid-dodge. If it happens again:
+
+1. Press **Keep the last 3 s** in Pupper Dodging View straight away.
+2. Note whether a foot caught or a leg screw was loose (item 4).
+3. Claude can then compare the joint data.
+
