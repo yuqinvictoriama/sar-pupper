@@ -271,6 +271,22 @@ def test_scan_empty_floor_is_clear():
     assert np.isfinite(scan.ranges).sum() == 0
 
 
+def test_the_lens_rim_at_the_edge_of_the_picture_is_not_an_obstacle():
+    """On real frames the fisheye rim and the legs, beyond about 85 deg, read as tall at 0.10 m."""
+    view = PolarView(MODEL, POSE)
+    labels = np.full((len(view.depressions), len(view.bearings)), FM.FLOOR, dtype=np.uint8)
+    rows = np.nonzero((view.depressions > 30) & (view.depressions < 55))[0]   # close to the robot
+    rim = np.abs(view.bearings) > 85
+    side = (view.bearings > 25) & (view.bearings < 35)
+    labels[np.ix_(rows, rim | side)] = FM.OBSTACLE
+    scan = build_scan(labels, view, ScanConfig())
+    assert not np.isfinite(scan.ranges[rim]).any() and not scan.seen[rim].any()
+    assert np.isfinite(scan.ranges[side]).all(), "a real obstacle inside 80 deg is still seen"
+    # the old behaviour, for the record: with the rim let in, it is an obstacle beside the robot
+    wide = build_scan(labels, view, ScanConfig(max_bearing_deg=180.0))
+    assert np.isfinite(wide.ranges[rim]).all()
+
+
 # ---------------------------------------------------------------- calibration, landing strip
 def test_camera_mount_calibration_from_three_distances():
     """tools/calibrate_camera.py's solver: an obstacle of known height at known distances ->

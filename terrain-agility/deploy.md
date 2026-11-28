@@ -459,6 +459,12 @@ Seen on the robot so far (26 November, evening; nothing moved):
   height from the camera is right.
 - The first try at step 4.3 failed ("fit too poor") because of the gauge fault above, not
   because of how it was run.
+- **The lens rim stopped the walking scan** (found by the overnight session replaying the
+  same frames through `terrain_node`): beyond about 85° to either side, the fisheye's own rim
+  and the front legs read as a tall obstacle 0.10 m away, so it held with "no way round"
+  and never approached the slab. The scan now ignores bearings wider than 80°
+  (`ScanConfig.max_bearing_deg`). This was checked on those six frames only. Something
+  right beside the robot, beyond 80°, is now not seen at all.
 
 Not verified, because it needs the robot:
 

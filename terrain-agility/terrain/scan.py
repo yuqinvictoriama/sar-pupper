@@ -35,6 +35,10 @@ class ScanConfig:
     cross_max_depth: float = 0.70     # m: nothing deeper than this (fore-aft) is ever crossed
     jump: float = 0.20                # m: range step between neighbouring bearings that splits obstacles
     min_columns: int = 3              # bearings an obstacle must span
+    # Wider than this, the fisheye's own rim (and the robot's front legs) fill the picture and,
+    # on real frames, read as a tall obstacle 0.10 m away, so the walking scan saw "no way
+    # round" and held. Those bearings are treated as unseen.
+    max_bearing_deg: float = 80.0
 
 
 @dataclass
@@ -110,6 +114,8 @@ def build_scan(labels: np.ndarray, view: PolarView, cfg: ScanConfig | None = Non
     min_heights = np.full(n_az, np.nan)
     horizon_row = int(np.searchsorted(dep, 0.0))
     for j in range(n_az):
+        if abs(view.bearings[j]) > cfg.max_bearing_deg:
+            continue
         col_valid = labels[r_lo:r_hi + 1, j] != INVALID
         if col_valid.mean() < 0.5:
             continue
