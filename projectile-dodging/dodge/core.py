@@ -90,6 +90,10 @@ class DodgeCore:
         self.abort_tilt = float(fc.get("abort_tilt_deg", 40.0))
         self.ramp_out = max(1e-3, float(cfg["escape"].get("ramp_out_s", 0.2)))
         self.unseen_fire = float(cfg["threat"].get("unseen_fire_s", 0.12))   # out of sight this long: waiting will not sharpen the estimate
+        # A second ball: after a dodge, a ball first seen at least this far away is a new throw, not the
+        # one just dodged picked up again (bouncing, or seen again by another camera).
+        self.second_min_range = float(fc.get("second_ball_min_range_m", 1.2))
+        self.vel_lag = float(cfg["escape"].get("accel_lag_s", 0.2))
 
         self.lock = threading.RLock()
         self.armed = bool(armed)
@@ -99,6 +103,9 @@ class DodgeCore:
         self.free_space: FreeSpace | None = None
         self.imu = deque(maxlen=600)            # (t, R_wb, tilt_deg, gyro_norm)
         self.robot_vel = (0.0, 0.0, 0.0)        # (t, vx, vy): the velocity the robot is being asked to walk at
+        self._vel_est = (0.0, np.zeros(2))      # (t, v): how fast it is walking, the command through the walking lag
+        self.handled: set = set()               # tracks a dodge has already been made for
+        self.t_blocked = 0.0                    # no dodge at all before this (the e-stop)
         self.threat_counts: dict = {}           # track id -> consecutive threat verdicts
         self.plan = None
         self.threat = None
@@ -127,7 +134,18 @@ class DodgeCore:
     def set_robot_velocity(self, t: float, vx: float, vy: float) -> None:
         """The walking command currently in force (from /cmd_vel), so the robot's own motion is not mistaken for the ball's."""
         with self.lock:
+            t_prev, vx_prev, vy_prev = self.robot_vel
+            self._vel_est = (t, self._walking(t, (t_prev, vx_prev, vy_prev)))
             self.robot_vel = (t, float(vx), float(vy))
+
+    def _walking(self, t: float, cmd=None) -> np.ndarray:
+        """Estimated walking velocity at t: the command in force, reached through the walking lag."""
+        t_cmd, vx, vy = cmd if cmd is not None else self.robot_vel
+        t_est, v_est = self._vel_est
+        target = np.array([vx, vy])
+        dt = max(0.0, t - max(t_est, 0.0))
+        k = math.exp(-dt / self.vel_lag) if self.vel_lag > 1e-6 else 0.0
+        return target + (v_est - target) * k
 
     def set_free_space(self, clearances) -> None:
         with self.lock:
@@ -147,6 +165,7 @@ class DodgeCore:
                 self._event(t, "abort", reason="emergency stop")
             self.state, self.plan = State.SEARCH, None
             self.t_ready = t + self.refractory
+            self.t_blocked = t + self.refractory
 
     def orientation(self, t: float | None = None) -> np.ndarray:
         """Body-to-world rotation at time t (latest if None, identity with no IMU)."""
@@ -216,19 +235,24 @@ class DodgeCore:
 
     def _evaluate(self, t_now: float) -> bool:
         tracks = self.tracker.confirmed() + [tr for tr in self.tracker.tracks if tr.climber and not tr.confirmed]
-        if self.state in (State.DODGE, State.RECOVER):
+        alive = {tr.id for tr in self.tracker.tracks}
+        self.handled &= alive
+        if self.state == State.DODGE or (self.state == State.RECOVER and not self._steady(t_now)):
             if self._flight is not None:
                 self._flight["dodged"] = True
             return False
+        busy = self.state == State.RECOVER               # a dodge has just ended and the body is level: only a new ball counts
         if not tracks:
             self._watch_flight(t_now, tracks)
-            self.state = State.SEARCH
+            if not busy:
+                self.state = State.SEARCH
             self.threat_counts.clear()
             self.last_threats = []
             return False
         R = self.orientation(None)
-        tv, vx, vy = self.robot_vel
-        own = R @ np.array([vx, vy, 0.0]) if (t_now - tv) < 0.6 else None
+        tv = self.robot_vel[0]
+        vw = self._walking(t_now)
+        own = R @ np.array([vw[0], vw[1], 0.0]) if (t_now - tv) < 0.6 else None
         threats = []
         for tr in tracks:
             if not self.assessor.use_bearing and not tr.flying and tr.closing_speed < self.idle_closing:
@@ -246,12 +270,29 @@ class DodgeCore:
         danger = [th for th in threats if th.is_threat]
         self.hold = ""
         if not danger:
-            self.state = State.TRACK
+            if not busy:
+                self.state = State.TRACK
             return False
+        second = busy or t_now < self.t_ready
+        if second:
+            # Just dodged: only a different ball, first seen well away from the robot, can start another
+            # (not the one dodged, picked up again bouncing or by another camera).
+            by_id = {tr.id: tr for tr in tracks}
+            fresh = [d for d in danger if d.track_id not in self.handled and d.track_id in by_id
+                     and float(np.linalg.norm(by_id[d.track_id].p_first)) >= self.second_min_range]
+            if t_now < self.t_blocked or not fresh:
+                if not busy:
+                    self.state = State.THREAT
+                    self.hold = "just dodged"
+                return False
+            danger = fresh
+        else:
+            danger = [d for d in danger if d.track_id not in self.handled] or danger
         th = min(danger, key=lambda d: d.tau)
-        self.state = State.THREAT
-        if t_now < self.t_ready or th.tau < self.min_tau:
-            self.hold = "just dodged" if t_now < self.t_ready else "too late to matter"
+        if not busy:
+            self.state = State.THREAT
+        if th.tau < self.min_tau:
+            self.hold = "too late to matter"
             return False
         plan = self.planner.plan(th, self.free_space)
         late = bool(th.tau <= plan.t_need)                # no time left to wait for a better estimate
@@ -272,12 +313,14 @@ class DodgeCore:
             return False
         self.plan, self.threat = plan, th
         self.t_dodge = t_now
+        self.handled.add(th.track_id)
         self.dry_run = not self.armed
         self.state = State.DODGE
         self.stats["dodges"] += 1
         if self._flight is not None:
             self._flight["dodged"] = True
-        self._event(t_now, "dodge", dry_run=self.dry_run, late=late, threat=th.summary(), plan=plan.summary())
+        self._event(t_now, "dodge", dry_run=self.dry_run, late=late, threat=th.summary(), plan=plan.summary(),
+                    second_ball=second)
         return True
 
     # ------------------------------------------------------------------ command out

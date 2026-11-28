@@ -169,10 +169,12 @@ def box_clearance(robot: dict, radius: float, p_rel) -> float:
 def run_closed_loop(cfg: dict, throw: Throw, seed: int = 0, armed: bool = True, timing: dict | None = None,
                     robot_lag: float = 0.2, actuation_delay: float = 0.06, floor_balls=(), t_start: float = 100.0,
                     timestamp_error: float = 0.0, policy_clip=(1.5, 0.5), trace: bool = False,
-                    reliable_px: float = 6.0, size_bias: float = 1.0) -> dict:
+                    reliable_px: float = 6.0, size_bias: float = 1.0, more_throws=()) -> dict:
     """Fly one throw at a robot running the dodge core. Returns what happened.
 
     floor_balls: positions (world) of extra balls lying still, to check they are ignored.
+    more_throws: (Throw, delay_s) pairs, further balls released delay_s after the first. Each one's
+    result is in "balls" (the first ball's is also the top-level result, as before).
     """
     rng = np.random.default_rng(seed)
     core = DodgeCore(cfg, armed=armed)
@@ -198,13 +200,23 @@ def run_closed_loop(cfg: dict, throw: Throw, seed: int = 0, armed: bool = True, 
     first_seen = None
     log = []
     t = 0.0
-    while t <= throw.t_land + 0.05:
+    extra = [(th, float(dl)) for th, dl in more_throws]
+    xclear = [float("inf")] * len(extra)
+    xstatic = [float("inf")] * len(extra)
+    t_end = max([throw.t_land] + [th.t_land + dl for th, dl in extra])
+    while t <= t_end + 0.05:
         ball = throw.position(t)
         balls_rel = [np.asarray(fb, dtype=float) - robot_p for fb in floor_balls]
         if ball is not None:
             balls_rel.append(ball - robot_p)
             min_clear = min(min_clear, box_clearance(cfg["robot"], radius, ball - robot_p))
             min_clear_static = min(min_clear_static, box_clearance(cfg["robot"], radius, ball))
+        for k, (th, dl) in enumerate(extra):
+            b = th.position(t - dl)
+            if b is not None:
+                balls_rel.append(b - robot_p)
+                xclear[k] = min(xclear[k], box_clearance(cfg["robot"], radius, b - robot_p))
+                xstatic[k] = min(xstatic[k], box_clearance(cfg["robot"], radius, b))
         for name, sc in cams:
             sc.step(t, balls_rel)
             for _avail, t_exp, blobs in sc.ready(t):
@@ -223,6 +235,7 @@ def run_closed_loop(cfg: dict, throw: Throw, seed: int = 0, armed: bool = True, 
         while cmd_queue and cmd_queue[0][0] <= t:
             _, vx, vy = cmd_queue.pop(0)
             cmd_now = np.array([vx, vy])
+            core.set_robot_velocity(t_start + t, vx, vy)     # as the node hears the mux's output on /cmd_vel
         robot_v += (cmd_now - robot_v) * (dt / max(robot_lag, 1e-3))
         robot_p[:2] += robot_v * dt
         if trace:
@@ -234,4 +247,7 @@ def run_closed_loop(cfg: dict, throw: Throw, seed: int = 0, armed: bool = True, 
             "static_clearance": min_clear_static, "triggered": trigger_t is not None, "trigger_t": trigger_t,
             "time_left": (throw.t_land - trigger_t) if trigger_t is not None else None,
             "first_seen": first_seen, "flight_time": throw.t_land, "robot_shift": robot_p[:2].copy(),
-            "dodge_event": dodge, "events": events, "log": log}
+            "dodge_event": dodge, "events": events, "log": log,
+            "dodges": sum(1 for e in events if e["event"] == "dodge"),
+            "balls": [{"would_hit": min_clear_static <= 0.0, "hit": min_clear <= 0.0, "min_clearance": min_clear}]
+                     + [{"would_hit": xs <= 0.0, "hit": xc <= 0.0, "min_clearance": xc} for xc, xs in zip(xclear, xstatic)]}

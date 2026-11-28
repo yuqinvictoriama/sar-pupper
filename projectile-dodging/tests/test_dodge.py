@@ -930,5 +930,89 @@ class RearPairTests(unittest.TestCase):
             self.assertEqual(th.left_view, expect, bearing)
 
 
+class SecondBallTests(unittest.TestCase):
+    """A second ball thrown a moment after the first (2026-11-27). Every ball used to wait out the pause
+    after a dodge (the burst, settling, then a second more), so one thrown 0.8-1.6 s after the first was
+    mostly not dodged at all. Now only the ball just dodged waits."""
+
+    def second_throw(self, b1, b2, delay, cfg=CFG):
+        t1 = aimed_throw(CFG, b1, 2.5, rise=0.8)
+        moved = run_closed_loop(CFG, t1, seed=1)["robot_shift"]
+        t2 = aimed_throw(CFG, b2, 2.5, rise=0.8)
+        t2.pts = t2.pts.copy()
+        t2.pts[:, :2] += moved                    # the thrower aims at where the robot is now
+        return run_closed_loop(cfg, t1, seed=1, more_throws=[(t2, delay)])
+
+    def test_a_second_ball_soon_after_is_dodged_too(self):
+        import copy
+        old = copy.deepcopy(CFG)
+        old["fsm"]["second_ball_min_range_m"] = 1e9          # no ball counts as new: the old behaviour
+        for b1, b2, delay in ((90, -150, 1.2), (90, 180, 1.2), (-90, 150, 1.0)):
+            r = self.second_throw(b1, b2, delay)
+            self.assertEqual(r["dodges"], 2, (b1, b2))
+            self.assertFalse(any(b["hit"] for b in r["balls"]), (b1, b2))
+            self.assertEqual([e["second_ball"] for e in r["events"] if e["event"] == "dodge"], [False, True])
+            self.assertTrue(self.second_throw(b1, b2, delay, old)["balls"][1]["hit"], (b1, b2))
+
+    def core_with(self, tracks, threats):
+        """A core whose tracker holds these stand-in tracks and whose assessor returns these verdicts."""
+        from types import SimpleNamespace
+        core = DodgeCore(CFG, armed=True)
+        stub = [SimpleNamespace(id=i, climber=False, flying=True, hits=6, range_m=float(np.linalg.norm(p)),
+                                travel_m=1.0, closing_speed=5.0, p_first=np.array(p, dtype=float)) for i, p in tracks]
+        core.tracker = SimpleNamespace(tracks=stub, confirmed=lambda: list(stub))
+        core.assessor.assess = lambda tr, *a, **k: threats[tr.id]
+        return core
+
+    def threat(self, i, tau=0.45):
+        return Threat(i, True, True, "", tau, -0.05, 0.02, 0.02, 0.0, 0.0, np.array([0.0, -1.0]), 90.0, 50.0, 5.0, 2.5, 5.0)
+
+    def fires(self, core, t):
+        return any(core._evaluate(t + 0.03 * k) for k in range(3))
+
+    def test_only_the_ball_just_dodged_waits(self):
+        core = self.core_with([(1, (0.0, 2.5, 1.0)), (2, (2.0, 1.0, 0.8)), (3, (0.6, 0.4, 0.2))],
+                              {1: self.threat(1), 2: Threat(2), 3: Threat(3)})
+        core.handled, core.t_ready = {1}, 11.0              # ball 1 was dodged a moment ago
+        self.assertFalse(self.fires(core, 10.0))
+        self.assertEqual(core.hold, "just dodged")
+        core.assessor.assess = lambda tr, *a, **k: {1: self.threat(1), 2: self.threat(2), 3: Threat(3)}[tr.id]
+        self.assertTrue(self.fires(core, 10.1))             # a different ball, first seen 2.4 m away
+        self.assertEqual(core.threat.track_id, 2)
+        self.assertIn(2, core.handled)
+
+    def test_a_ball_first_seen_close_by_is_not_taken_for_a_new_throw(self):
+        # the ball just dodged, bouncing beside the robot and picked up as a new track
+        core = self.core_with([(1, (0.0, 2.5, 1.0)), (3, (0.6, 0.4, 0.2))], {1: Threat(1), 3: self.threat(3)})
+        core.handled, core.t_ready = {1}, 11.0
+        self.assertFalse(self.fires(core, 10.0))
+
+    def test_after_the_e_stop_no_ball_starts_a_dodge(self):
+        core = self.core_with([(2, (2.0, 1.0, 0.8))], {2: self.threat(2)})
+        core.emergency_stop(10.0)
+        self.assertFalse(self.fires(core, 10.1))
+        self.assertTrue(self.fires(core, 11.1))
+
+    def test_a_new_ball_is_dodged_while_settling_once_level(self):
+        core = self.core_with([(2, (2.0, 1.0, 0.8))], {2: self.threat(2)})
+        core.state, core.t_recover, core.handled = State.RECOVER, 10.0, {1}
+        core.set_imu(10.0, (math.cos(0.2), math.sin(0.2), 0.0, 0.0), (0.0, 0.0, 0.0))   # 23 deg: still tipped
+        self.assertFalse(self.fires(core, 10.0))
+        self.assertEqual(core.state, State.RECOVER)
+        for k in range(30):
+            core.set_imu(10.1 + 0.01 * k, (1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        self.assertTrue(self.fires(core, 10.4))
+        self.assertEqual(core.state, State.DODGE)
+
+    def test_the_walking_speed_is_estimated_through_the_lag(self):
+        core = DodgeCore(CFG, armed=False)
+        core.set_robot_velocity(0.0, 0.0, 0.0)
+        core.set_robot_velocity(1.0, 0.0, 0.5)              # sidestep command from t = 1 s
+        lag = float(CFG["escape"]["accel_lag_s"])
+        self.assertAlmostEqual(core._walking(1.0)[1], 0.0, places=6)
+        self.assertAlmostEqual(core._walking(1.0 + lag)[1], 0.5 * (1.0 - math.exp(-1.0)), places=3)
+        self.assertAlmostEqual(core._walking(3.0)[1], 0.5, places=3)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
