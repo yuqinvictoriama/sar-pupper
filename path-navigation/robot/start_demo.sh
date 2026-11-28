@@ -86,5 +86,6 @@ sleep 2
 echo "[4/4] ready."
 echo "      Mission Control:      http://$(hostname).local:8078      (the Start button is there)"
 echo "      Pupper Dodging View:  http://$(hostname).local:8077"
+echo "      In a terminal:        $HERE/../tools/pupper watch      (pupper start | pause | end | run log ... ; --help)"
 echo "      Pupper is still lying down and nothing may move it. In Mission Control: Stand up, Allow motion, Start."
 echo "      Stop everything:      bash $HERE/stop_demo.sh"

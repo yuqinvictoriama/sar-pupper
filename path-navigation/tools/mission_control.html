@@ -20,6 +20,7 @@
     --bar-h: 54px;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html { -webkit-text-size-adjust: 100%; }
   body { margin: 0; background: var(--floor); color: var(--ink); font: 14.5px/1.45 var(--body); }
   button, select, input { font: inherit; color: inherit; }
@@ -114,6 +115,44 @@
   #simbox label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
   #simbox button[aria-pressed=true] { background: var(--ink); color: #fff; border-color: var(--ink); }
   #waiting { padding: 30px 22px; max-width: 70ch; }
+  /* ---- the console: the same lines as `tools/pupper watch`, and a prompt that takes the same words */
+  #term { grid-column: 1 / -1; background: #111A2C; color: #DCE3EE; border: 1px solid #0B1220; }
+  #term > header { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #26324A; flex-wrap: wrap; }
+  #term h2 { color: #fff; }
+  #term .filters { display: flex; gap: 4px; }
+  #term .filters button, #term .acts button { background: transparent; color: #C5CEDD; border-color: #34425F; padding: 3px 9px; font-size: 12.5px; }
+  #term .filters button[aria-pressed=true] { background: #DCE3EE; color: #111A2C; border-color: #DCE3EE; }
+  #term .filters button:hover, #term .acts button:hover:not(:disabled) { border-color: #fff; }
+  #term .acts { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid #26324A; align-items: center; }
+  #term .acts .g { font: 600 11px/1 var(--display); letter-spacing: .1em; text-transform: uppercase; color: #71809B; margin-left: 6px; }
+  #term .acts button.running { border-color: #FFD27A; color: #FFD27A; }
+  #termout { margin: 0; padding: 8px 12px; height: 300px; overflow-y: auto; font: 12.5px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #term.tall #termout { height: 62vh; }
+  #termout div { display: grid; grid-template-columns: 64px 52px 74px minmax(0, 1fr); gap: 8px; }
+  #termout .c, #termout .r, #termout .s { color: #71809B; } #termout .r { text-align: right; }
+  #termout .k-cmd .x { color: #8FB2FF; font-weight: 600; } #termout .k-say .x { color: #B9CCFF; font-weight: 600; }
+  #termout .k-state .x { color: #fff; font-weight: 600; } #termout .k-shell .x { color: #FFD27A; }
+  #termout .k-err .x { color: #FF8A86; } #termout .k-info .x { color: #8C99B0; } #termout .k-out .x { color: #DCE3EE; }
+  #termout .k-event .x { color: #DCE3EE; }
+  #prompt { position: relative; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid #26324A; font: 13px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  #prompt label { color: #8FB2FF; font-weight: 600; white-space: nowrap; }
+  #cmdline { flex: 1; background: #0B1220; color: #fff; border: 1px solid #34425F; border-radius: 3px; padding: 7px 9px; font: inherit; }
+  #cmdline:focus { outline: none; border-color: #8FB2FF; }
+  #suggest { position: absolute; left: 12px; right: 12px; bottom: 100%; margin: 0 0 4px; padding: 4px 0; list-style: none; background: #fff; color: var(--ink);
+             border: 1px solid var(--rule); border-radius: 4px; box-shadow: 0 8px 28px rgba(9, 16, 30, .35); max-height: 320px; overflow-y: auto; z-index: 25; font-family: var(--body); }
+  #suggest li { display: grid; grid-template-columns: minmax(150px, max-content) minmax(0, 1fr); gap: 14px; padding: 6px 12px; cursor: pointer; font-size: 13.5px; }
+  #suggest li code { font: 600 13px/1.3 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  #suggest li span { color: var(--graphite); }
+  #suggest li.on { background: var(--robot-wash); }
+  kbd { font: 600 11px/1 ui-monospace, "SF Mono", Menlo, monospace; padding: 2px 5px; border: 1px solid #5B6B88; border-bottom-width: 2px; border-radius: 3px; }
+  #bar #termbtn { display: flex; gap: 8px; align-items: center; }
+  #help { position: fixed; inset: 0; background: rgba(9, 16, 30, .55); display: grid; place-items: center; z-index: 40; }
+  #help[hidden] { display: none; }
+  #help > div { background: var(--sheet); max-width: 720px; width: calc(100% - 40px); max-height: 86vh; overflow-y: auto; padding: 18px 22px; border-radius: 6px; }
+  #help table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin-top: 8px; }
+  #help td { padding: 5px 8px; border-bottom: 1px solid var(--faint); vertical-align: top; }
+  #help td:first-child { white-space: nowrap; } #help code { font: 12.5px ui-monospace, "SF Mono", Menlo, monospace; }
+  #help kbd { border-color: var(--rule); }
   #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 9px 16px;
            border-radius: 4px; opacity: 0; pointer-events: none; transition: opacity .2s; max-width: 90vw; z-index: 30; }
   #toast.show { opacity: 1; }
@@ -130,10 +169,11 @@
   <span class="name">Pupper Mission Control</span>
   <span id="modechip">CONNECTING</span>
   <div id="run" aria-live="polite"></div>
-  <label id="motion" title="The dry-run switch. Until this is on, navigation publishes no velocity: Pupper listens and reports but does not walk. Switch it on only with someone holding the gamepad (right-stick press is the e-stop)."><input type="checkbox" id="motionbox"> Allow motion</label>
+  <label id="motion" title="The dry-run switch. Until this is on, navigation publishes no velocity: Pupper listens and reports but does not walk. Switch it on only with someone holding the gamepad (right-stick press is the e-stop).&#10;Terminal: pupper motion on | off"><input type="checkbox" id="motionbox"> Allow motion</label>
   <button id="pause" disabled>Pause</button>
-  <button id="end" disabled>End run</button>
+  <button id="end" disabled title="End the run: Pupper stops and the mission goes back to idle.&#10;Terminal: pupper end">End run</button>
   <button id="start" disabled>Start</button>
+  <button id="termbtn" title="The console: every command and event, the same as `tools/pupper watch` in a terminal. Type a command there, or press / or Ctrl+K anywhere. ? lists the keys.">Terminal <kbd>/</kbd></button>
 </header>
 
 <section id="cue" aria-live="polite">
@@ -152,8 +192,7 @@
       <span class="quiet" id="maplegend"></span></header>
     <svg id="map" viewBox="-95 -355 870 710" role="img" aria-label="Top view of the course with Pupper on it"></svg>
     <div id="facts"></div>
-    <header style="border-top:1px solid var(--rule)"><h2>What happened</h2><span class="spacer"></span><span class="quiet" id="cfgsrc"></span></header>
-    <ol id="log"></ol>
+    <header style="border-top:1px solid var(--rule)"><span class="quiet" id="cfgsrc"></span></header>
   </section>
 
   <div id="side">
@@ -162,18 +201,18 @@
       <div class="sense">
         <svg id="compass" viewBox="0 0 150 150" role="img" aria-label="Bearings to the cry, Pupper's nose at the top. Click a direction to send that bearing by hand."></svg>
         <dl id="sounddl"></dl>
-        <div class="row"><button id="phrase" title="Stand in for the phrase detector: press when the survivor has said &quot;You saved me, Pupper!&quot; and Pupper has not answered.">Survivor said the phrase</button>
+        <div class="row"><button id="phrase" title="Stand in for the phrase detector: press when the survivor has said &quot;You saved me, Pupper!&quot; and Pupper has not answered.&#10;Terminal: pupper phrase">Survivor said the phrase</button>
           <span class="levels" id="levels" title="Microphone level per channel, as the phrase detector hears it"></span></div>
-        <div class="hint">Click the dial to send a bearing by hand (stands in for the sound module while Pupper is listening).</div>
+        <div class="hint">Click the dial to send a bearing by hand (stands in for the sound module while Pupper is listening). Terminal: <code>pupper bearing 30</code>, left positive.</div>
       </div>
     </section>
 
     <section class="panel">
-      <header><span class="dot terrain"></span><h2>Terrain</h2><span class="chip terrain" id="terrainchip"></span><span class="spacer"></span><span class="chip" id="terrainmode"></span></header>
+      <header><span class="dot terrain"></span><h2>Terrain and cover</h2><span class="chip terrain" id="terrainchip"></span><span class="spacer"></span><span class="chip" id="terrainmode"></span></header>
       <div class="sense">
         <svg id="fan" viewBox="0 0 150 110" role="img" aria-label="What the front camera sees: obstacles by bearing and range"></svg>
         <dl id="terraindl"></dl>
-        <div class="row" style="display:block"><div class="bar" title="Progress of the crossing"><i id="crossbar"></i></div></div>
+        <div class="hint">Orange: something tall (walked around, or the cover from 4.8 m on). Grey: low. The front camera sees ±80°, to 2.5 m.</div>
       </div>
     </section>
 
@@ -190,14 +229,14 @@
       <header><h2>Systems</h2><span class="spacer"></span><span class="quiet" id="sysnote"></span></header>
       <div id="systems"></div>
       <div id="robotbox" hidden style="border-top:1px solid var(--rule)">
-        <button id="stand" title="Asks the lab's robot server to put gemini_walk in charge of the legs. PUPPER STANDS UP: floor clear, operator at the e-stop.">Stand up</button>
-        <button id="relax" title="Lets the legs go: Pupper settles onto the floor.">Relax</button>
+        <button id="stand" title="Asks the lab's robot server to put gemini_walk in charge of the legs. PUPPER STANDS UP: floor clear, operator at the e-stop.&#10;Terminal: pupper stand">Stand up</button>
+        <button id="relax" title="Lets the legs go: Pupper settles onto the floor.&#10;Terminal: pupper relax">Relax</button>
         <span class="quiet">Stand up before Start. The gamepad's right-stick press is the e-stop at all times.</span>
       </div>
       <div id="simbox" hidden style="border-top:1px solid var(--rule)">
         <span>Speed</span>
         <span id="speeds"></span>
-        <button id="newrun">New room</button>
+        <button id="newrun" title="A new simulated room and a new run.&#10;Terminal: pupper sim reset">New room</button>
         <label title="The sound module's margin of error">Bearing error &plusmn;<input type="range" id="moe" min="1" max="12" step="1" style="width:90px"><b id="moev" class="num"></b>&deg;</label>
         <label><input type="checkbox" id="o_second_call"> second call</label>
         <label><input type="checkbox" id="o_throws"> throws</label>
@@ -206,7 +245,36 @@
       </div>
     </section>
   </div>
+
+  <section id="term" aria-label="Console">
+    <header><h2>Console</h2>
+      <span class="filters" id="filters">
+        <button data-f="all" aria-pressed="true">Everything</button><button data-f="run">The run</button>
+        <button data-f="cmd">Commands</button><button data-f="out">Checks</button></span>
+      <span class="spacer"></span>
+      <span class="quiet" style="color:#8C99B0">In a terminal: <code>tools/pupper watch</code></span>
+      <button id="termclear" class="quiet" style="background:transparent;color:#C5CEDD;border-color:#34425F" title="Clear this view (the server keeps its lines)">Clear</button>
+      <button id="termsize" style="background:transparent;color:#C5CEDD;border-color:#34425F" title="Taller or shorter (key: `)">Taller</button>
+    </header>
+    <div class="acts" id="acts"></div>
+    <div id="termout" role="log" aria-live="off"></div>
+    <div id="prompt"><label for="cmdline">pupper &rsaquo;</label>
+      <input id="cmdline" autocomplete="off" spellcheck="false" placeholder="a command, e.g. start · pause · goto gauntlet · bearing 30 · run log · help">
+      <ul id="suggest" hidden role="listbox"></ul></div>
+  </section>
 </main>
+<div id="help" hidden role="dialog" aria-label="Keys and commands"><div>
+  <h2>Keys</h2>
+  <table>
+    <tr><td><kbd>Space</kbd></td><td>Pause, or Resume</td></tr>
+    <tr><td><kbd>/</kbd> or <kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>Type a command in the console</td></tr>
+    <tr><td><kbd>`</kbd></td><td>Console taller or shorter</td></tr>
+    <tr><td><kbd>?</kbd></td><td>This list · <kbd>Esc</kbd> closes it</td></tr>
+  </table>
+  <p class="quiet">There is deliberately no key for Start, Allow motion or Stand up: those take a click.</p>
+  <h2 style="margin-top:14px">Commands (the console's prompt and <code>tools/pupper</code> take the same words)</h2>
+  <table id="helpcmds"></table>
+</div></div>
 <div id="toast" role="status"></div>
 
 <script>
@@ -219,10 +287,10 @@ const fmt = (v, n = 2) => (v == null || !isFinite(v)) ? "–" : Number(v).toFixe
 const C = { robot: "#2456D6", sound: "#7A3FD1", terrain: "#C96A0A", ball: "#63C416", stop: "#D5322F", ink: "#17233A", graphite: "#56647B", rule: "#CCD4DF", ok: "#1E8E4E" };
 const STAGES = [
   ["SEEK", "Seek", "listen for a cry"], ["ORIENT", "Orient", "turn to the voice"], ["CONFIRM", "Confirm", "listen again, nose-on"],
-  ["ZONE1", "Obstacles", "0–2 m: step over, scale across"], ["REFIX", "Second call", "redraw the line"],
+  ["ZONE1", "Approach", "0–2 m: walk to the voice"], ["REFIX", "Second call", "redraw the line"],
   ["ZONE2", "Gauntlet", "2–6 m: dodge"], ["ARRIVE", "At the cover", "wait for the phrase"], ["RESCUE", "Rescue", "comfort and report"]];
 const ACTIVE = ["PREFLIGHT", "SEEK", "ORIENT", "CONFIRM", "ZONE1", "REFIX", "ZONE2", "ARRIVE"];
-let snap = null, picked = null, trail = [], courseKey = "", lastLogLen = -1, failures = 0;
+let snap = null, picked = null, trail = [], courseKey = "", failures = 0;
 
 function toast(text) { const t = $("toast"); t.textContent = text; t.classList.add("show"); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("show"), 3200); }
 async function post(path, body) {
@@ -238,10 +306,10 @@ function X(m) { return m * 100; } function Y(m) { return -m * 100; }
 function drawCourse(c) {
   const g = $("map"); g.textContent = "";
   const add = (name, attrs, text) => g.appendChild(el(name, attrs, text));
-  add("rect", { x: X(0), y: -150, width: X(c.refix_at), height: 300, fill: "#FBE7CF", opacity: .45 });
+  add("rect", { x: X(0), y: -150, width: X(c.refix_at), height: 300, fill: c.obstacles.length ? "#FBE7CF" : "#FFFFFF", opacity: .45 });
   add("rect", { x: X(c.refix_at), y: -150, width: X(c.length - c.refix_at), height: 300, fill: "#E3F5D2", opacity: .45 });
   add("rect", { x: X(c.throw_from), y: -150, width: X(c.throw_to - c.throw_from), height: 300, fill: "#E3F5D2" });
-  add("text", { x: X(c.refix_at / 2), y: -160, "text-anchor": "middle", class: "d" }, "OBSTACLES");
+  add("text", { x: X(c.refix_at / 2), y: -160, "text-anchor": "middle", class: "d" }, c.obstacles.length ? "OBSTACLES" : "OPEN FLOOR");
   add("text", { x: X((c.throw_from + c.throw_to) / 2), y: -160, "text-anchor": "middle", class: "d" }, "THROW WINDOW");
   add("line", { x1: X(0), y1: 0, x2: X(c.cover_near), y2: 0, stroke: C.rule, "stroke-width": 2, "stroke-dasharray": "2 8" });
   for (let m = 0; m <= 7; m++) { add("line", { x1: X(m), y1: 330, x2: X(m), y2: 338, stroke: C.graphite }); add("text", { x: X(m), y: 351, "text-anchor": "middle", class: "d" }, m + " m"); }
@@ -250,9 +318,9 @@ function drawCourse(c) {
   for (const m of [c.refix_at, c.throw_from, c.throw_to]) for (const s of [-1, 1]) add("rect", { x: X(m) - 2.5, y: Y(s * 1) - 15, width: 5, height: 30, fill: C.graphite, opacity: .55 });
   c.obstacles.forEach((o, i) => { const tall = o.height >= 0.08, round = o.shape === "round";
     add("rect", { x: X(o.near), y: Y(o.width / 2), width: Math.max(4, X(o.depth)), height: X(o.width), rx: round ? 2.5 : 0, fill: tall ? C.terrain : "#fff", stroke: C.terrain, "stroke-width": 2.5, opacity: tall ? .85 : 1 });
-    add("text", { x: X(o.near + o.depth / 2), y: i % 2 ? Y(-o.width / 2) + 17 : Y(o.width / 2) - 8, "text-anchor": "middle", class: "lab" }, o.name + (tall || round ? ": go around" : o.depth > 0.2 ? ": scale across" : ": step over")); });
+    add("text", { x: X(o.near + o.depth / 2), y: i % 2 ? Y(-o.width / 2) + 17 : Y(o.width / 2) - 8, "text-anchor": "middle", class: "lab" }, o.name + (tall || round ? ": go around" : ": cross")); });
   add("rect", { x: X(c.cover_near), y: Y(c.cover_width / 2), width: 7, height: X(c.cover_width), fill: C.ink });
-  add("text", { x: X(c.cover_near) + 4, y: Y(c.cover_width / 2) - 8, "text-anchor": "middle", class: "lab" }, "cover");
+  add("text", { x: X(c.cover_near) + 4, y: Y(c.cover_width / 2) - 8, "text-anchor": "middle", class: "lab" }, "cover (cardboard)");
   add("circle", { cx: X(c.cover_near + 0.45), cy: 0, r: 15, fill: C.sound }); add("text", { x: X(c.cover_near + 0.45), y: 34, "text-anchor": "middle", class: "lab" }, "survivor");
   for (const s of [-1, 1]) { add("circle", { cx: X(c.thrower_along), cy: Y(s * c.thrower_side), r: 13, fill: "none", stroke: C.ball, "stroke-width": 3 });
     add("text", { x: X(c.thrower_along), y: Y(s * c.thrower_side) + (s > 0 ? -20 : 30), "text-anchor": "middle", class: "lab" }, "thrower " + (s > 0 ? "L" : "R")); }
@@ -351,12 +419,13 @@ function drawFan(s) {
   $("terrainchip").textContent = t.alive ? (t.state || "–") : "NOT RUNNING"; $("terrainchip").className = "chip" + (t.alive ? (["CRUISE", "REPORT", "DISABLED", ""].includes(t.state) ? "" : " terrain") : " stop");
   $("terrainmode").textContent = "mode " + (t.mode || "–") + (s.wanted.terrain_mode !== t.mode && t.alive ? " → " + s.wanted.terrain_mode : "");
   const tall = t.obstacles.filter(o => o.tall && !o.is_box).sort((a, b) => a.nearest - b.nearest)[0], box = t.box, cr = s.nav.crossing, cs = t.crossing || {};
-  $("terraindl").innerHTML = row("Doing", ({ CRUISE: "watching", REPORT: "watching (not steering)", APPROACH: "walking up to the low obstacle", GAUGE: "measuring it", ALIGN: "squaring up", PLAN: "planning the crossing", STEP_OVER: "stepping over", SCALE_ACROSS: "scaling across the slab", AVOID: "walking around", HOLD: "holding", DISABLED: "off" })[t.state] || t.state || "–") +
-    row("Low obstacle", box && box.near_x != null ? `${fmt(box.height * 1000, 0)} mm tall · ${fmt(box.near_x * 100, 0)} cm ahead` : (s.nav.passed ? s.nav.passed + " of " + s.nav.obstacles + " passed" : "not measured")) +
-    row("Nearest tall", tall ? `${fmt(tall.nearest, 2)} m at ${fmt(tall.bearing_deg, 0)}°` : "none in view") +
-    row("Crossing", cr.active ? `${fmt(cr.progress * 100, 0)} %` + (cs.duration ? ` of ${fmt(cs.duration, 0)} s` : "") : (cs.state === "planning" ? "planning" : s.nav.passed ? "done" : "–")) +
-    (t.reason ? row("Reason", t.reason) : "");
-  $("crossbar").style.width = (cr.active ? cr.progress * 100 : 0) + "%";
+  const course = s.nav.obstacles > 0;           // a course to cross: only when config lists one (none since 2026-11-27)
+  $("terraindl").innerHTML = row("Doing", ({ CRUISE: "watching", REPORT: "watching (not steering)", APPROACH: "walking up to it", GAUGE: "measuring it", ALIGN: "squaring up", PLAN: "planning a crossing", STEP_OVER: "crossing", SCALE_ACROSS: "crossing", AVOID: "walking around it", HOLD: "holding", DISABLED: "off" })[t.state] || t.state || "–") +
+    row("Nearest tall", tall ? `${fmt(tall.nearest, 2)} m at ${fmt(Math.abs(tall.bearing_deg), 0)}° ${tall.bearing_deg >= 0 ? "left" : "right"}` + (tall.width ? ` · ${fmt(tall.width, 2)} m wide` : "") : "none in view") +
+    row("Cover", s.nav.cover_seen ? `seen · ${fmt(s.nav.cover_range, 2)} m ahead` : s.nav.s >= s.limits.cover_from ? "looking for it" : `looked for from ${fmt(s.limits.cover_from, 1)} m`) +
+    (course ? row("Crossing", cr.active ? `${fmt(cr.progress * 100, 0)} %` + (cs.duration ? ` of ${fmt(cs.duration, 0)} s` : "") : (cs.state === "planning" ? "planning" : s.nav.passed + " of " + s.nav.obstacles + " passed")) +
+              (box && box.near_x != null ? row("Low obstacle", `${fmt(box.height * 1000, 0)} mm tall · ${fmt(box.near_x * 100, 0)} cm ahead`) : "") : "") +
+    (t.reason ? row("Reason", esc(t.reason)) : "") + (t.scan_ms != null ? row("Scan", fmt(t.scan_ms, 0) + " ms") : "");
 }
 
 /* ---------------------------------------------------------------- projectiles */
@@ -398,7 +467,9 @@ function render(s) {
   const from = picked ? STAGES.find(x => x[0] === picked)[1] : null;
   sb.textContent = !idle ? "Running" : from ? "Start from " + from : missing.length ? "Start anyway" : "Start";
   sb.className = idle && missing.length && !from ? "warn" : "";
-  sb.title = missing.length ? "Not ready: " + missing.join(", ") + ". Starting anyway runs without them (the buttons on this page can stand in for the sound module and the phrase detector)." : "Run the mission from the start mark";
+  sb.title = (missing.length ? "Not ready: " + missing.join(", ") + ". Starting anyway runs without them (the buttons on this page can stand in for the sound module and the phrase detector)." : "Run the mission from the start mark") +
+    "\nTerminal: pupper " + (from ? "goto " + picked : missing.length ? "start --anyway" : "start");
+  pbTitle(nav, stopped);
   const pb = $("pause"); pb.disabled = !(active || stopped || (nav.state === "RESCUE" && nav.resume_state));
   pb.textContent = stopped ? "Resume" : nav.state === "RESCUE" ? "Not the phrase: carry on" : "Pause";
   $("end").disabled = idle;
@@ -423,17 +494,11 @@ function render(s) {
     if (document.activeElement !== $("moe")) $("moe").value = o.moe_deg; $("moev").textContent = fmt(o.moe_deg, 0);
     for (const k of ["second_call", "throws", "says_phrase"]) $("o_" + k).checked = o[k]; }
   $("cfgsrc").textContent = "numbers from " + (s.config_source || "").split("/").slice(-2).join("/");
-  // the log
-  if (s.events.length !== lastLogLen || (s.events.length && s.events[s.events.length - 1].t !== render.lastT)) {
-    lastLogLen = s.events.length; render.lastT = s.events.length ? s.events[s.events.length - 1].t : null;
-    $("log").innerHTML = s.events.slice().reverse().map(e => { const dt = Object.entries(e.details || {}).map(([k, v]) => k + " " + v).join(", ");
-      return `<li class="${e.line ? "said" : ""}"><span class="t num">${fmt(e.run_s, 0)} s</span><span class="e">${e.event.replace(/_/g, " ")}</span><span class="w">${e.line ? "“" + e.line + "”" : dt}</span></li>`; }).join("");
-  }
 }
 const fact = (v, k) => `<div><b class="num">${v}</b><span>${k}</span></div>`;
 
 function buildStages() {
-  $("stages").innerHTML = STAGES.map((x, i) => `<button class="stage" data-stage="${x[0]}" title="Start the run from here: place Pupper at this stage, facing along the line, then press Start."><span class="n">${i + 1}</span><span class="t">${x[1]}</span><span class="s">${x[2]}</span></button>`).join("");
+  $("stages").innerHTML = STAGES.map((x, i) => `<button class="stage" data-stage="${x[0]}" title="Start the run from here: place Pupper at this stage, facing along the line, then press Start.&#10;Terminal: pupper goto ${x[0]}"><span class="n">${i + 1}</span><span class="t">${x[1]}</span><span class="s">${x[2]}</span></button>`).join("");
   $("stages").addEventListener("click", e => { const b = e.target.closest(".stage"); if (!b || b.disabled) return; picked = picked === b.dataset.stage || b.dataset.stage === "SEEK" ? null : b.dataset.stage; if (snap) render(snap); });
 }
 $("start").onclick = () => { if (!snap) return; const missing = snap.limits.require.filter(n => !snap.alive[n]);
@@ -457,8 +522,141 @@ $("moe").oninput = e => { $("moev").textContent = e.target.value; };
 $("moe").onchange = e => post("/api/sim", { options: { moe_deg: Number(e.target.value) } });
 for (const k of ["second_call", "throws", "says_phrase"]) $("o_" + k).onchange = e => post("/api/sim", { options: { [k]: e.target.checked } });
 $("nudge").onclick = () => send("nudge:0.3,0");
-document.addEventListener("keydown", e => { if (e.target.tagName === "INPUT" || e.metaKey || e.ctrlKey) return;
-  if (e.key === " ") { e.preventDefault(); $("pause").disabled || $("pause").click(); } });
+document.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); $("termbtn").click(); return; }
+  if (e.key === "Escape") { $("help").hidden = true; return; }
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName) || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === " ") { e.preventDefault(); $("pause").disabled || $("pause").click(); }
+  else if (e.key === "/") { e.preventDefault(); $("termbtn").click(); }
+  else if (e.key === "`") { e.preventDefault(); $("termsize").click(); }
+  else if (e.key === "?") { e.preventDefault(); $("help").hidden = !$("help").hidden; } });
+
+/* ---------------------------------------------------------------- the console and the prompt */
+const VERBS = [
+  ["start", "run the mission from the start mark"], ["start --anyway", "run without what is missing"],
+  ["pause", "pause the run (Space)"], ["resume", "carry on (Space)"], ["end", "end the run"],
+  ["phrase", "the survivor said the phrase (stands in for the detector)"],
+  ["motion on", "allow motion: someone at the e-stop"], ["motion off", "dry run: no velocity"],
+  ["goto approach", "start from 0 m: walk to the voice"], ["goto second-call", "start from the second call"],
+  ["goto gauntlet", "start from the gauntlet"], ["goto cover", "start at the cover"],
+  ["bearing 30", "a cry 30° to the LEFT (negative: right)"],
+  ["stand", "robot: stand Pupper up"], ["relax", "robot: let the legs go"],
+  ["actions", "list the checks this Mission Control can run"], ["run stop", "stop the check that is running"],
+  ["sim speed 5", "simulation: speed 0–20"], ["sim reset", "simulation: a new room"], ["sim moe 8", "simulation: bearing error"],
+  ["clear", "clear this view"], ["help", "keys and commands"]];
+let conLast = 0, conFilter = "all", conLines = [], actList = [], running = null, hist = JSON.parse(localStorage.getItem("pupperHist") || "[]"), histAt = -1, sugAt = 0;
+const KIND = { cmd: "cmd", err: "cmd", event: "run", say: "run", state: "run", shell: "out", out: "out", info: "out" };
+const clock = t => new Date(t * 1000).toTimeString().slice(0, 8);
+function conRow(x) {
+  const text = x.kind === "say" ? "Pupper: “" + x.text + "”" : x.kind === "state" ? "state " + x.text : x.text;
+  return `<div class="k-${x.kind}"><span class="c">${clock(x.t)}</span><span class="r">${x.run_s != null ? fmt(x.run_s, 0) + " s" : ""}</span><span class="s">${esc(x.src || "")}</span><span class="x">${esc(text)}</span></div>`;
+}
+function conShow(fresh) {
+  const out = $("termout"), atEnd = out.scrollHeight - out.scrollTop - out.clientHeight < 30;
+  const pick = x => conFilter === "all" || KIND[x.kind] === conFilter || (conFilter === "out" && x.kind === "err" && x.src !== "page" && x.src !== "terminal");
+  if (fresh) out.innerHTML = conLines.filter(pick).map(conRow).join("");
+  else return;
+  if (atEnd || fresh === "end") out.scrollTop = out.scrollHeight;
+}
+function conLocal(kind, text) { conLines.push({ n: 0, t: Date.now() / 1000, kind, src: "this page", text }); conShow("end"); }
+async function conPoll() {
+  try {
+    const r = await fetch("/api/console?since=" + conLast, { cache: "no-store" }), j = await r.json();
+    if (j.last < conLast) { conLast = 0; conLines = []; }               // the server was restarted
+    if (j.lines.length) { conLines = conLines.concat(j.lines).slice(-1500); conLast = j.last; conShow(true); }
+  } catch (e) { /* the state poll reports a lost server */ }
+  setTimeout(conPoll, 400);
+}
+async function actPoll() {
+  try {
+    const j = await (await fetch("/api/actions", { cache: "no-store" })).json();
+    running = j.running;
+    const key = JSON.stringify(j.actions.map(a => a.id));
+    if (key !== actPoll.key) { actPoll.key = key; actList = j.actions; let g = "";
+      $("acts").innerHTML = '<span class="g" style="margin-left:0">Checks</span>' + actList.map(a => { const head = a.group !== g ? (g = a.group, "") : "";
+        return head + `<button data-act="${a.id}" title="${esc(a.about)}\n$ ${esc(a.shell)}\nTerminal: ${esc(a.terminal)}">${esc(a.label)}</button>`; }).join("") +
+        '<button id="actstop" title="Stop the check that is running\nTerminal: pupper run stop" hidden>Stop</button>';
+      helpTable(); }
+    for (const b of $("acts").querySelectorAll("button[data-act]")) { b.classList.toggle("running", b.dataset.act === running); b.disabled = !!running && b.dataset.act !== running; }
+    const st = $("actstop"); if (st) st.hidden = !running;
+  } catch (e) { /* ignore */ }
+  setTimeout(actPoll, running ? 500 : 3000);
+}
+function helpTable() {
+  $("helpcmds").innerHTML = VERBS.map(([v, d]) => `<tr><td><code>${esc(v)}</code></td><td>${esc(d)}</td></tr>`).join("") +
+    actList.map(a => `<tr><td><code>run ${esc(a.id)}</code></td><td>${esc(a.label)}: <code>${esc(a.shell)}</code></td></tr>`).join("");
+}
+const STAGE_ALIAS = { approach: "ZONE1", zone1: "ZONE1", "second-call": "REFIX", refix: "REFIX", gauntlet: "ZONE2", zone2: "ZONE2", cover: "ARRIVE", arrive: "ARRIVE", rescue: "RESCUE", seek: "SEEK", orient: "ORIENT", confirm: "CONFIRM" };
+function parse(line) {
+  const w = line.trim().split(/\s+/).filter(Boolean), v = (w[0] || "").toLowerCase(), r = w.slice(1);
+  if (!v) return null;
+  if (["pause", "resume", "end", "phrase"].includes(v) && !r.length) return { command: v };
+  if (v === "start") return { command: ["--anyway", "anyway", "-f"].includes(r[0]) ? "start!" : "start" };
+  if (v === "motion" && ["on", "off"].includes(r[0])) return { command: "motion_" + r[0] };
+  if (v === "goto" && r.length === 1) { const st = STAGE_ALIAS[r[0].toLowerCase()] || r[0].toUpperCase(); return STAGES.some(x => x[0] === st) ? { command: "goto:" + st } : { error: "no stage " + r[0] }; }
+  if (v === "bearing" && r.length === 1 && isFinite(Number(r[0]))) return { command: "bearing:" + Number(r[0]) };
+  if (v === "stand" || v === "relax") return { command: "robot:" + v };
+  if (v === "nudge") return { command: "nudge:" + (r[0] || "0.3,0") };
+  if (v === "run" && r[0] === "stop") return { stop: true };
+  if (v === "run" && r.length === 1) return { action: r[0] };
+  if (v === "sim" && r[0] === "reset") return { sim: { action: "reset" } };
+  if (v === "sim" && r[0] === "speed" && isFinite(Number(r[1]))) return { sim: { speed: Number(r[1]) } };
+  if (v === "sim" && r[0] === "moe" && isFinite(Number(r[1]))) return { sim: { options: { moe_deg: Number(r[1]) } } };
+  if (["help", "?", "clear", "actions", "status"].includes(v)) return { local: v };
+  return { error: "not a command: " + line.trim() + " (help lists them)" };
+}
+async function execute(line) {
+  const p = parse(line); if (!p) return;
+  if (p.error) { conLocal("err", p.error); return; }
+  if (p.local === "help" || p.local === "?") { $("help").hidden = false; return; }
+  if (p.local === "clear") { conLines = []; conShow(true); return; }
+  if (p.local === "actions") { conLocal("info", actList.map(a => a.id + " — " + a.label + ": " + a.shell).join("\n") || "no checks here"); return; }
+  if (p.local === "status") { conLocal("info", snap ? `${snap.nav.state} · ${fmt(snap.nav.s, 2)} m along · ${snap.nav.motion ? "motion allowed" : "dry run"}` : "no state yet"); return; }
+  if (p.stop) { post("/api/action", { stop: true }); return; }
+  if (p.action) { const a = actList.find(x => x.id === p.action); if (!a) { conLocal("err", "no check called " + p.action + " here (actions lists them)"); return; }
+    if (a.confirm && !confirm(a.confirm)) return; post("/api/action", { id: a.id }).then(() => setTimeout(actPoll, 100)); return; }
+  if (p.sim) { if (!snap || snap.server.mode !== "sim") { conLocal("err", "sim commands work only in simulation"); return; } post("/api/sim", p.sim); return; }
+  const robot = snap && snap.server.mode === "robot";
+  if (robot && p.command === "motion_on" && !confirm("Allow motion?\n\nPupper will walk when a run is started. Someone must be holding the gamepad: a press on the right stick is the e-stop.")) return;
+  if (robot && p.command === "robot:stand" && !confirm("Stand Pupper up?\n\nIt will get to its feet. Floor clear, operator at the e-stop.")) return;
+  send(p.command);
+}
+function suggestions(text) {
+  const q = text.trim().toLowerCase(), all = VERBS.concat(actList.map(a => ["run " + a.id, a.label]));
+  return (q ? all.filter(([v]) => v.startsWith(q) || v.includes(q)) : all).slice(0, 12);
+}
+function showSuggest() {
+  const list = suggestions($("cmdline").value), u = $("suggest");
+  if (!list.length || document.activeElement !== $("cmdline")) { u.hidden = true; return; }
+  sugAt = Math.min(sugAt, list.length - 1);
+  u.innerHTML = list.map(([v, d], i) => `<li role="option" class="${i === sugAt ? "on" : ""}" data-v="${esc(v)}"><code>${esc(v)}</code><span>${esc(d)}</span></li>`).join(""); u.hidden = false;
+}
+$("cmdline").addEventListener("input", () => { sugAt = 0; histAt = -1; showSuggest(); });
+$("cmdline").addEventListener("focus", showSuggest);
+$("cmdline").addEventListener("blur", () => setTimeout(() => { $("suggest").hidden = true; }, 150));
+$("suggest").addEventListener("mousedown", e => { const li = e.target.closest("li"); if (!li) return; e.preventDefault(); $("cmdline").value = li.dataset.v; showSuggest(); $("cmdline").focus(); });
+$("cmdline").addEventListener("keydown", e => {
+  const box = $("cmdline"), list = suggestions(box.value), open = !$("suggest").hidden && list.length;
+  if (e.key === "Enter") { e.preventDefault(); const v = box.value.trim(); if (!v) return;
+    if (!hist.length || hist[hist.length - 1] !== v) { hist.push(v); hist = hist.slice(-80); localStorage.setItem("pupperHist", JSON.stringify(hist)); }
+    histAt = -1; box.value = ""; $("suggest").hidden = true; execute(v); }
+  else if (e.key === "Tab" && open) { e.preventDefault(); box.value = list[sugAt][0] + (list[sugAt][0].endsWith(" ") ? "" : ""); showSuggest(); }
+  else if (e.key === "ArrowUp" && (!open || !box.value)) { e.preventDefault(); if (!hist.length) return; histAt = histAt < 0 ? hist.length - 1 : Math.max(0, histAt - 1); box.value = hist[histAt]; $("suggest").hidden = true; }
+  else if (e.key === "ArrowDown" && histAt >= 0) { e.preventDefault(); histAt += 1; if (histAt >= hist.length) { histAt = -1; box.value = ""; } else box.value = hist[histAt]; }
+  else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && open) { e.preventDefault(); sugAt = (sugAt + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length; showSuggest(); }
+  else if (e.key === "Escape") { $("suggest").hidden = true; box.blur(); }
+});
+$("filters").onclick = e => { const b = e.target.closest("button"); if (!b) return; conFilter = b.dataset.f;
+  for (const x of $("filters").children) x.setAttribute("aria-pressed", x === b); conShow(true); conShow("end"); };
+$("acts").onclick = e => { const b = e.target.closest("button"); if (!b || b.disabled) return; execute(b.id === "actstop" ? "run stop" : "run " + b.dataset.act); };
+$("termclear").onclick = () => execute("clear");
+$("termsize").onclick = () => { const t = $("term").classList.toggle("tall"); $("termsize").textContent = t ? "Shorter" : "Taller"; };
+$("termbtn").onclick = () => { $("term").scrollIntoView({ behavior: "smooth", block: "end" }); $("cmdline").focus(); };
+$("help").onclick = e => { if (e.target === $("help")) $("help").hidden = true; };
+function pbTitle(nav, stopped) {
+  $("pause").title = (stopped ? "Carry on" : nav.state === "RESCUE" ? "Pupper stopped as if it heard the phrase: carry on" : "Pause the run (key: Space)") +
+    "\nTerminal: pupper " + (stopped || nav.state === "RESCUE" ? "resume" : "pause");
+}
 
 async function poll() {
   try {
@@ -468,7 +666,7 @@ async function poll() {
   } catch (e) { if (++failures > 5) { $("modechip").textContent = "PAGE DISCONNECTED"; $("modechip").className = "lost"; } }
   setTimeout(poll, snap && snap.server.mode === "robot" ? 200 : 100);   // the robot's Pi has little to spare
 }
-buildStages(); poll();
+buildStages(); helpTable(); poll(); conPoll(); actPoll();
 </script>
 </body>
 </html>

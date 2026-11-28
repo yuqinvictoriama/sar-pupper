@@ -104,7 +104,7 @@ def cue(state: str, *, quiet: bool = False, s: float = 0.0, course=None, crossin
     if state == "ZONE1":
         if crossing:
             return c("Throwers", "NO THROWS. Pupper is crossing the low obstacle (a minute or more). Keep clear of the line.", "stop")
-        return c("Everyone", "Silence. No throws until Pupper passes the 3 m markers.", "stop")
+        return c("Everyone", "Silence. Pupper is walking to the voice. No throws until it passes the 3 m markers.", "stop")
     if state == "REFIX":
         if quiet:
             return c("Survivor", "Get ready: wait for \"Call out again, so I can find you.\" to finish.")

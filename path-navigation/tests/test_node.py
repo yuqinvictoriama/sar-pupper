@@ -133,7 +133,7 @@ def test_node_with_motion_turns_walks_and_arms_the_dodge_only_in_the_gauntlet(tm
     r.run(12.0)                                                     # faces it already; confirm times out; walks
     state = json.loads(r.sent("/nav/state")[-1].data)
     assert state["state"] == "ZONE1" and r.sent("/nav_cmd_vel")[-1].linear.x > 0.2
-    assert r.sent("/terrain/mode")[-1].data == "full" and r.armed() is False
+    assert r.sent("/terrain/mode")[-1].data == "avoid" and r.armed() is False
     assert not any(e.get("dry_run") for e in r.events())
     r.cmd("end"); r.run(3.0)
     r.cmd("goto:ZONE2"); r.run(2.0)

@@ -17,6 +17,16 @@ from nav.reckon import Reckoner  # noqa: E402
 from nav.steer import line_command  # noqa: E402
 
 D = math.radians
+# The step-over course the demo used until 2026-11-27 (a low bar, then a slab). The demo no longer has it
+# (nav/config.py, Course.obstacles is empty), but the crossing machinery stays, so these tests keep it.
+OLD_COURSE = [{"name": "low bar", "shape": "flat", "near": 0.45, "depth": 0.089, "width": 0.60, "height": 0.019},
+              {"name": "slab", "shape": "flat", "near": 1.15, "depth": 0.38, "width": 0.565, "height": 0.015}]
+
+
+def old_course():
+    return apply(DemoConfig(), {"course": {"obstacles": [dict(o) for o in OLD_COURSE]}})
+
+
 ALIVE = {"imu": True, "walking": True, "sound": True, "keyword": True, "terrain": True, "dodge": True, "voice": True}
 
 
@@ -252,7 +262,7 @@ def test_seek_orient_confirm_then_walk():
     assert r.m.state == M.ZONE1 and "line_set" in r.events
     # two looks at the same voice, blended half and half
     assert abs(diff(r.m.reck.line.heading, (D(120) + second) / 2)) < D(0.2)
-    assert r.out.terrain_mode == "full" and r.out.arm_dodge is False
+    assert r.out.terrain_mode == "avoid" and r.out.arm_dodge is False      # no course to cross: walk round anything
 
 
 def test_orient_takes_the_short_way_round():
@@ -291,7 +301,7 @@ def test_dry_run_reports_but_never_moves_or_switches_a_reflex_on():
 
 
 def test_zone1_keeps_asking_while_terrain_has_the_legs_and_is_silent_during_a_crossing():
-    r = Rig()
+    r = Rig(cfg=old_course())
     r.to_zone1()
     r.tick(0.5)
     assert r.out.cmd[0] > 0.2
@@ -329,7 +339,7 @@ def test_zone1_keeps_asking_while_terrain_has_the_legs_and_is_silent_during_a_cr
 
 
 def test_a_landmark_far_from_where_the_next_obstacle_should_be_is_not_believed():
-    r = Rig()
+    r = Rig(cfg=old_course())
     r.to_zone1()
     r.m.reck.set_s(3.0)                             # nowhere near the first obstacle
     r.tick(0.1, crossing=[{"state": "planning"}])
@@ -347,7 +357,7 @@ def test_a_failed_crossing_holds_for_the_operator():
 
 
 def test_second_listen_waits_for_the_walk_around_then_redraws_the_line():
-    r = Rig()
+    r = Rig(cfg=old_course())
     r.to_zone1()
     r.m.reck.set_s(2.1)
     r.tick(1.0)
@@ -522,7 +532,7 @@ def test_a_slow_crossing_that_keeps_reporting_is_not_given_up():
 
 
 def test_a_crossing_whose_start_was_missed_is_still_counted():
-    r = Rig()
+    r = Rig(cfg=old_course())
     r.to_zone1()
     r.terrain.update(state="PLAN", box={"near_x": 0.35, "height": 0.019, "depth": 0.089})
     r.tick(0.1, crossing=[{"state": "planning"}])

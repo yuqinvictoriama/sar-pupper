@@ -15,7 +15,7 @@ except ImportError as exc:                              # terrain-agility not be
 
 from nav.config import DemoConfig, apply  # noqa: E402
 
-ORDER = ["start", "heard", "line_set", "box_landmark", "stepping_over", "crossed", "refix", "arrived", "saved"]
+ORDER = ["start", "heard", "line_set", "refix", "arrived", "saved"]
 SLAB = {"name": "slab", "shape": "flat", "depth": 0.38, "width": 0.565, "height": 0.015}
 CARTON = {"name": "carton", "shape": "flat", "depth": 0.348, "width": 0.455, "height": 0.13}
 CYLINDER = {"name": "cylinder", "shape": "round", "depth": 0.05, "width": 0.70, "height": 0.05}
@@ -27,15 +27,20 @@ def test_one_run_goes_through_every_stage_in_order():
     at = [names.index(n) for n in ORDER]
     assert at == sorted(at), names
     assert res["reached"] and res["throws"] >= 3
-    # the course as laid out: the low bar is stepped over, then the slab is scaled across. Two crossings.
-    assert res["crossings"] == 2 and res["walk_arounds"] == 0 and names.count("stepping_over") == 2
+    # since 2026-11-27 the first stretch is open floor: nothing to cross, nothing to walk around
+    assert res["crossings"] == 0 and res["walk_arounds"] == 0 and "stepping_over" not in names
 
 
 def test_a_crossing_then_a_walk_around_still_works():
-    """The earlier course: the slab, then a carton too tall to cross."""
+    """An earlier course: the slab, then a carton too tall to cross. The demo no longer has obstacles to
+    cross; this keeps the crossing machinery honest. Terrain agility decides whether to cross the slab:
+    since its change of 2026-11-27 it sometimes walks round the slab and the carton in one go instead
+    (seed 4: no crossing, one walk-around), which is not a failure of navigation. So what is pinned here
+    is that every run walks round the carton, reaches the cover and never touches the carton."""
     cfg = apply(DemoConfig(), {"course": {"obstacles": [dict(SLAB, near=0.50), dict(CARTON, near=1.60)]}})
     results = [CourseSim(cfg, SimOptions(seed=k)).run() for k in range(8)]
-    assert all(r["reached"] and r["crossings"] == 1 and r["walk_arounds"] == 1 for r in results), results
+    assert all(r["reached"] and r["walk_arounds"] >= 1 for r in results), results
+    assert sum(r["crossings"] == 1 for r in results) >= 6, results       # the slab is still usually crossed
     assert min(r["clear_tall"] for r in results) > 0.12                 # never touched the carton
 
 
@@ -56,7 +61,7 @@ def test_it_ends_in_front_of_the_cover_in_nearly_every_room():
     reached = sum(r["reached"] for r in results)
     assert reached >= 29, [(k, r["state"], r["reason"], r["x"], r["y"]) for k, r in enumerate(results) if not r["reached"]]
     assert max(abs(r["y"]) for r in results if r["reached"]) < 0.6       # inside a 1.2 m cover
-    assert all(r["crossings"] == 2 for r in results)                    # the bar and the slab, every time
+    assert all(r["crossings"] == 0 and r["walk_arounds"] == 0 for r in results)   # open floor to the gauntlet
 
 
 def test_without_the_phrase_it_still_stops_at_the_cover():
@@ -88,7 +93,7 @@ def test_dodging_is_armed_only_in_the_gauntlet_and_terrain_never_steers_there():
             assert sim.board.mux_source != "/terrain_cmd_vel"
     armed_in = {s for s, armed, _ in seen if armed}
     assert armed_in <= {"ZONE2", "ARRIVE"} and "ZONE2" in armed_in
-    assert {m for s, _, m in seen if s == "ZONE1"} == {"full", "avoid"}
+    assert {m for s, _, m in seen if s == "ZONE1"} == {"avoid"}            # nothing to cross: walk round
     assert {m for s, _, m in seen if s == "SEEK"} == {"off"}
 
 

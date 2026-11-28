@@ -1,5 +1,7 @@
 #!/bin/bash
-# Send the navigation node a command from a terminal (Mission Control's buttons do the same).
+# Send the navigation node a command straight over ROS (Mission Control's buttons do the same).
+# tools/pupper does this too, through Mission Control's server, so the page's console shows it; use
+# this one only when Mission Control is not running.
 #
 #   bash tools/nav_cmd.sh start        run the mission          bash tools/nav_cmd.sh pause | resume | end
 #   bash tools/nav_cmd.sh motion_on    allow it to walk (someone at the e-stop!)      motion_off
@@ -10,5 +12,5 @@
 HERE=$(cd "$(dirname "$0")" && pwd)
 source "$HERE/../robot/env.sh"
 if [ "${1:-}" = "watch" ]; then exec ros2 topic echo /nav/event std_msgs/msg/String --field data; fi
-[ -n "${1:-}" ] || { sed -n '2,10p' "$0"; exit 1; }
+[ -n "${1:-}" ] || { sed -n '2,13p' "$0"; exit 1; }
 exec ros2 topic pub -1 /nav/command std_msgs/msg/String "data: '$1'"

@@ -20,15 +20,12 @@ DEFAULT_PATH = Path(__file__).resolve().parent.parent / "config" / "demo.yaml"
 class Course:
     """The course, measured along the line from the start mark (metres)."""
     length: float = 6.0             # Pupper's body centre when it stands in front of the cover
-    # The obstacles of the first stretch, in the order Pupper meets them. near: the near edge, metres from
-    # the start mark. depth: the way Pupper walks. width: across the line. shape: flat (a board or slab,
-    # which terrain agility can cross) or round (a cylinder: it measures it, refuses, and walks around).
-    # Navigation uses `near` (each crossing is a landmark) and how many there are; the rest is for the
-    # simulator and Mission Control's map. What terrain agility does with each is its own decision.
-    obstacles: list = field(default_factory=lambda: [
-        {"name": "low bar", "shape": "flat", "near": 0.45, "depth": 0.089, "width": 0.60, "height": 0.019},
-        {"name": "slab", "shape": "flat", "near": 1.15, "depth": 0.38, "width": 0.565, "height": 0.015},
-    ])
+    # Obstacles laid on the first stretch on purpose, in the order Pupper meets them. NONE since 2026-11-27:
+    # the demo no longer has the step-over and scale-across obstacles, the first 2 m are open floor, and
+    # terrain agility only walks around anything in the way (mode "avoid"). The list is kept so a course
+    # can come back: near = near edge from the start mark, depth = along the line, width = across it,
+    # shape flat | round, height. Navigation then treats each crossing as a landmark.
+    obstacles: list = field(default_factory=list)
     refix_at: float = 2.00          # second listen: not before this
     throw_from: float = 3.00        # throw window, by Pupper's body centre
     throw_to: float = 5.20

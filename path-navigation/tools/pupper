@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""pupper: Mission Control from a terminal. The same buttons, the same console, the same rules.
+
+    tools/pupper                  what Pupper is doing now (status)
+    tools/pupper watch            a live view: state, cue, the senses, and the console as it grows
+    tools/pupper log              follow the console only (commands, events, Pupper's lines, action output)
+
+    tools/pupper start            run the mission            start --anyway   run without what is missing
+    tools/pupper pause | resume | end
+    tools/pupper motion on|off    the dry-run switch (on: someone at the e-stop!)
+    tools/pupper goto ZONE2       start from a stage: SEEK ORIENT CONFIRM ZONE1 REFIX ZONE2 ARRIVE RESCUE
+                                  (or approach, second-call, gauntlet, cover, rescue)
+    tools/pupper bearing 30       stand in for the sound module: a cry 30 degrees to the LEFT
+    tools/pupper phrase           stand in for the phrase detector
+    tools/pupper stand | relax    robot only: the lab's robot server stands Pupper up / lets the legs go
+
+    tools/pupper actions          the checks Mission Control can run here (robot log, audio devices, tests ...)
+    tools/pupper run log          run one; its output appears here and in the page's console
+    tools/pupper sim speed 5      simulation only: speed, reset (a new room), moe 8
+    tools/pupper open             open the page in the browser
+
+It talks to Mission Control's server (tools/mission_control.py), not to ROS, so it works from the
+laptop too:  tools/pupper --url http://pupper.local:8078 watch   (or export PUPPER_URL=...).
+Everything it sends is written to the page's console with "terminal" beside it, and every button
+pressed on the page shows up in `pupper watch` and `pupper log` in this same form.
+Needs Python 3 only.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sys
+import time
+import urllib.error
+import urllib.request
+import webbrowser
+
+STAGES = ("SEEK", "ORIENT", "CONFIRM", "ZONE1", "REFIX", "ZONE2", "ARRIVE", "RESCUE")
+ALIASES = {"approach": "ZONE1", "zone1": "ZONE1", "second-call": "REFIX", "refix": "REFIX", "gauntlet": "ZONE2",
+           "zone2": "ZONE2", "cover": "ARRIVE", "arrive": "ARRIVE", "rescue": "RESCUE", "seek": "SEEK",
+           "orient": "ORIENT", "confirm": "CONFIRM"}
+TTY = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+COLOURS = {"cmd": "1;34", "event": "0", "say": "1;34", "state": "1", "shell": "2", "out": "0", "err": "1;31",
+           "info": "2", "robot": "34", "sound": "35", "terrain": "33", "ball": "32", "stop": "1;31", "go": "1;32",
+           "dim": "2", "bold": "1"}
+
+
+def paint(text: str, kind: str) -> str:
+    return "\033[%sm%s\033[0m" % (COLOURS.get(kind, "0"), text) if TTY else text
+
+
+class Client:
+    def __init__(self, url: str):
+        self.url = url.rstrip("/")
+
+    def get(self, path: str):
+        with urllib.request.urlopen(self.url + path, timeout=5) as r:
+            return json.loads(r.read())
+
+    def post(self, path: str, body: dict) -> tuple[bool, str]:
+        req = urllib.request.Request(self.url + path, data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json", "X-Pupper-Client": "cli"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                out = json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            try:
+                out = json.loads(e.read())
+            except ValueError:
+                out = {"ok": False, "message": "HTTP %d" % e.code}
+        return bool(out.get("ok")), str(out.get("message", ""))
+
+
+# ------------------------------------------------------------------ what is shown
+def fmt(v, n=2, unit=""):
+    return "-" if v is None else ("%.*f%s" % (n, v, unit))
+
+
+def status_lines(s: dict) -> list[str]:
+    if s.get("waiting"):
+        return [paint("ROBOT: WAITING", "stop") + "  " + s["waiting"]]
+    nav, srv = s["nav"], s["server"]
+    mode = "SIMULATION" if srv["mode"] == "sim" else ("ROBOT" if srv.get("connected") else
+                                                       "ROBOT: NO DATA %s s" % fmt(srv.get("age"), 0))
+    motion = paint("MOTION ALLOWED", "stop") if nav["motion"] else paint("dry run (motion off)", "dim")
+    legs = (s.get("mux") or "none").replace("_cmd_vel", "").replace("/", "") or "none"
+    out = ["%s  %s  %s  %s s  %s m along  %s m off  legs: %s  %s" % (
+        paint("Pupper", "bold"), paint(mode, "robot"), paint(nav["state"], "bold") + (" (" + nav["zone"] + ")" if nav["zone"] else ""),
+        fmt(nav["run_s"], 0), fmt(nav["s"]), ("+" if nav["d"] >= 0 else "") + fmt(nav["d"]), legs, motion)]
+    cue = nav.get("cue") or {}
+    tone = {"go": "go", "stop": "stop"}.get(cue.get("tone"), "bold")
+    if cue.get("text"):
+        out.append("  %s %s" % (paint((cue.get("who") or "").upper() + ":", tone), cue["text"]))
+    said = s.get("said") or {}
+    if said.get("line"):
+        out.append("  %s “%s”" % (paint("Pupper %s" % ("says" if (said.get("age") or 99) < 6 else "said"),
+                                                  "say"), said["line"]))
+    fix = nav.get("fix")
+    last = nav["bearings"][-1] if nav.get("bearings") else None
+    out.append("  %s %s  %s" % (paint("sound  ", "sound"), "LISTENING" if nav["listening"] else "not listening",
+                                ("last %s deg %s" % (fmt(abs(last["deg"]), 0), "left" if last["deg"] >= 0 else "right")
+                                 if last else "no bearing yet") + (" · fix %s deg from %d" % (fmt(fix["deg"], 0), fix["count"])
+                                                                 if fix else "")))
+    t = s["terrain"]
+    tall = sorted((o for o in t.get("obstacles", []) if o.get("tall") and not o.get("is_box")),
+                  key=lambda o: o["nearest"])
+    out.append("  %s %s, mode %s  %s%s" % (
+        paint("terrain", "terrain"), t.get("state") or "-" if t.get("alive") else paint("NOT RUNNING", "stop"),
+        t.get("mode") or "-", ("nearest tall %s m, %s deg %s" % (fmt(tall[0]["nearest"]), fmt(abs(tall[0]["bearing_deg"]), 0),
+                                                 "left" if tall[0]["bearing_deg"] >= 0 else "right")
+                              if tall else "nothing tall in view"),
+        ("  · cover %s m" % fmt(nav["cover_range"])) if nav.get("cover_seen") else ""))
+    d = s["dodge"]
+    out.append("  %s %s  %s  %d dodges%s" % (
+        paint("dodge  ", "ball"), d.get("state") or "-" if d.get("alive") else paint("NOT RUNNING", "stop"),
+        paint("ARMED", "stop") if d.get("armed") else "not armed", nav.get("dodges", 0),
+        ("  · %d thrown, %d hit" % (s["truth"]["throws"], s["truth"]["hits"])) if s.get("truth") else ""))
+    names = {"imu": "IMU", "walking": "walking", "sound": "sound", "keyword": "phrase", "terrain": "terrain",
+             "dodge": "dodge", "voice": "voice"}
+    req = s["limits"]["require"]
+    out.append("  systems " + "  ".join(paint(v, "go") if s["alive"].get(k) else
+                                        paint(v + " missing", "stop" if k in req else "dim") for k, v in names.items()))
+    return out
+
+
+def console_line(line: dict) -> str:
+    clock = time.strftime("%H:%M:%S", time.localtime(line["t"]))
+    kind, src, text = line["kind"], line.get("src", ""), line["text"]
+    if kind == "say":
+        text = "Pupper: “%s”" % text
+    elif kind == "state":
+        text = "state " + text
+    tag = {"page": "page", "terminal": "terminal"}.get(src, src)
+    return "%s %s %s" % (paint(clock, "dim"), paint("%-9s" % tag[:9], "dim"), paint(text, kind))
+
+
+# ------------------------------------------------------------------ the commands
+def to_command(args: list[str]) -> str | None:
+    """`goto gauntlet` -> `goto:ZONE2`. None if it is not one of the mission's commands."""
+    if not args:
+        return None
+    verb, rest = args[0].lower(), args[1:]
+    if verb in ("pause", "resume", "end", "phrase", "abort") and not rest:
+        return verb
+    if verb == "start":
+        return "start!" if rest[:1] in (["--anyway"], ["anyway"], ["-f"]) else "start"
+    if verb == "motion" and rest[:1] in (["on"], ["off"]):
+        return "motion_" + rest[0]
+    if verb == "goto" and len(rest) == 1:
+        stage = ALIASES.get(rest[0].lower(), rest[0].upper())
+        return "goto:" + stage if stage in STAGES else None
+    if verb == "bearing" and len(rest) == 1:
+        try:
+            return "bearing:%g" % float(rest[0])
+        except ValueError:
+            return None
+    if verb in ("stand", "relax") and not rest:
+        return "robot:" + verb
+    if verb == "nudge":
+        return "nudge:" + (rest[0] if rest else "0.3,0")
+    return None
+
+
+def follow(client: Client, live: bool) -> int:
+    """`watch` (live) or `log`: print the console as it grows; with `watch`, redraw the status above it."""
+    last, shown_lines = 0, []
+    try:
+        first = client.get("/api/console?since=0")
+        last = max(0, first["last"] - (12 if live else 30))
+        while True:
+            got = client.get("/api/console?since=%d" % last)
+            last = got["last"]
+            if live:
+                shown_lines = (shown_lines + [console_line(x) for x in got["lines"]])[-400:]
+                snap = client.get("/api/state")
+                cols, rows = shutil.get_terminal_size((100, 30))
+                top = [ln[:cols + 40] for ln in status_lines(snap)]
+                room = max(3, rows - len(top) - 3)
+                sys.stdout.write("\033[H\033[2J" + "\n".join(top) + "\n" + paint("-" * min(cols, 100), "dim") + "\n" +
+                                 "\n".join(shown_lines[-room:]) + "\n" +
+                                 paint("Ctrl+C to leave. Commands from another terminal: tools/pupper pause | resume | end ...", "dim"))
+                sys.stdout.flush()
+                time.sleep(0.5)
+            else:
+                for x in got["lines"]:
+                    print(console_line(x), flush=True)
+                time.sleep(0.4)
+    except KeyboardInterrupt:
+        print()
+        return 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="pupper", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--url", default=os.environ.get("PUPPER_URL", "http://localhost:8078"),
+                    help="Mission Control's address (default $PUPPER_URL or http://localhost:8078)")
+    ap.add_argument("--yes", action="store_true", help="do not ask before motion on, stand, or an action that asks")
+    ap.add_argument("words", nargs="*", help="status | watch | log | start | pause | ... (see above)")
+    a = ap.parse_args(argv)
+    client = Client(a.url)
+    words = a.words or ["status"]
+    verb = words[0].lower()
+
+    def ask(question: str) -> bool:
+        if a.yes:
+            return True
+        if not sys.stdin.isatty():
+            print("%s  Not asked in a script: add --yes." % question.split("\n")[0])
+            return False
+        return input(question + " [y/N] ").strip().lower() in ("y", "yes")
+
+    try:
+        if verb == "status":
+            print("\n".join(status_lines(client.get("/api/state"))))
+            return 0
+        if verb in ("watch", "log", "console"):
+            return follow(client, live=verb == "watch")
+        if verb == "open":
+            webbrowser.open(a.url)
+            return 0
+        if verb == "actions":
+            got = client.get("/api/actions")
+            for x in got["actions"]:
+                print("  %-10s %-24s %s" % (x["id"], x["label"], paint(x["shell"], "dim")))
+            if got.get("running"):
+                print("running now:", got["running"])
+            return 0
+        if verb == "run" and len(words) == 2:
+            name = words[1]
+            listed = {x["id"]: x for x in client.get("/api/actions")["actions"]}
+            if name == "stop":
+                ok, msg = client.post("/api/action", {"stop": True})
+                print(msg)
+                return 0 if ok else 1
+            if name not in listed:
+                print("No action %r here. These are: %s" % (name, ", ".join(listed)))
+                return 1
+            if listed[name].get("confirm") and not ask(listed[name]["confirm"]):
+                return 1
+            since = client.get("/api/console?since=0")["last"]
+            ok, msg = client.post("/api/action", {"id": name})
+            if not ok:
+                print(msg)
+                return 1
+            while True:                                     # print its output until it says it is done
+                got = client.get("/api/console?since=%d" % since)
+                since = got["last"]
+                for x in got["lines"]:
+                    if x.get("src") == name:
+                        print(console_line(x), flush=True)
+                if client.get("/api/actions").get("running") != name:
+                    got = client.get("/api/console?since=%d" % since)
+                    for x in got["lines"]:
+                        if x.get("src") == name:
+                            print(console_line(x))
+                    return 0
+                time.sleep(0.3)
+        if verb == "sim" and len(words) >= 2:
+            sub = words[1].lower()
+            if sub == "reset":
+                body = {"action": "reset"}
+            elif sub == "speed" and len(words) == 3:
+                body = {"speed": float(words[2])}
+            elif sub == "moe" and len(words) == 3:
+                body = {"options": {"moe_deg": float(words[2])}}
+            elif sub in ("throws", "second_call", "says_phrase") and len(words) == 3:
+                body = {"options": {sub: words[2]}}
+            else:
+                print("sim reset | sim speed <0-20> | sim moe <deg> | sim throws on|off")
+                return 1
+            ok, msg = client.post("/api/sim", body)
+            print(msg)
+            return 0 if ok else 1
+        cmd = to_command(words)
+        if cmd is None:
+            print("Not a command: %s  (tools/pupper --help)" % " ".join(words))
+            return 1
+        snap = client.get("/api/state")
+        robot = (snap.get("server") or {}).get("mode") == "robot"
+        if robot and cmd == "motion_on" and not ask("Allow motion? Pupper will walk when a run starts. "
+                                                    "Someone must hold the gamepad (right-stick press is the e-stop)."):
+            return 1
+        if robot and cmd == "robot:stand" and not ask("Stand Pupper up? Floor clear, operator at the e-stop."):
+            return 1
+        if robot and cmd in ("start", "start!") and not (snap.get("nav") or {}).get("motion"):
+            print("Motion is off: this is a dry run. Pupper will listen and report but not walk.")
+        ok, msg = client.post("/api/command", {"command": cmd})
+        print("sent" if ok else "refused: " + msg)
+        return 0 if ok else 1
+    except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
+        print("Mission Control does not answer at %s (%s).\n"
+              "Start it: python3 tools/mission_control.py --sim   (laptop)   or robot/start_demo.sh (Pupper),\n"
+              "or point at it: tools/pupper --url http://pupper.local:8078 ..." % (a.url, getattr(exc, "reason", exc)))
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

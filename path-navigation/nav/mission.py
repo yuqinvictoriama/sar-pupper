@@ -788,7 +788,7 @@ class Mission:
         r, c = self.reck, self.cfg.course
         x, y, yaw = r.course_pose()
         fix = self.collector.best(self.t) if self.state in LISTENING else None
-        zone = {ZONE1: "obstacles", REFIX: "second listen", ZONE2: "gauntlet", ARRIVE: "at the cover",
+        zone = {ZONE1: "approach", REFIX: "second listen", ZONE2: "gauntlet", ARRIVE: "at the cover",
                 RESCUE: "with the survivor"}.get(self.state, "")
         cue = EV.cue(self.state, quiet=self.quiet, s=r.s, course=c,
                      crossing=self.crossing_active or self.crossing_planning,

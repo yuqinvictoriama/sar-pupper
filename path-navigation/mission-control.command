@@ -6,4 +6,5 @@
 # and you open http://<pupper>.local:8078 from the laptop.
 cd "$(dirname "$0")" || exit 1
 python3 -c "import numpy" 2>/dev/null || { echo "This needs numpy:  python3 -m pip install numpy"; read -r -p "Press Return to close. "; exit 1; }
+echo "Also from a terminal, while this runs:  $(pwd)/tools/pupper watch    (--help for the rest)"
 exec python3 tools/mission_control.py --sim --open

@@ -23,18 +23,29 @@ robot/nav_node.py, which obeys the e-stop, the joystick and its own motion switc
 
 In --sim mode it runs sim/course_sim.py in this process: the real mission code and the real
 terrain-agility state machine against a simulated room. Needs numpy.
+
+The terminal is part of it. Every command, from the page or from `tools/pupper` in a terminal,
+goes to the same /api/command and is written to the console (/api/console) in its terminal form,
+with the mission's events and the output of the actions below. The page's console and
+`tools/pupper watch` show the same lines. Actions are a fixed list of read-only checks (and, on
+the robot, `git pull --ff-only` after a confirmation): named programs with fixed arguments, never
+a shell and never text from the request.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
 import traceback
 import urllib.request
 import webbrowser
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -44,6 +55,18 @@ sys.path.insert(0, str(ROOT))
 PAGE = HERE / "mission_control.html"
 COMMANDS = ("start", "start!", "pause", "resume", "end", "abort", "phrase", "motion_on", "motion_off")
 STAGES = ("SEEK", "ORIENT", "CONFIRM", "ZONE1", "REFIX", "ZONE2", "ARRIVE", "RESCUE")
+
+
+def cli_form(text: str) -> str:
+    """A /nav/command string as it is typed in a terminal: `goto:ZONE2` -> `pupper goto ZONE2`."""
+    named = {"start!": "start --anyway", "motion_on": "motion on", "motion_off": "motion off",
+             "robot:stand": "stand", "robot:relax": "relax"}
+    if text in named:
+        return "pupper " + named[text]
+    if text.startswith(("goto:", "bearing:", "nudge:")):
+        verb, _, arg = text.partition(":")
+        return "pupper %s %s" % (verb, arg)
+    return "pupper " + text
 
 
 def valid_command(text: str) -> bool:
@@ -58,6 +81,201 @@ def valid_command(text: str) -> bool:
         except ValueError:
             return False
     return False
+
+
+# ------------------------------------------------------------------ the console: one log for the page and the terminal
+class Console:
+    """The last few hundred lines: commands (in their terminal form), mission events, Pupper's lines,
+    state changes and the output of actions. Numbered, so a reader asks only for what is new."""
+
+    def __init__(self, size: int = 800):
+        self.lines: deque = deque(maxlen=size)
+        self.n = 0
+        self.lock = threading.Lock()
+
+    def add(self, kind: str, text: str, src: str = "", **extra) -> None:
+        with self.lock:
+            self.n += 1
+            self.lines.append(dict(extra, n=self.n, t=round(time.time(), 2), kind=kind, src=src, text=str(text)))
+
+    def since(self, n: int, limit: int = 400) -> dict:
+        with self.lock:
+            new = [line for line in self.lines if line["n"] > n]
+            return {"lines": new[-limit:], "last": self.n}
+
+
+def watch_events(backend, console: Console, period: float = 0.25) -> None:
+    """Copy the mission's new events and state changes into the console (a thread)."""
+    seen, state = None, None
+    while True:
+        try:
+            snap = backend.state()
+        except Exception:                                   # noqa: BLE001  the console must not stop the page
+            snap = {}
+        nav = snap.get("nav") or {}
+        events = snap.get("events") or []
+        keys = [(e.get("t"), e.get("event"), e.get("run_s")) for e in events]
+        if seen is None:
+            new = []                                        # what was there before this server started is not news
+        elif seen in keys:
+            new = events[keys.index(seen) + 1:]
+        else:
+            new = events                                    # a new run or a new room: all of it is new
+        if keys:
+            seen = keys[-1]
+        for e in new:
+            details = ", ".join("%s %s" % kv for kv in (e.get("details") or {}).items())
+            console.add("event", e.get("event", "").replace("_", " ") + (": " + details if details else ""),
+                        src="mission", run_s=e.get("run_s"), state=e.get("state"))
+            if e.get("line"):
+                console.add("say", e["line"], src="pupper", run_s=e.get("run_s"))
+        st = nav.get("state")
+        if st and st != state:
+            if state is not None:
+                why = nav.get("reason") or ""
+                console.add("state", "%s -> %s%s" % (state, st, (": " + why) if why else ""), src="mission",
+                            run_s=nav.get("run_s"))
+            state = st
+        time.sleep(period)
+
+
+# ------------------------------------------------------------------ actions: a fixed list, run by name
+REPO = ROOT.parent                                           # sar-pupper/
+ROBOT_LOG = Path("/tmp/sar-demo/robot.log")
+
+
+def action_table(mode: str) -> list[dict]:
+    """What the console's quick actions may run here. Fixed programs and arguments: nothing from a request."""
+    py = sys.executable
+    git = ["git", "-C", str(REPO)]
+    both = [
+        {"id": "git", "label": "Code version", "group": "code", "steps": [git + ["log", "--oneline", "-5"],
+                                                                         git + ["status", "--short", "--", "path-navigation"]],
+         "about": "the last five commits and what is changed in path-navigation"},
+        {"id": "load", "label": "CPU load", "group": "system", "steps": [["uptime"]],
+         "about": "load averages (the Pi has four cores)"},
+    ]
+    if mode == "robot":
+        return both + [
+            {"id": "log", "label": "Robot log", "group": "logs", "steps": [["tail", "-n", "60", str(ROBOT_LOG)]],
+             "about": "the last 60 lines of %s" % ROBOT_LOG},
+            {"id": "sound_log", "label": "Sound module log", "group": "logs",
+             "steps": [["grep", "-a", "-m", "40", "-e", "Selected", "-e", "Four-channel", "-e", "Could not",
+                        "-e", "bearing=", str(ROBOT_LOG)]],
+             "about": "the partner's script's device lines and first bearings, from the robot log"},
+            {"id": "audio", "label": "Audio devices", "group": "system",
+             "steps": [["arecord", "-l"], ["pactl", "list", "short", "sources"]],
+             "about": "capture devices: the DJI receiver should be listed"},
+            {"id": "nodes", "label": "ROS nodes", "group": "system", "steps": [["ros2", "node", "list"]],
+             "about": "every node running on the Pupper"},
+            {"id": "top", "label": "Busiest processes", "group": "system",
+             "steps": [["ps", "-eo", "pcpu,pmem,etime,comm", "--sort=-pcpu"]], "head": 14,
+             "about": "what is using the CPU"},
+            {"id": "temp", "label": "Pi temperature", "group": "system", "steps": [["vcgencmd", "measure_temp"]],
+             "about": "throttling starts at 80 C"},
+            {"id": "update", "label": "Update code (git pull)", "group": "code",
+             "steps": [git + ["pull", "--ff-only"]], "timeout": 60,
+             "confirm": "Pull the latest code from GitHub onto the Pupper (fast-forward only)?\n\n"
+                        "Running nodes keep the old code until robot/start_demo.sh is run again.",
+             "about": "git pull --ff-only: the Pupper's code as pushed to main"},
+        ]
+    return both + [
+        {"id": "tests", "label": "Run the tests", "group": "checks", "timeout": 600,
+         "steps": [[py, "-m", "pytest", str(ROOT / "tests"), "-q"]],
+         "about": "path-navigation's tests (about 30 s)"},
+        {"id": "sim20", "label": "20 simulated runs", "group": "checks", "timeout": 600,
+         "steps": [[py, str(ROOT / "sim" / "course_sim.py"), "--runs", "20"]],
+         "about": "how often the run ends in front of the cover, in 20 rooms"},
+    ]
+
+
+def shown(argv: list) -> str:
+    """argv as a person would type it, with this repository's paths shortened."""
+    out = []
+    for a in argv:
+        a = str(a)
+        if a == sys.executable:
+            a = "python3"
+        elif a.startswith(str(REPO) + os.sep):
+            a = os.path.relpath(a, str(ROOT))
+        elif a == str(REPO):
+            a = ".."
+        out.append(a if a and not any(c in a for c in " '\"") else "'%s'" % a)
+    return " ".join(out)
+
+
+class Actions:
+    """Runs one action at a time in a thread, its output line by line into the console."""
+
+    def __init__(self, mode: str, console: Console):
+        self.table = {a["id"]: a for a in action_table(mode)}
+        self.console = console
+        self.lock = threading.Lock()
+        self.running = None                     # (id, Popen or None)
+        self.stopped = False
+
+    def listing(self) -> dict:
+        with self.lock:
+            running = self.running[0] if self.running else None
+        return {"actions": [{"id": a["id"], "label": a["label"], "group": a["group"], "about": a.get("about", ""),
+                             "confirm": a.get("confirm"), "shell": " ; ".join(shown(st) for st in a["steps"]),
+                             "terminal": "pupper run " + a["id"]} for a in self.table.values()],
+                "running": running}
+
+    def start(self, ident: str, src: str = "page") -> tuple[bool, str]:
+        act = self.table.get(ident)
+        if act is None:
+            return False, "no such action here (pupper actions lists them)"
+        with self.lock:
+            if self.running:
+                return False, "%s is still running: wait, or stop it" % self.running[0]
+            self.running, self.stopped = (ident, None), False
+        self.console.add("cmd", "pupper run " + ident, src=src)
+        threading.Thread(target=self._run, args=(act,), daemon=True, name="action-" + ident).start()
+        return True, "started"
+
+    def stop(self) -> tuple[bool, str]:
+        with self.lock:
+            if not self.running:
+                return False, "nothing is running"
+            self.stopped = True
+            proc = self.running[1]
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+        return True, "stopping"
+
+    def _run(self, act: dict) -> None:
+        ident, t0 = act["id"], time.monotonic()
+        try:
+            for argv in act["steps"]:
+                if self.stopped:
+                    break
+                self.console.add("shell", "$ " + shown(argv), src=ident)
+                if shutil.which(argv[0]) is None and not Path(argv[0]).exists():
+                    self.console.add("err", "%s is not installed here" % argv[0], src=ident)
+                    continue
+                proc = subprocess.Popen(argv, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        stdin=subprocess.DEVNULL, text=True, errors="replace", bufsize=1)
+                with self.lock:
+                    self.running = (ident, proc)
+                timer = threading.Timer(float(act.get("timeout", 20)), proc.kill)
+                timer.start()
+                n, head = 0, act.get("head")
+                for line in proc.stdout:
+                    n += 1
+                    if head is None or n <= head:
+                        self.console.add("out", line.rstrip("\n"), src=ident)
+                code = proc.wait()
+                timer.cancel()
+                if code:
+                    self.console.add("err", "exit %s" % code, src=ident)
+            self.console.add("info", "%s %s in %.1f s" % (act["label"], "stopped" if self.stopped else "done",
+                                                          time.monotonic() - t0), src=ident)
+        except OSError as exc:
+            self.console.add("err", "%s: %s" % (act["label"], exc), src=ident)
+        finally:
+            with self.lock:
+                self.running = None
 
 
 # ------------------------------------------------------------------ simulation backend
@@ -216,7 +434,10 @@ class RobotBackend:
 
 
 # ------------------------------------------------------------------ the page
-def make_handler(backend):
+def make_handler(backend, console: Console | None = None, actions: Actions | None = None):
+    console = console or Console()
+    actions = actions or Actions(backend.mode, console)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "PupperMissionControl/1"
 
@@ -240,6 +461,16 @@ def make_handler(backend):
                 self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
             elif path == "/api/state":
                 self._json(200, backend.state())
+            elif path == "/api/console":
+                query = self.path.partition("?")[2]
+                params = dict(p.partition("=")[::2] for p in query.split("&") if p)
+                try:
+                    since = int(params.get("since", "0"))
+                except ValueError:
+                    since = 0
+                self._json(200, console.since(since))
+            elif path == "/api/actions":
+                self._json(200, actions.listing())
             else:
                 self._json(404, {"error": "not found"})
 
@@ -258,11 +489,23 @@ def make_handler(backend):
             if not isinstance(body, dict):
                 self._json(400, {"ok": False, "message": "a JSON object, please"})
                 return
+            src = "terminal" if (self.headers.get("X-Pupper-Client") or "").lower() == "cli" else "page"
             try:
                 if path == "/api/command":
-                    ok, message = backend.command(str(body.get("command", "")).strip())
+                    text = str(body.get("command", "")).strip()
+                    ok, message = backend.command(text)
+                    console.add("cmd" if ok else "err", cli_form(text) + ("" if ok else "   (refused: %s)" % message),
+                                src=src)
                 elif path == "/api/sim":
                     ok, message = backend.configure(body)
+                    console.add("cmd" if ok else "err", "pupper sim " + " ".join(
+                        "%s %s" % (k, json.dumps(v) if isinstance(v, (dict, list)) else v) for k, v in body.items()),
+                        src=src)
+                elif path == "/api/action":
+                    if body.get("stop"):
+                        ok, message = actions.stop()
+                    else:
+                        ok, message = actions.start(str(body.get("id", "")), src=src)
                 else:
                     self._json(404, {"ok": False, "message": "not found"})
                     return
@@ -313,16 +556,22 @@ def main() -> None:
         except ImportError as exc:
             sys.exit("the simulation needs numpy and the terrain-agility folder beside this one: %s" % exc)
 
+    console = Console()
+    console.add("info", "Mission Control started (%s). Terminal: tools/pupper watch" % backend.mode, src="server")
+    threading.Thread(target=watch_events, args=(backend, console), daemon=True, name="console").start()
+    actions = Actions(backend.mode, console)
+
     # On the robot the page has to be reachable from the laptop; a simulation on a laptop need not be.
     host = "127.0.0.1" if (args.local or (backend.mode == "sim" and not args.robot)) else "0.0.0.0"
     try:
-        server = ThreadingHTTPServer((host, args.port), make_handler(backend))
+        server = ThreadingHTTPServer((host, args.port), make_handler(backend, console, actions))
     except OSError as exc:
         sys.exit("Port %d is taken (%s): Mission Control may already be running. Open http://localhost:%d, "
                  "or start this one with --port <another>." % (args.port, exc.strerror or exc, args.port))
     print("Pupper Mission Control (%s). Open:" % ("SIMULATION" if backend.mode == "sim" else "ROBOT"))
     for a in (addresses(args.port) if host == "0.0.0.0" else ["http://localhost:%d" % args.port]):
         print("   ", a)
+    print("From a terminal:  python3 %s watch      (help: tools/pupper --help)" % os.path.relpath(HERE / "pupper"))
     if args.open:
         threading.Timer(0.5, webbrowser.open, args=("http://localhost:%d" % args.port,)).start()
     try:
