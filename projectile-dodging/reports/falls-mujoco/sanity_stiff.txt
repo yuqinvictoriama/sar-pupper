@@ -1,0 +1,14 @@
+policy control rate: 50 Hz (trained; robot runs 520 Hz / repeat_action 10 = 52 Hz); physics=stiff
+stand 8 s: max tilt after 1 s 0.51 deg, final tilt 0.37, height 160 mm, drift 1 mm, yaw +4.5 deg
+cmd (+0.30,+0.00) [trot]: body speed (+0.27,+0.01) m/s, max tilt   3.5 deg, height 158 mm, yaw   +1.9 deg, estop None
+cmd (+0.50,+0.00) [fast]: body speed (+0.54,-0.00) m/s, max tilt   9.0 deg, height 145 mm, yaw   +2.3 deg, estop None
+cmd (+0.75,+0.00) [fast]: body speed (+0.76,-0.02) m/s, max tilt  11.3 deg, height 146 mm, yaw   +1.2 deg, estop None
+cmd (+1.00,+0.00) [fast]: body speed (+1.00,-0.03) m/s, max tilt  12.1 deg, height 146 mm, yaw   +4.8 deg, estop None
+cmd (+1.50,+0.00) [fast]: body speed (+1.50,-0.02) m/s, max tilt  12.6 deg, height 147 mm, yaw   +2.0 deg, estop None
+cmd (-0.50,+0.00) [fast]: body speed (-0.53,-0.00) m/s, max tilt   5.1 deg, height 152 mm, yaw   -0.9 deg, estop None
+cmd (-0.80,+0.00) [fast]: body speed (-0.81,-0.01) m/s, max tilt   5.0 deg, height 151 mm, yaw   -0.1 deg, estop None
+cmd (+0.00,+0.30) [lift]: body speed (+0.02,+0.25) m/s, max tilt   5.9 deg, height 155 mm, yaw   +1.6 deg, estop None
+cmd (+0.00,+0.50) [lift]: body speed (-0.01,+0.43) m/s, max tilt   9.3 deg, height 155 mm, yaw   +3.2 deg, estop None
+cmd (+0.00,-0.50) [lift]: body speed (-0.02,-0.43) m/s, max tilt   8.4 deg, height 154 mm, yaw   +1.7 deg, estop None
+cmd (+0.80,-0.40) [fast]: body speed (+0.85,-0.41) m/s, max tilt  11.8 deg, height 143 mm, yaw   +9.8 deg, estop None
+(4.8 s wall)
